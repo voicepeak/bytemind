@@ -1,7 +1,7 @@
 .gocache/
 .gomodcache/
-.aicoding/
-aicoding.config.json
+.bytemind/
+/config.json
 .installtest*/
-aicoding.exe
+bytemind.exe
 *.test

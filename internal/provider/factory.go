@@ -3,8 +3,8 @@ package provider
 import (
 	"fmt"
 
-	"aicoding/internal/config"
-	"aicoding/internal/llm"
+	"bytemind/internal/config"
+	"bytemind/internal/llm"
 )
 
 func NewClient(cfg config.ProviderConfig) (llm.Client, error) {

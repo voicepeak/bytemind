@@ -1,11 +1,11 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
-    [string]$InstallDir = "$env:LOCALAPPDATA\Programs\AICoding\bin"
+    [string]$InstallDir = "$env:LOCALAPPDATA\Programs\ByteMind\bin"
 )
 
 $ErrorActionPreference = 'Stop'
 
-$targetExe = Join-Path $InstallDir 'aicoding.exe'
+$targetExe = Join-Path $InstallDir 'bytemind.exe'
 if (Test-Path $targetExe) {
     Remove-Item $targetExe -Force
     Write-Host "Removed $targetExe" -ForegroundColor Green

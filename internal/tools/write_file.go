@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"aicoding/internal/llm"
+	"bytemind/internal/llm"
 )
 
 type WriteFileTool struct{}

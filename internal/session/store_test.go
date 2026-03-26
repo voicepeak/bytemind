@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"aicoding/internal/llm"
+	"bytemind/internal/llm"
 )
 
 func TestStorePreservesUTF8Content(t *testing.T) {

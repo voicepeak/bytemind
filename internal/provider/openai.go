@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"aicoding/internal/llm"
+	"bytemind/internal/llm"
 )
 
 type Config struct {

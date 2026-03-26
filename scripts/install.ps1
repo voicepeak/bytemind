@@ -1,6 +1,6 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
-    [string]$InstallDir = "$env:LOCALAPPDATA\Programs\AICoding\bin",
+    [string]$InstallDir = "$env:LOCALAPPDATA\Programs\ByteMind\bin",
     [string]$GoCacheDir = "",
     [switch]$SkipPathUpdate
 )
@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if ([string]::IsNullOrWhiteSpace($GoCacheDir)) {
-    $GoCacheDir = Join-Path $env:TEMP 'aicoding-gocache'
+    $GoCacheDir = Join-Path $env:TEMP 'bytemind-gocache'
 }
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
@@ -19,10 +19,10 @@ if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $GoCacheDir | Out-Null
 
-$targetExe = Join-Path $InstallDir 'aicoding.exe'
-Write-Host "Building AICoding from $repoRoot" -ForegroundColor Cyan
+$targetExe = Join-Path $InstallDir 'bytemind.exe'
+Write-Host "Building ByteMind from $repoRoot" -ForegroundColor Cyan
 $env:GOCACHE = $GoCacheDir
-& go -C $repoRoot build -o $targetExe .\cmd\aicoding
+& go -C $repoRoot build -o $targetExe .\cmd\bytemind
 if ($LASTEXITCODE -ne 0) {
     throw 'go build failed.'
 }
@@ -59,6 +59,6 @@ if (-not $SkipPathUpdate) {
 
 Write-Host ''
 Write-Host 'Usage examples:' -ForegroundColor Cyan
-Write-Host '  aicoding chat' -ForegroundColor White
-Write-Host '  aicoding run -prompt "analyze this repo"' -ForegroundColor White
-Write-Host '  aicoding chat -workspace E:\experiments' -ForegroundColor White
+Write-Host '  bytemind chat' -ForegroundColor White
+Write-Host '  bytemind run -prompt "analyze this repo"' -ForegroundColor White
+Write-Host '  bytemind chat -workspace E:\experiments' -ForegroundColor White

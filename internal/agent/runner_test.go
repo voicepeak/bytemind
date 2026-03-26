@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"aicoding/internal/config"
-	"aicoding/internal/llm"
-	"aicoding/internal/session"
-	"aicoding/internal/tools"
+	"bytemind/internal/config"
+	"bytemind/internal/llm"
+	"bytemind/internal/session"
+	"bytemind/internal/tools"
 )
 
 type fakeClient struct {
@@ -119,7 +119,7 @@ func TestRunPromptStopsOnRepeatedToolPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(answer, "repeated the same tool plan") {
+	if !strings.Contains(answer, "repeated the same tool sequence") {
 		t.Fatalf("expected repeat-detection summary, got %q", answer)
 	}
 }
