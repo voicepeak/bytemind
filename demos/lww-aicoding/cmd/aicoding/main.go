@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -61,6 +60,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	switch args[0] {
 	case "chat":
 		return runChat(args[1:], stdin, stdout, stderr)
+	case "tui":
+		return runTUI(args[1:], stdin, stdout, stderr)
 	case "run":
 		return runOneShot(args[1:], stdin, stdout, stderr)
 	case "help", "-h", "--help":
@@ -72,73 +73,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 }
 
 func runChat(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("chat", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-
-	configPath := fs.String("config", "", "Path to config file")
-	model := fs.String("model", "", "Override model name")
-	sessionID := fs.String("session", "", "Resume an existing session")
-	streamOverride := fs.String("stream", "", "Override streaming: true or false")
-	workspaceOverride := fs.String("workspace", "", "Workspace to operate on; defaults to current directory")
-	maxIterations := fs.Int("max-iterations", 0, "Override execution budget for this run")
-
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	app, store, sess, err := bootstrap(*configPath, *model, *sessionID, *streamOverride, *workspaceOverride, *maxIterations, stdin, stdout)
-	if err != nil {
-		return err
-	}
-
-	fmt.Fprintf(stdout, "%ssession%s %s\n", ansiDim, ansiReset, sess.ID)
-	fmt.Fprintf(stdout, "%sworkspace%s %s\n", ansiDim, ansiReset, sess.Workspace)
-	fmt.Fprintln(stdout, "Type /help for commands, /exit to quit.")
-
-	scanner := bufio.NewScanner(stdin)
-	for {
-		fmt.Fprint(stdout, promptPrefix())
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return err
-			}
-			fmt.Fprintln(stdout)
-			return nil
-		}
-
-		input := strings.TrimSpace(scanner.Text())
-		if input == "" {
-			continue
-		}
-
-		if strings.HasPrefix(input, "/") {
-			completed, suggestions := completeSlashCommand(input)
-			switch {
-			case len(suggestions) > 1:
-				printCommandSuggestions(stdout, input, suggestions)
-				continue
-			case completed != input:
-				fmt.Fprintf(stdout, "%scommand%s %s\n", ansiDim, ansiReset, completed)
-				input = completed
-			}
-
-			nextSess, shouldExit, handled, err := handleSlashCommand(stdout, store, sess, input)
-			if err != nil {
-				return err
-			}
-			if handled {
-				sess = nextSess
-				if shouldExit {
-					return nil
-				}
-				continue
-			}
-		}
-
-		if _, err := app.RunPrompt(context.Background(), sess, input, stdout); err != nil {
-			return err
-		}
-	}
+	return runTUI(args, stdin, stdout, stderr)
 }
 
 func runOneShot(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -676,6 +611,7 @@ func printPlan(w io.Writer, sess *session.Session) {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "aicoding chat [-config path] [-model name] [-session id] [-stream true|false] [-workspace path] [-max-iterations n]")
+	fmt.Fprintln(w, "aicoding tui [-config path] [-model name] [-session id] [-stream true|false] [-workspace path] [-max-iterations n]")
 	fmt.Fprintln(w, "aicoding run -prompt \"task\" [-config path] [-model name] [-session id] [-stream true|false] [-workspace path] [-max-iterations n]")
 }
 

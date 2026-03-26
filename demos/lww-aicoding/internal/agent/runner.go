@@ -32,6 +32,8 @@ type Options struct {
 	Client    llm.Client
 	Store     *session.Store
 	Registry  *tools.Registry
+	Observer  Observer
+	Approval  tools.ApprovalHandler
 	Stdin     io.Reader
 	Stdout    io.Writer
 }
@@ -42,6 +44,8 @@ type Runner struct {
 	client    llm.Client
 	store     *session.Store
 	registry  *tools.Registry
+	observer  Observer
+	approval  tools.ApprovalHandler
 	stdin     io.Reader
 	stdout    io.Writer
 }
@@ -53,9 +57,19 @@ func NewRunner(opts Options) *Runner {
 		client:    opts.Client,
 		store:     opts.Store,
 		registry:  opts.Registry,
+		observer:  opts.Observer,
+		approval:  opts.Approval,
 		stdin:     opts.Stdin,
 		stdout:    opts.Stdout,
 	}
+}
+
+func (r *Runner) SetObserver(observer Observer) {
+	r.observer = observer
+}
+
+func (r *Runner) SetApprovalHandler(handler tools.ApprovalHandler) {
+	r.approval = handler
 }
 
 func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput string, out io.Writer) (string, error) {
@@ -66,6 +80,11 @@ func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput
 	if err := r.store.Save(sess); err != nil {
 		return "", err
 	}
+	r.emit(Event{
+		Type:      EventRunStarted,
+		SessionID: sess.ID,
+		UserInput: userInput,
+	})
 
 	lastToolPlanSignature := ""
 	repeatedToolPlanCount := 0
@@ -97,6 +116,16 @@ func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput
 			if err := r.store.Save(sess); err != nil {
 				return "", err
 			}
+			r.emit(Event{
+				Type:      EventAssistantMessage,
+				SessionID: sess.ID,
+				Content:   reply.Content,
+			})
+			r.emit(Event{
+				Type:      EventRunFinished,
+				SessionID: sess.ID,
+				Content:   reply.Content,
+			})
 
 			answer := strings.TrimSpace(reply.Content)
 			if answer == "" {
@@ -135,6 +164,12 @@ func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput
 		}
 		for _, call := range reply.ToolCalls {
 			executedToolNames = append(executedToolNames, call.Function.Name)
+			r.emit(Event{
+				Type:          EventToolCallStarted,
+				SessionID:     sess.ID,
+				ToolName:      call.Function.Name,
+				ToolArguments: call.Function.Arguments,
+			})
 			if out != nil {
 				fmt.Fprintf(out, "%s%stool>%s %s\n", ansiBold, ansiCyan, ansiReset, call.Function.Name)
 			}
@@ -142,6 +177,7 @@ func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput
 			result, execErr := r.registry.Execute(ctx, call.Function.Name, call.Function.Arguments, &tools.ExecutionContext{
 				Workspace:      r.workspace,
 				ApprovalPolicy: r.config.ApprovalPolicy,
+				Approval:       r.approval,
 				Session:        sess,
 				Stdin:          r.stdin,
 				Stdout:         r.stdout,
@@ -155,6 +191,17 @@ func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput
 			if out != nil {
 				r.renderToolFeedback(out, call.Function.Name, result)
 			}
+			errText := ""
+			if execErr != nil {
+				errText = execErr.Error()
+			}
+			r.emit(Event{
+				Type:       EventToolCallCompleted,
+				SessionID:  sess.ID,
+				ToolName:   call.Function.Name,
+				ToolResult: result,
+				Error:      errText,
+			})
 
 			sess.Messages = append(sess.Messages, llm.Message{
 				Role:       "tool",
@@ -163,6 +210,13 @@ func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput
 			})
 			if err := r.store.Save(sess); err != nil {
 				return "", err
+			}
+			if call.Function.Name == "update_plan" {
+				r.emit(Event{
+					Type:      EventPlanUpdated,
+					SessionID: sess.ID,
+					Plan:      append([]session.PlanItem(nil), sess.Plan...),
+				})
 			}
 		}
 	}
@@ -182,6 +236,9 @@ func (r *Runner) completeTurn(ctx context.Context, request llm.ChatRequest, out 
 
 	return r.client.StreamMessage(ctx, request, func(delta string) {
 		if out == nil || delta == "" {
+			if delta != "" {
+				r.emit(Event{Type: EventAssistantDelta, Content: delta})
+			}
 			return
 		}
 		if !*streamedText {
@@ -189,6 +246,7 @@ func (r *Runner) completeTurn(ctx context.Context, request llm.ChatRequest, out 
 		}
 		*streamedText = true
 		fmt.Fprint(out, delta)
+		r.emit(Event{Type: EventAssistantDelta, Content: delta})
 	})
 }
 
@@ -321,6 +379,16 @@ func (r *Runner) finishWithSummary(sess *session.Session, summary string, out io
 	if err := r.store.Save(sess); err != nil {
 		return "", err
 	}
+	r.emit(Event{
+		Type:      EventAssistantMessage,
+		SessionID: sess.ID,
+		Content:   summary,
+	})
+	r.emit(Event{
+		Type:      EventRunFinished,
+		SessionID: sess.ID,
+		Content:   summary,
+	})
 	if out != nil {
 		if streamedText {
 			fmt.Fprintln(out)
@@ -488,4 +556,11 @@ func compactWhitespace(text string, limit int) string {
 		return text[:limit]
 	}
 	return text[:limit-3] + "..."
+}
+
+func (r *Runner) emit(event Event) {
+	if r.observer == nil {
+		return
+	}
+	r.observer.HandleEvent(event)
 }

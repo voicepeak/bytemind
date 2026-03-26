@@ -14,6 +14,7 @@ import (
 type ExecutionContext struct {
 	Workspace      string
 	ApprovalPolicy string
+	Approval       ApprovalHandler
 	Session        *session.Session
 	Stdin          io.Reader
 	Stdout         io.Writer

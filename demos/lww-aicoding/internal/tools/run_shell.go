@@ -131,6 +131,19 @@ func requireApproval(command string, execCtx *ExecutionContext) error {
 }
 
 func promptForApproval(command, reason string, execCtx *ExecutionContext) error {
+	if execCtx.Approval != nil {
+		approved, err := execCtx.Approval(ApprovalRequest{
+			Command: command,
+			Reason:  reason,
+		})
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return errors.New("shell command not approved")
+		}
+		return nil
+	}
 	if execCtx.Stdin == nil {
 		return errors.New("shell command requires approval but no stdin is available")
 	}
