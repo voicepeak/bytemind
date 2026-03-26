@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"aicoding/internal/llm"
+	"bytemind/internal/llm"
 )
 
 type ReplaceInFileTool struct{}

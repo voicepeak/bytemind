@@ -7,13 +7,13 @@ import (
 	"io"
 	"strings"
 
-	"aicoding/internal/config"
-	"aicoding/internal/llm"
-	"aicoding/internal/session"
-	"aicoding/internal/tools"
+	"bytemind/internal/config"
+	"bytemind/internal/llm"
+	"bytemind/internal/session"
+	"bytemind/internal/tools"
 )
 
-const repeatedToolPlanThreshold = 3
+const repeatedToolSequenceThreshold = 3
 
 const (
 	ansiReset   = "\x1b[0m"
@@ -67,8 +67,8 @@ func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput
 		return "", err
 	}
 
-	lastToolPlanSignature := ""
-	repeatedToolPlanCount := 0
+	lastToolSequenceSignature := ""
+	repeatedToolSequenceCount := 0
 	executedToolNames := make([]string, 0, 16)
 
 	for step := 0; step < r.config.MaxIterations; step++ {
@@ -109,17 +109,17 @@ func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput
 			return answer, nil
 		}
 
-		toolPlanSignature := signatureToolCalls(reply.ToolCalls)
-		if toolPlanSignature == lastToolPlanSignature {
-			repeatedToolPlanCount++
+		toolSequenceSignature := signatureToolCalls(reply.ToolCalls)
+		if toolSequenceSignature == lastToolSequenceSignature {
+			repeatedToolSequenceCount++
 		} else {
-			lastToolPlanSignature = toolPlanSignature
-			repeatedToolPlanCount = 1
+			lastToolSequenceSignature = toolSequenceSignature
+			repeatedToolSequenceCount = 1
 		}
-		if repeatedToolPlanCount >= repeatedToolPlanThreshold {
+		if repeatedToolSequenceCount >= repeatedToolSequenceThreshold {
 			summary := r.buildStopSummary(
 				sess,
-				fmt.Sprintf("I stopped because the assistant repeated the same tool plan %d times in a row (%s).", repeatedToolPlanCount, strings.Join(uniqueToolCallNames(reply.ToolCalls), ", ")),
+				fmt.Sprintf("I stopped because the assistant repeated the same tool sequence %d times in a row (%s).", repeatedToolSequenceCount, strings.Join(uniqueToolCallNames(reply.ToolCalls), ", ")),
 				executedToolNames,
 			)
 			return r.finishWithSummary(sess, summary, out, streamedText)
@@ -284,16 +284,6 @@ func (r *Runner) renderToolFeedback(out io.Writer, name, payload string) {
 				fmt.Fprintf(out, "    %s\n", line)
 			}
 		}
-	case "update_plan":
-		var result struct {
-			Plan []session.PlanItem `json:"plan"`
-		}
-		if err := json.Unmarshal([]byte(payload), &result); err == nil && len(result.Plan) > 0 {
-			fmt.Fprintf(out, "  %splan%s %d items\n", ansiGreen, ansiReset, len(result.Plan))
-			for _, item := range result.Plan {
-				fmt.Fprintf(out, "    [%s] %s\n", item.Status, item.Step)
-			}
-		}
 	case "apply_patch":
 		var result struct {
 			Operations []struct {
@@ -335,13 +325,6 @@ func (r *Runner) buildStopSummary(sess *session.Session, reason string, executed
 	var builder strings.Builder
 	builder.WriteString("Paused before a final answer.\n")
 	builder.WriteString(reason)
-
-	if len(sess.Plan) > 0 {
-		builder.WriteString("\n\nCurrent plan:\n")
-		for _, item := range sess.Plan {
-			fmt.Fprintf(&builder, "- [%s] %s\n", item.Status, item.Step)
-		}
-	}
 
 	recentTools := recentToolNames(executedToolNames, 4)
 	if len(recentTools) > 0 {

@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"path/filepath"
 
-	"aicoding/internal/llm"
+	"bytemind/internal/llm"
 )
 
 type ListFilesTool struct{}

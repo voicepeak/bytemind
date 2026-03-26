@@ -9,10 +9,10 @@ import (
 
 func TestLoadUsesEnvOverrides(t *testing.T) {
 	workspace := t.TempDir()
-	t.Setenv("AICODING_MODEL", "override-model")
-	t.Setenv("AICODING_API_KEY", "secret")
-	t.Setenv("AICODING_PROVIDER_TYPE", "anthropic")
-	t.Setenv("AICODING_STREAM", "false")
+	t.Setenv("BYTEMIND_MODEL", "override-model")
+	t.Setenv("BYTEMIND_API_KEY", "secret")
+	t.Setenv("BYTEMIND_PROVIDER_TYPE", "anthropic")
+	t.Setenv("BYTEMIND_STREAM", "false")
 
 	cfg, err := Load(workspace, "")
 	if err != nil {
@@ -33,7 +33,7 @@ func TestLoadUsesEnvOverrides(t *testing.T) {
 	if cfg.Provider.ResolveAPIKey() != "secret" {
 		t.Fatalf("expected api key from env")
 	}
-	if filepath.Dir(cfg.SessionDir) != filepath.Join(workspace, ".aicoding") {
+	if filepath.Dir(cfg.SessionDir) != filepath.Join(workspace, ".bytemind") {
 		t.Fatalf("unexpected session dir: %s", cfg.SessionDir)
 	}
 }
@@ -54,7 +54,7 @@ func TestResolveConfigPathExplicit(t *testing.T) {
 
 func TestLoadUsesWorkspaceRootConfigFile(t *testing.T) {
 	workspace := t.TempDir()
-	configPath := filepath.Join(workspace, "aicoding.config.json")
+	configPath := filepath.Join(workspace, "config.json")
 	data, err := json.Marshal(map[string]any{
 		"provider": map[string]any{
 			"type":     "openai-compatible",

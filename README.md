@@ -1,4 +1,4 @@
-﻿# AICoding
+# ByteMind
 
 一个用 Go 实现的 AI Coding CLI，目标是提供更接近 OpenCode / ClaudeCode 的工作流能力。
 
@@ -11,7 +11,6 @@
 - 工具调用循环
 - 工作区文件浏览、读取、搜索、写入、精确替换
 - `apply_patch` 补丁编辑器
-- `update_plan` 任务计划器
 - Shell 命令执行与审批策略
 - `-workspace` 跨目录工作区切换
 - `-max-iterations` 执行预算覆盖
@@ -21,13 +20,13 @@
 ## 目录结构
 
 ```text
-cmd/aicoding            CLI 入口
+cmd/bytemind            CLI 入口
 internal/agent          对话循环、系统提示词模板、流式输出
 internal/config         配置加载与环境变量覆盖
 internal/llm            通用消息与工具类型
 internal/provider       多 provider 适配层
-internal/session        会话和计划持久化
-internal/tools          文件工具、patch 工具、计划工具、shell 工具
+internal/session        会话持久化
+internal/tools          文件工具、patch 工具、shell 工具
 scripts                 安装与卸载脚本
 ```
 
@@ -47,16 +46,16 @@ scripts\install.cmd
 
 安装脚本会：
 
-- 构建 `aicoding.exe`
-- 安装到 `%LOCALAPPDATA%\Programs\AICoding\bin`
+- 构建 `bytemind.exe`
+- 安装到 `%LOCALAPPDATA%\Programs\ByteMind\bin`
 - 自动把该目录加入当前用户的 `PATH`
 
 安装完成后，打开一个新的终端，就可以在任意目录直接执行：
 
 ```powershell
-aicoding chat
-aicoding run -prompt "analyze this repo"
-aicoding chat -workspace E:\experiments
+bytemind chat
+bytemind run -prompt "analyze this repo"
+bytemind chat -workspace E:\experiments
 ```
 
 卸载：
@@ -70,58 +69,58 @@ aicoding chat -workspace E:\experiments
 如果你暂时不想安装，也可以直接在仓库根目录运行：
 
 ```powershell
-$env:AICODING_API_KEY = "your-api-key"
-$env:AICODING_MODEL = "gpt-4.1-mini"
-go run ./cmd/aicoding chat
+$env:BYTEMIND_API_KEY = "your-api-key"
+$env:BYTEMIND_MODEL = "gpt-4.1-mini"
+go run ./cmd/bytemind chat
 ```
 
 聊天模式：
 
 ```powershell
-aicoding chat
+bytemind chat
 ```
 
 单次任务：
 
 ```powershell
-go run ./cmd/aicoding run -prompt "分析当前项目并生成改进建议"
+go run ./cmd/bytemind run -prompt "分析当前项目并生成改进建议"
 ```
 
 需要更大的执行预算时：
 
 ```powershell
-aicoding chat -max-iterations 64
-aicoding run -prompt "refactor this module" -max-iterations 64
+bytemind chat -max-iterations 64
+bytemind run -prompt "refactor this module" -max-iterations 64
 ```
 
 ## 跨目录运行
 
-`go run ./cmd/aicoding ...` 只能在本仓库模块根目录内执行，因为 Go 需要从当前目录向上找到 `go.mod`。
+`go run ./cmd/bytemind ...` 只能在本仓库模块根目录内执行，因为 Go 需要从当前目录向上找到 `go.mod`。
 
 如果你还没安装，但想在别的目录里启动并让程序作用在那个目录，可以这样：
 
 ```powershell
-go -C E:\AICoding run ./cmd/aicoding chat -workspace E:\experiments
+go -C E:\ByteMind run ./cmd/bytemind chat -workspace E:\experiments
 ```
 
 如果已经安装，则更简单：
 
 ```powershell
-aicoding chat -workspace E:\experiments
+bytemind chat -workspace E:\experiments
 ```
 
 ## 配置文件
 
 支持以下配置文件，按优先级查找：
 
-1. 工作区根目录 `aicoding.config.json`
-2. 工作区 `.aicoding/config.json`
-3. 用户目录 `.aicoding/config.json`
+1. 工作区根目录 `config.json`
+2. 工作区 `.bytemind/config.json`
+3. 用户目录 `.bytemind/config.json`
 
 推荐直接从仓库根目录复制示例模板开始：
 
 ```powershell
-Copy-Item aicoding.config.example.json aicoding.config.json
+Copy-Item config.example.json config.json
 ```
 
 然后把 `api_key` 等字段改成你自己的配置。
@@ -139,7 +138,7 @@ Copy-Item aicoding.config.example.json aicoding.config.json
   },
   "approval_policy": "on-request",
   "max_iterations": 32,
-  "session_dir": ".aicoding/sessions",
+  "session_dir": ".bytemind/sessions",
   "stream": true
 }
 ```
@@ -164,7 +163,6 @@ Anthropic 示例：
 - `/help`
 - `/session`
 - `/sessions`
-- `/plan`
 - `/exit`
 
 ## 已实现工具
@@ -175,7 +173,6 @@ Anthropic 示例：
 - `write_file`
 - `replace_in_file`
 - `apply_patch`
-- `update_plan`
 - `run_shell`
 
 ## 系统提示词维护

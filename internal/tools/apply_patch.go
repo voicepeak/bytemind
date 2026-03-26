@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"aicoding/internal/llm"
+	"bytemind/internal/llm"
 )
 
 type ApplyPatchTool struct{}

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"aicoding/internal/llm"
+	"bytemind/internal/llm"
 )
 
 type Anthropic struct {

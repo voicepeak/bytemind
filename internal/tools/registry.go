@@ -7,8 +7,8 @@ import (
 	"io"
 	"sort"
 
-	"aicoding/internal/llm"
-	"aicoding/internal/session"
+	"bytemind/internal/llm"
+	"bytemind/internal/session"
 )
 
 type ExecutionContext struct {
@@ -36,7 +36,6 @@ func DefaultRegistry() *Registry {
 	r.Add(WriteFileTool{})
 	r.Add(ReplaceInFileTool{})
 	r.Add(ApplyPatchTool{})
-	r.Add(UpdatePlanTool{})
 	r.Add(RunShellTool{})
 	return r
 }

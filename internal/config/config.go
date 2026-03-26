@@ -32,12 +32,12 @@ func Default(workspace string) Config {
 			Type:             "openai-compatible",
 			BaseURL:          "https://api.openai.com/v1",
 			Model:            "GPT-5.4",
-			APIKeyEnv:        "AICODING_API_KEY",
+			APIKeyEnv:        "BYTEMIND_API_KEY",
 			AnthropicVersion: "2023-06-01",
 		},
 		ApprovalPolicy: "on-request",
 		MaxIterations:  32,
-		SessionDir:     filepath.Join(workspace, ".aicoding", "sessions"),
+		SessionDir:     filepath.Join(workspace, ".bytemind", "sessions"),
 		Stream:         true,
 	}
 }
@@ -74,7 +74,7 @@ func (p ProviderConfig) ResolveAPIKey() string {
 	if env := strings.TrimSpace(p.APIKeyEnv); env != "" {
 		return strings.TrimSpace(os.Getenv(env))
 	}
-	return strings.TrimSpace(os.Getenv("AICODING_API_KEY"))
+	return strings.TrimSpace(os.Getenv("BYTEMIND_API_KEY"))
 }
 
 func resolveConfigPath(workspace, explicit string) (string, error) {
@@ -83,11 +83,12 @@ func resolveConfigPath(workspace, explicit string) (string, error) {
 	}
 
 	candidates := []string{
-		filepath.Join(workspace, "aicoding.config.json"),
-		filepath.Join(workspace, ".aicoding", "config.json"),
+		filepath.Join(workspace, "config.json"),
+		filepath.Join(workspace, ".bytemind", "config.json"),
+		filepath.Join(workspace, "bytemind.config.json"),
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".aicoding", "config.json"))
+		candidates = append(candidates, filepath.Join(home, ".bytemind", "config.json"))
 	}
 
 	for _, candidate := range candidates {
@@ -99,25 +100,25 @@ func resolveConfigPath(workspace, explicit string) (string, error) {
 }
 
 func applyEnv(cfg *Config) {
-	if value := strings.TrimSpace(os.Getenv("AICODING_PROVIDER_TYPE")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_PROVIDER_TYPE")); value != "" {
 		cfg.Provider.Type = value
 	}
-	if value := strings.TrimSpace(os.Getenv("AICODING_BASE_URL")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_BASE_URL")); value != "" {
 		cfg.Provider.BaseURL = value
 	}
-	if value := strings.TrimSpace(os.Getenv("AICODING_MODEL")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_MODEL")); value != "" {
 		cfg.Provider.Model = value
 	}
-	if value := strings.TrimSpace(os.Getenv("AICODING_API_KEY")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_API_KEY")); value != "" {
 		cfg.Provider.APIKey = value
 	}
-	if value := strings.TrimSpace(os.Getenv("AICODING_API_KEY_ENV")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_API_KEY_ENV")); value != "" {
 		cfg.Provider.APIKeyEnv = value
 	}
-	if value := strings.TrimSpace(os.Getenv("AICODING_APPROVAL_POLICY")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_APPROVAL_POLICY")); value != "" {
 		cfg.ApprovalPolicy = value
 	}
-	if value := strings.TrimSpace(os.Getenv("AICODING_STREAM")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_STREAM")); value != "" {
 		if parsed, err := strconv.ParseBool(value); err == nil {
 			cfg.Stream = parsed
 		}
@@ -136,7 +137,7 @@ func normalize(workspace string, cfg *Config) error {
 		return errors.New("provider.model is required")
 	}
 	if cfg.Provider.APIKeyEnv == "" {
-		cfg.Provider.APIKeyEnv = "AICODING_API_KEY"
+		cfg.Provider.APIKeyEnv = "BYTEMIND_API_KEY"
 	}
 	if cfg.Provider.AnthropicVersion == "" {
 		cfg.Provider.AnthropicVersion = "2023-06-01"
@@ -155,7 +156,7 @@ func normalize(workspace string, cfg *Config) error {
 		return errors.New("approval_policy must be one of always, on-request, never")
 	}
 	if cfg.SessionDir == "" {
-		cfg.SessionDir = filepath.Join(workspace, ".aicoding", "sessions")
+		cfg.SessionDir = filepath.Join(workspace, ".bytemind", "sessions")
 	}
 	if !filepath.IsAbs(cfg.SessionDir) {
 		cfg.SessionDir = filepath.Join(workspace, cfg.SessionDir)

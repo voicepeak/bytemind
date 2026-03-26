@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode"
 
-	"aicoding/internal/llm"
+	"bytemind/internal/llm"
 )
 
 type RunShellTool struct{}

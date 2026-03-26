@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"aicoding/internal/session"
+	"bytemind/internal/session"
 )
 
 func TestApplyPatchToolUpdatesFile(t *testing.T) {
@@ -138,39 +138,6 @@ func FuzzApplyStructuredPatchWithHeader(f *testing.F) {
 			t.Fatalf("updated content should remain text, got %q", updated)
 		}
 	})
-}
-
-func TestUpdatePlanToolUpdatesSessionState(t *testing.T) {
-	workspace := t.TempDir()
-	sess := session.New(workspace)
-	tool := UpdatePlanTool{}
-	payload, _ := json.Marshal(map[string]any{
-		"plan": []map[string]any{
-			{"step": "Inspect repository", "status": "completed"},
-			{"step": "Implement feature", "status": "in_progress"},
-		},
-	})
-
-	result, err := tool.Run(context.Background(), payload, &ExecutionContext{Workspace: workspace, Session: sess})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var parsed struct {
-		Plan []session.PlanItem `json:"plan"`
-	}
-	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
-		t.Fatal(err)
-	}
-	if len(sess.Plan) != 2 {
-		t.Fatalf("expected 2 plan items, got %d", len(sess.Plan))
-	}
-	if sess.Plan[1].Status != "in_progress" {
-		t.Fatalf("expected session plan to update, got %#v", sess.Plan)
-	}
-	if len(parsed.Plan) != 2 || parsed.Plan[0].Step != "Inspect repository" {
-		t.Fatalf("unexpected result payload: %s", result)
-	}
 }
 
 func TestApplyPatchToolRejectsAmbiguousRepeatedBlockWithoutHeader(t *testing.T) {

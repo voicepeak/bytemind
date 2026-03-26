@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"aicoding/internal/agent"
-	"aicoding/internal/config"
-	"aicoding/internal/provider"
-	"aicoding/internal/session"
-	"aicoding/internal/tools"
+	"bytemind/internal/agent"
+	"bytemind/internal/config"
+	"bytemind/internal/provider"
+	"bytemind/internal/session"
+	"bytemind/internal/tools"
 )
 
 const (
@@ -40,7 +40,6 @@ var slashCommands = []slashCommand{
 	{Name: "/sessions", Usage: "/sessions [limit]", Description: "List recent sessions"},
 	{Name: "/resume", Usage: "/resume <id>", Description: "Resume a recent session by id or prefix"},
 	{Name: "/new", Usage: "/new", Description: "Start a new session in the current workspace"},
-	{Name: "/plan", Usage: "/plan [create|add|start|done|pending|clear]", Description: "Show or manage the task plan"},
 	{Name: "/exit", Usage: "/exit", Description: "Exit the CLI"},
 	{Name: "/quit", Usage: "/quit", Description: "Exit the CLI"},
 }
@@ -174,7 +173,7 @@ func runOneShot(args []string, stdin io.Reader, stdout, stderr io.Writer) error 
 }
 
 func promptPrefix() string {
-	return "\n" + ansiBlue + "aicoding>" + ansiReset + " "
+	return "\n" + ansiBlue + "bytemind>" + ansiReset + " "
 }
 
 func bootstrap(configPath, modelOverride, sessionID, streamOverride, workspaceOverride string, maxIterationsOverride int, stdin io.Reader, stdout io.Writer) (*agent.Runner, *session.Store, *session.Session, error) {
@@ -206,7 +205,7 @@ func bootstrap(configPath, modelOverride, sessionID, streamOverride, workspaceOv
 
 	apiKey := cfg.Provider.ResolveAPIKey()
 	if apiKey == "" {
-		return nil, nil, nil, errors.New("missing API key; set AICODING_API_KEY or configure provider.api_key")
+		return nil, nil, nil, errors.New("missing API key; set BYTEMIND_API_KEY or configure provider.api_key")
 	}
 
 	store, err := session.NewStore(cfg.SessionDir)
@@ -297,234 +296,11 @@ func handleSlashCommand(stdout io.Writer, store *session.Store, current *session
 		fmt.Fprintf(stdout, "%snew session%s %s\n", ansiDim, ansiReset, next.ID)
 		printCurrentSession(stdout, next)
 		return next, false, true, nil
-	case "/plan":
-		return handlePlanCommand(stdout, store, current, input)
 	default:
 		fmt.Fprintf(stdout, "unknown command: %s\n", fields[0])
 		printCommandSuggestions(stdout, fields[0], commandNames())
 		return current, false, true, nil
 	}
-}
-
-func handlePlanCommand(stdout io.Writer, store *session.Store, current *session.Session, input string) (*session.Session, bool, bool, error) {
-	fields := strings.Fields(input)
-	if len(fields) == 1 {
-		printPlan(stdout, current)
-		return current, false, true, nil
-	}
-
-	sub := strings.ToLower(fields[1])
-	switch sub {
-	case "create":
-		raw := strings.TrimSpace(strings.TrimPrefix(input, "/plan create"))
-		steps := parsePlanSteps(raw)
-		if len(steps) == 0 {
-			return current, false, true, errors.New("usage: /plan create step one | step two | step three")
-		}
-		if len(steps) == 1 {
-			steps = generatePlanSteps(steps[0])
-		}
-		if err := replacePlan(store, current, steps); err != nil {
-			return current, false, true, err
-		}
-		fmt.Fprintf(stdout, "%splan%s created with %d steps\n", ansiDim, ansiReset, len(current.Plan))
-		printPlan(stdout, current)
-		return current, false, true, nil
-	case "add":
-		step := strings.TrimSpace(strings.TrimPrefix(input, "/plan add"))
-		if step == "" {
-			return current, false, true, errors.New("usage: /plan add <step>")
-		}
-		current.Plan = append(current.Plan, session.PlanItem{Step: step, Status: defaultAddedPlanStatus(current.Plan)})
-		if err := store.Save(current); err != nil {
-			return current, false, true, err
-		}
-		fmt.Fprintf(stdout, "%splan%s added step %d\n", ansiDim, ansiReset, len(current.Plan))
-		printPlan(stdout, current)
-		return current, false, true, nil
-	case "start":
-		index, err := parsePlanIndex(fields)
-		if err != nil {
-			return current, false, true, err
-		}
-		if err := setPlanStatus(current, index, "in_progress"); err != nil {
-			return current, false, true, err
-		}
-		if err := store.Save(current); err != nil {
-			return current, false, true, err
-		}
-		printPlan(stdout, current)
-		return current, false, true, nil
-	case "done":
-		index, err := parsePlanIndex(fields)
-		if err != nil {
-			return current, false, true, err
-		}
-		if err := setPlanStatus(current, index, "completed"); err != nil {
-			return current, false, true, err
-		}
-		if err := store.Save(current); err != nil {
-			return current, false, true, err
-		}
-		printPlan(stdout, current)
-		return current, false, true, nil
-	case "pending":
-		index, err := parsePlanIndex(fields)
-		if err != nil {
-			return current, false, true, err
-		}
-		if err := setPlanStatus(current, index, "pending"); err != nil {
-			return current, false, true, err
-		}
-		if err := store.Save(current); err != nil {
-			return current, false, true, err
-		}
-		printPlan(stdout, current)
-		return current, false, true, nil
-	case "clear":
-		current.Plan = current.Plan[:0]
-		if err := store.Save(current); err != nil {
-			return current, false, true, err
-		}
-		fmt.Fprintln(stdout, "Plan cleared.")
-		return current, false, true, nil
-	default:
-		goal := strings.TrimSpace(strings.TrimPrefix(input, "/plan"))
-		if goal == "" {
-			printPlan(stdout, current)
-			return current, false, true, nil
-		}
-		steps := generatePlanSteps(goal)
-		if err := replacePlan(store, current, steps); err != nil {
-			return current, false, true, err
-		}
-		fmt.Fprintf(stdout, "%splan%s created with %d steps\n", ansiDim, ansiReset, len(current.Plan))
-		printPlan(stdout, current)
-		return current, false, true, nil
-	}
-}
-
-func replacePlan(store *session.Store, current *session.Session, steps []string) error {
-	current.Plan = make([]session.PlanItem, 0, len(steps))
-	for i, step := range steps {
-		status := "pending"
-		if i == 0 {
-			status = "in_progress"
-		}
-		current.Plan = append(current.Plan, session.PlanItem{Step: step, Status: status})
-	}
-	return store.Save(current)
-}
-
-func parsePlanSteps(raw string) []string {
-	parts := strings.Split(raw, "|")
-	steps := make([]string, 0, len(parts))
-	for _, part := range parts {
-		step := strings.TrimSpace(part)
-		if step != "" {
-			steps = append(steps, step)
-		}
-	}
-	return steps
-}
-
-func generatePlanSteps(goal string) []string {
-	goal = strings.TrimSpace(goal)
-	if goal == "" {
-		return []string{"明确目标并梳理约束", "实现核心改动", "验证结果并整理说明"}
-	}
-
-	lower := strings.ToLower(goal)
-	switch {
-	case containsAny(lower, "扫雷", "小游戏", "game", "游戏"):
-		return []string{
-			"设计页面结构与棋盘交互",
-			"实现棋盘数据、雷区生成与初始化逻辑",
-			"实现点击展开、插旗与胜负判断",
-			"联调体验并验证功能完整性",
-		}
-	case containsAny(lower, "html", "页面", "前端", "ui", "界面", "react", "vue", "css", "javascript"):
-		return []string{
-			"梳理页面结构与交互需求",
-			"实现界面骨架与基础样式",
-			"实现核心交互与状态逻辑",
-			"联调并验证页面表现",
-		}
-	case containsAny(lower, "api", "接口", "后端", "服务", "server", "数据库"):
-		return []string{
-			"梳理接口需求与数据流",
-			"设计或调整数据结构与边界",
-			"实现核心接口与业务逻辑",
-			"补充验证并检查回归影响",
-		}
-	case containsAny(lower, "重构", "优化", "refactor", "cleanup"):
-		return []string{
-			"梳理现状与改造边界",
-			"调整结构并实现核心重构",
-			"清理兼容问题与冗余逻辑",
-			"验证行为一致性并整理结果",
-		}
-	case containsAny(lower, "测试", "test", "修复", "fix", "bug"):
-		return []string{
-			"定位问题与影响范围",
-			"实现修复或补充测试",
-			"运行验证并确认回归情况",
-		}
-	default:
-		return []string{
-			"理解目标并梳理相关上下文",
-			"设计实现方案与拆分步骤",
-			"完成核心实现或改动",
-			"验证结果并整理说明",
-		}
-	}
-}
-
-func containsAny(text string, keywords ...string) bool {
-	for _, keyword := range keywords {
-		if strings.Contains(text, keyword) {
-			return true
-		}
-	}
-	return false
-}
-
-func parsePlanIndex(fields []string) (int, error) {
-	if len(fields) < 3 {
-		return 0, errors.New("plan command requires a 1-based step index")
-	}
-	index, err := strconv.Atoi(fields[2])
-	if err != nil || index <= 0 {
-		return 0, errors.New("plan step index must be a positive integer")
-	}
-	return index - 1, nil
-}
-
-func defaultAddedPlanStatus(plan []session.PlanItem) string {
-	for _, item := range plan {
-		if item.Status == "in_progress" {
-			return "pending"
-		}
-	}
-	return "in_progress"
-}
-
-func setPlanStatus(current *session.Session, index int, status string) error {
-	if len(current.Plan) == 0 {
-		return errors.New("no active plan")
-	}
-	if index < 0 || index >= len(current.Plan) {
-		return fmt.Errorf("plan step %d is out of range", index+1)
-	}
-	if status == "in_progress" {
-		for i := range current.Plan {
-			if i != index && current.Plan[i].Status == "in_progress" {
-				current.Plan[i].Status = "pending"
-			}
-		}
-	}
-	current.Plan[index].Status = status
-	return nil
 }
 
 func completeSlashCommand(input string) (string, []string) {
@@ -574,13 +350,6 @@ func printHelp(w io.Writer) {
 	for _, cmd := range slashCommands {
 		fmt.Fprintf(w, "%-42s %s\n", cmd.Usage, cmd.Description)
 	}
-	fmt.Fprintln(w, "  /plan create step one | step two | step three")
-	fmt.Fprintln(w, "  /plan <natural language goal>")
-	fmt.Fprintln(w, "  /plan add <step>")
-	fmt.Fprintln(w, "  /plan start <index>")
-	fmt.Fprintln(w, "  /plan done <index>")
-	fmt.Fprintln(w, "  /plan pending <index>")
-	fmt.Fprintln(w, "  /plan clear")
 }
 
 func printCurrentSession(w io.Writer, sess *session.Session) {
@@ -664,19 +433,9 @@ func sameWorkspace(a, b string) bool {
 	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
 }
 
-func printPlan(w io.Writer, sess *session.Session) {
-	if len(sess.Plan) == 0 {
-		fmt.Fprintln(w, "No active plan.")
-		return
-	}
-	for i, item := range sess.Plan {
-		fmt.Fprintf(w, "%d. [%s] %s\n", i+1, item.Status, item.Step)
-	}
-}
-
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "aicoding chat [-config path] [-model name] [-session id] [-stream true|false] [-workspace path] [-max-iterations n]")
-	fmt.Fprintln(w, "aicoding run -prompt \"task\" [-config path] [-model name] [-session id] [-stream true|false] [-workspace path] [-max-iterations n]")
+	fmt.Fprintln(w, "bytemind chat [-config path] [-model name] [-session id] [-stream true|false] [-workspace path] [-max-iterations n]")
+	fmt.Fprintln(w, "bytemind run -prompt \"task\" [-config path] [-model name] [-session id] [-stream true|false] [-workspace path] [-max-iterations n]")
 }
 
 func printCommandSuggestions(w io.Writer, input string, suggestions []string) {
