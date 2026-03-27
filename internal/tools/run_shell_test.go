@@ -3,6 +3,7 @@ package tools
 import (
 	"bytes"
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -155,7 +156,11 @@ func TestRequireApprovalReturnsClearDenialMessage(t *testing.T) {
 
 func TestRunShellToolReturnsTimeoutError(t *testing.T) {
 	tool := RunShellTool{}
-	_, err := tool.Run(context.Background(), []byte(`{"command":"Start-Sleep -Seconds 2","timeout_seconds":1}`), &ExecutionContext{
+	command := "sleep 2"
+	if runtime.GOOS == "windows" {
+		command = "Start-Sleep -Seconds 2"
+	}
+	_, err := tool.Run(context.Background(), []byte(`{"command":"`+command+`","timeout_seconds":1}`), &ExecutionContext{
 		Workspace:      t.TempDir(),
 		ApprovalPolicy: "never",
 		Stdin:          strings.NewReader(""),

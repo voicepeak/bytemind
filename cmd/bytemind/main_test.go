@@ -100,13 +100,14 @@ func TestHandleSlashCommandResumesSessionWithinWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	current := session.New(`E:\\repo`)
+	workspace := t.TempDir()
+	current := session.New(workspace)
 	current.ID = "current"
 	if err := store.Save(current); err != nil {
 		t.Fatal(err)
 	}
 
-	resumed := session.New(`E:\\repo\\.`)
+	resumed := session.New(filepath.Join(workspace, "."))
 	resumed.ID = "resume-me"
 	if err := store.Save(resumed); err != nil {
 		t.Fatal(err)
@@ -129,7 +130,8 @@ func TestHandleSlashCommandResumesSessionWithinWorkspace(t *testing.T) {
 }
 
 func TestSameWorkspaceNormalizesPaths(t *testing.T) {
-	if !sameWorkspace(`E:\\Repo`, `E:\\Repo\\.`) {
+	workspace := t.TempDir()
+	if !sameWorkspace(workspace, filepath.Join(workspace, ".")) {
 		t.Fatal("expected normalized paths to match")
 	}
 }

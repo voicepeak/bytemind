@@ -141,7 +141,7 @@ func promptForApproval(command, reason string, execCtx *ExecutionContext) error 
 			return err
 		}
 		if !approved {
-			return errors.New("shell command not approved")
+			return errors.New("shell command was not run because approval was denied")
 		}
 		return nil
 	}
