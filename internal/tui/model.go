@@ -300,8 +300,6 @@ func (m model) View() string {
 		return renderModal(m.width, m.height, m.renderHelpModal())
 	case m.sessionsOpen:
 		return renderModal(m.width, m.height, m.renderSessionsModal())
-	case m.approval != nil:
-		return renderModal(m.width, m.height, m.renderApprovalModal())
 	case m.commandOpen:
 		return renderModal(m.width, m.height, m.renderCommandPalette())
 	default:
@@ -742,11 +740,12 @@ func (m model) renderFooter() string {
 	inputBorder := m.inputBorderStyle().
 		Width(m.chatPanelInnerWidth()).
 		Render(m.input.View())
-	content := lipgloss.JoinVertical(
-		lipgloss.Left,
-		inputBorder,
-		mutedStyle.Width(m.chatPanelInnerWidth()).Render(hint),
-	)
+	parts := make([]string, 0, 3)
+	if m.approval != nil {
+		parts = append(parts, m.renderApprovalBanner())
+	}
+	parts = append(parts, inputBorder, mutedStyle.Width(m.chatPanelInnerWidth()).Render(hint))
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	return panelStyle.Width(m.chatPanelWidth()).Render(content)
 }
 
@@ -780,21 +779,16 @@ func (m model) renderHelpModal() string {
 	)
 }
 
-func (m model) renderApprovalModal() string {
-	modalWidth := approvalModalWidth(m.width)
-	commandWidth := approvalCommandWidth(modalWidth)
+func (m model) renderApprovalBanner() string {
+	width := max(24, m.chatPanelInnerWidth())
+	commandWidth := max(20, width-4)
 	lines := []string{
-		modalTitleStyle.Render("审批请求"),
-		"",
-		mutedStyle.Render("需要确认后才能继续执行以下命令。"),
-		"",
-		"原因: " + m.approval.Reason,
-		"",
+		accentStyle.Render("需要你的确认"),
+		mutedStyle.Render("原因: " + trimPreview(m.approval.Reason, commandWidth)),
 		codeStyle.Width(commandWidth).Render(m.approval.Command),
-		"",
 		mutedStyle.Render("Y / Enter 同意    N / Esc 拒绝"),
 	}
-	return modalBoxStyle.Width(modalWidth).Render(strings.Join(lines, "\n"))
+	return approvalBannerStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 
 func (m model) renderCommandPalette() string {
@@ -1092,14 +1086,6 @@ func chatBubbleWidth(item chatEntry, width int) int {
 	return bubbleWidth
 }
 
-func approvalModalWidth(screenWidth int) int {
-	return min(68, max(36, screenWidth-28))
-}
-
-func approvalCommandWidth(modalWidth int) int {
-	return max(24, modalWidth-modalBoxStyle.GetHorizontalFrameSize()-2)
-}
-
 func summarizeTool(name, payload string) (string, []string, string) {
 	var envelope struct {
 		OK    *bool  `json:"ok"`
@@ -1309,7 +1295,7 @@ func (m model) helpText() string {
 		"启动页是一个居中的 Logo 加输入框。",
 		"主界面只显示用户消息和助手回复，不把聊天内容塞到旁边区域。",
 		"顶部状态栏会显示工作区、provider、model、审批策略和当前状态。",
-		"如果需要 shell 审批，会以弹窗方式暂停等待确认。",
+		"如果需要 shell 审批，会在聊天输入区上方显示确认条等待确认。",
 	}, "\n")
 }
 

@@ -105,6 +105,12 @@ var (
 			Padding(0, 1).
 			Background(lipgloss.Color("#17202B"))
 
+	approvalBannerStyle = lipgloss.NewStyle().
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderForeground(colorTool).
+				Background(lipgloss.Color("#17140D")).
+				Padding(0, 1)
+
 	modalBoxStyle = lipgloss.NewStyle().
 			Background(colorPanel).
 			BorderStyle(lipgloss.NormalBorder()).

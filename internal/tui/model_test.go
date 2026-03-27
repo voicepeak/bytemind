@@ -9,7 +9,6 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 func TestHandleMouseScrollsViewport(t *testing.T) {
@@ -155,20 +154,29 @@ func TestAssistantChatBubbleUsesFullAvailableWidth(t *testing.T) {
 	}
 }
 
-func TestApprovalModalUsesCompactWidth(t *testing.T) {
+func TestApprovalBannerRendersAboveInput(t *testing.T) {
+	input := textarea.New()
 	m := model{
 		width: 120,
+		input: input,
 		approval: &approvalPrompt{
 			Command: "go test ./internal/tui",
 			Reason:  "run tests",
 		},
 	}
 
-	modal := m.renderApprovalModal()
-	if got := lipgloss.Width(modal); got > 72 {
-		t.Fatalf("expected compact approval modal width, got %d", got)
+	footer := m.renderFooter()
+	for _, want := range []string{
+		"需要你的确认",
+		"原因: run tests",
+		"go test ./internal/tui",
+		"Y / Enter 同意    N / Esc 拒绝",
+	} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("expected approval banner to contain %q", want)
+		}
 	}
-	if !strings.Contains(modal, "审批请求") {
-		t.Fatalf("expected localized approval title")
+	if strings.Contains(footer, "审批请求") {
+		t.Fatalf("did not expect old centered approval modal title in footer")
 	}
 }
