@@ -375,7 +375,7 @@ func printSessions(w io.Writer, store *session.Store, currentID string, limit in
 		if preview == "" {
 			preview = "(no user prompt yet)"
 		}
-		fmt.Fprintf(w, "%s %s  %s  %2d msgs  %s\n", marker, shortID(item.ID), item.UpdatedAt.Local().Format("2006-01-02 15:04"), item.MessageCount, preview)
+		fmt.Fprintf(w, "%s %s  %s  %2d msgs  %s\n", marker, item.ID, item.UpdatedAt.Local().Format("2006-01-02 15:04"), item.MessageCount, preview)
 		fmt.Fprintf(w, "%s    %s%s\n", ansiGray, item.Workspace, ansiReset)
 	}
 	return nil
@@ -448,11 +448,4 @@ func commandNames() []string {
 		items = append(items, cmd.Name)
 	}
 	return items
-}
-
-func shortID(id string) string {
-	if len(id) <= 16 {
-		return id
-	}
-	return id[:16]
 }

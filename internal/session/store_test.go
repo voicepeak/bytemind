@@ -95,3 +95,14 @@ func TestStoreListReturnsRecentSessions(t *testing.T) {
 		t.Fatalf("expected limited list to keep newest summary, got %#v", limited)
 	}
 }
+
+func TestSummarizeMessagePreservesUTF8WhenTruncating(t *testing.T) {
+	text := "继续刚才的上下文，给我列一下当前主 MVP 最关键的测试点"
+	got := summarizeMessage(text, 24)
+	if strings.ContainsRune(got, '\uFFFD') {
+		t.Fatalf("expected valid utf-8 preview, got %q", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected truncated preview to end with ellipsis, got %q", got)
+	}
+}
