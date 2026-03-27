@@ -1,0 +1,7 @@
+.gocache/
+.gomodcache/
+.bytemind/
+/config.json
+.installtest*/
+bytemind.exe
+*.test
