@@ -74,7 +74,7 @@ func TestRenderFooterDoesNotAdvertiseHistory(t *testing.T) {
 func TestCommandPaletteListsQuitCommand(t *testing.T) {
 	found := false
 	for _, item := range commandItems {
-		if item.Name == "/quit" {
+		if item.Name == "/quit" && item.Kind == "command" {
 			found = true
 			break
 		}
@@ -89,6 +89,74 @@ func TestCommandPaletteDoesNotListExitAlias(t *testing.T) {
 		if item.Name == "/exit" {
 			t.Fatalf("did not expect command palette to include /exit")
 		}
+	}
+}
+
+func TestFilteredCommandsShowsRootSelectorGroups(t *testing.T) {
+	input := textarea.New()
+	input.SetValue("/")
+	m := model{input: input}
+
+	items := m.filteredCommands()
+	usages := make([]string, 0, len(items))
+	for _, item := range items {
+		usages = append(usages, item.Usage)
+	}
+
+	for _, want := range []string{"/help", "session ▸", "plan ▸", "/new", "/quit"} {
+		if !containsString(usages, want) {
+			t.Fatalf("expected root selector to contain %q, got %v", want, usages)
+		}
+	}
+	for _, unwanted := range []string{"/plan add <step>", "/sessions [limit]"} {
+		if containsString(usages, unwanted) {
+			t.Fatalf("did not expect root selector to contain %q", unwanted)
+		}
+	}
+}
+
+func TestFilteredCommandsShowsPlanChildrenOnly(t *testing.T) {
+	input := textarea.New()
+	input.SetValue("/")
+	m := model{
+		input:        input,
+		commandGroup: "plan",
+	}
+
+	items := m.filteredCommands()
+	usages := make([]string, 0, len(items))
+	for _, item := range items {
+		usages = append(usages, item.Usage)
+	}
+
+	for _, want := range []string{"/plan", "/plan add <step>", "/plan clear"} {
+		if !containsString(usages, want) {
+			t.Fatalf("expected plan selector to contain %q, got %v", want, usages)
+		}
+	}
+	for _, unwanted := range []string{"/session", "/sessions [limit]", "session ▸"} {
+		if containsString(usages, unwanted) {
+			t.Fatalf("did not expect plan selector to contain %q", unwanted)
+		}
+	}
+}
+
+func TestCommandPaletteEscReturnsToRootSelector(t *testing.T) {
+	input := textarea.New()
+	input.SetValue("/")
+	m := model{
+		input:        input,
+		commandOpen:  true,
+		commandGroup: "plan",
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	updated := got.(model)
+	if updated.commandGroup != "" {
+		t.Fatalf("expected esc to return to root selector")
+	}
+	if !updated.commandOpen {
+		t.Fatalf("expected command palette to remain open at root level")
 	}
 }
 
@@ -256,4 +324,13 @@ func TestFinishAssistantMessageDoesNotAppendDuplicateCard(t *testing.T) {
 	if m.chatItems[0].Status != "final" {
 		t.Fatalf("expected assistant card to be marked final, got %q", m.chatItems[0].Status)
 	}
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }

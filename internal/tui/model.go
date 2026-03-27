@@ -43,6 +43,8 @@ type commandItem struct {
 	Name        string
 	Usage       string
 	Description string
+	Group       string
+	Kind        string
 }
 
 type toolRun struct {
@@ -82,19 +84,21 @@ type sessionsLoadedMsg struct {
 }
 
 var commandItems = []commandItem{
-	{Name: "/help", Usage: "/help", Description: "打开帮助面板，查看当前可用命令和基础用法。"},
-	{Name: "/session", Usage: "/session", Description: "查看当前会话 ID、工作区路径和最近更新时间。"},
-	{Name: "/sessions", Usage: "/sessions [limit]", Description: "列出最近的历史会话，方便恢复之前的上下文。"},
-	{Name: "/resume", Usage: "/resume <id>", Description: "按完整 ID 或前缀恢复一个已有会话。"},
-	{Name: "/new", Usage: "/new", Description: "在当前工作区创建一个全新的持久会话。"},
-	{Name: "/plan", Usage: "/plan", Description: "查看当前会话里保存的任务计划。"},
-	{Name: "/plan create", Usage: "/plan create step one | step two | step three", Description: "按你给出的步骤创建一份新的多步骤计划。"},
-	{Name: "/plan add", Usage: "/plan add <step>", Description: "给当前计划继续追加一个步骤。"},
-	{Name: "/plan start", Usage: "/plan start <index>", Description: "把指定步骤标记为进行中。"},
-	{Name: "/plan done", Usage: "/plan done <index>", Description: "把指定步骤标记为已完成。"},
-	{Name: "/plan pending", Usage: "/plan pending <index>", Description: "把指定步骤重新标记为待处理。"},
-	{Name: "/plan clear", Usage: "/plan clear", Description: "清空当前会话中的任务计划。"},
-	{Name: "/quit", Usage: "/quit", Description: "退出当前 TUI 界面。"},
+	{Name: "/help", Usage: "/help", Description: "打开帮助面板，查看当前可用命令和基础用法。", Kind: "command"},
+	{Name: "session", Usage: "session ▸", Description: "查看当前会话、历史会话和恢复会话。", Group: "session", Kind: "group"},
+	{Name: "plan", Usage: "plan ▸", Description: "查看和编辑当前计划。", Group: "plan", Kind: "group"},
+	{Name: "/new", Usage: "/new", Description: "在当前工作区创建一个全新的持久会话。", Kind: "command"},
+	{Name: "/quit", Usage: "/quit", Description: "退出当前 TUI 界面。", Kind: "command"},
+	{Name: "/session", Usage: "/session", Description: "查看当前会话 ID、工作区路径和最近更新时间。", Group: "session", Kind: "command"},
+	{Name: "/sessions", Usage: "/sessions [limit]", Description: "列出最近的历史会话，方便恢复之前的上下文。", Group: "session", Kind: "command"},
+	{Name: "/resume", Usage: "/resume <id>", Description: "按完整 ID 或前缀恢复一个已有会话。", Group: "session", Kind: "command"},
+	{Name: "/plan", Usage: "/plan", Description: "查看当前会话里保存的任务计划。", Group: "plan", Kind: "command"},
+	{Name: "/plan create", Usage: "/plan create step one | step two | step three", Description: "按你给出的步骤创建一份新的多步骤计划。", Group: "plan", Kind: "command"},
+	{Name: "/plan add", Usage: "/plan add <step>", Description: "给当前计划继续追加一个步骤。", Group: "plan", Kind: "command"},
+	{Name: "/plan start", Usage: "/plan start <index>", Description: "把指定步骤标记为进行中。", Group: "plan", Kind: "command"},
+	{Name: "/plan done", Usage: "/plan done <index>", Description: "把指定步骤标记为已完成。", Group: "plan", Kind: "command"},
+	{Name: "/plan pending", Usage: "/plan pending <index>", Description: "把指定步骤重新标记为待处理。", Group: "plan", Kind: "command"},
+	{Name: "/plan clear", Usage: "/plan clear", Description: "清空当前会话中的任务计划。", Group: "plan", Kind: "command"},
 }
 
 type model struct {
@@ -122,6 +126,7 @@ type model struct {
 	sessionsOpen   bool
 	helpOpen       bool
 	commandOpen    bool
+	commandGroup   string
 	commandCursor  int
 	busy           bool
 	streamingIndex int
@@ -347,6 +352,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.commandOpen {
 		switch msg.String() {
 		case "esc":
+			if m.commandGroup != "" {
+				m.commandGroup = ""
+				m.commandCursor = 0
+				m.setInputValue("/")
+				return m, nil
+			}
 			m.commandOpen = false
 			return m, nil
 		case "up", "k":
@@ -366,6 +377,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := items[m.commandCursor]
+			if selected.Kind == "group" {
+				m.commandGroup = selected.Group
+				m.commandCursor = 0
+				m.setInputValue("/")
+				m.statusNote = selected.Description
+				return m, nil
+			}
 			m.commandOpen = false
 			if shouldExecuteFromPalette(selected) {
 				m.input.Reset()
@@ -805,10 +823,16 @@ func (m model) renderApprovalBanner() string {
 
 func (m model) renderCommandPalette() string {
 	items := m.filteredCommands()
+	title := "命令选择器"
+	hint := "使用上下方向键选择，按 Enter 插入，按 Esc 关闭。"
+	if m.commandGroup != "" {
+		title = "命令选择器 / " + m.commandGroup
+		hint = "使用上下方向键选择，按 Enter 插入，按 Esc 返回上一级。"
+	}
 	lines := []string{
-		modalTitleStyle.Render("可用命令"),
-		mutedStyle.Render("使用上下方向键选择，按 Enter 插入，按 Esc 关闭。"),
-		mutedStyle.Render("这里只显示当前版本已经真正支持的命令。"),
+		modalTitleStyle.Render(title),
+		mutedStyle.Render(hint),
+		mutedStyle.Render("只展示当前真正支持的命令，并按层级收纳。"),
 		"",
 	}
 	if len(items) == 0 {
@@ -1437,6 +1461,11 @@ func (m *model) syncCommandPalette() {
 	value := strings.TrimSpace(m.input.Value())
 	if strings.HasPrefix(value, "/") {
 		m.commandOpen = true
+		if inferred := inferCommandGroup(value); inferred != "" {
+			m.commandGroup = inferred
+		} else if value != "/" {
+			m.commandGroup = ""
+		}
 		items := m.filteredCommands()
 		if len(items) == 0 {
 			m.commandCursor = 0
@@ -1446,17 +1475,26 @@ func (m *model) syncCommandPalette() {
 		return
 	}
 	m.commandOpen = false
+	m.commandGroup = ""
 	m.commandCursor = 0
 }
 
 func (m model) filteredCommands() []commandItem {
 	value := strings.TrimSpace(m.input.Value())
-	if value == "" || value == "/" {
-		return commandItems
+	group := m.commandGroup
+	if group == "" {
+		group = inferCommandGroup(value)
 	}
-	result := make([]commandItem, 0, len(commandItems))
-	for _, item := range commandItems {
-		if strings.HasPrefix(item.Name, value) || strings.HasPrefix(item.Usage, value) {
+
+	items := visibleCommandItems(group)
+	query := commandFilterQuery(value, group)
+	if query == "" {
+		return items
+	}
+
+	result := make([]commandItem, 0, len(items))
+	for _, item := range items {
+		if matchesCommandItem(item, query) {
 			result = append(result, item)
 		}
 	}
@@ -1506,6 +1544,62 @@ func (m model) helpText() string {
 		"顶部状态栏会显示工作区、provider、model、审批策略和当前状态。",
 		"如果需要 shell 审批，会在聊天输入区上方显示确认条等待确认。",
 	}, "\n")
+}
+
+func visibleCommandItems(group string) []commandItem {
+	items := make([]commandItem, 0, len(commandItems))
+	for _, item := range commandItems {
+		if group == "" {
+			if item.Kind == "group" || item.Group == "" {
+				items = append(items, item)
+			}
+			continue
+		}
+		if item.Kind == "command" && item.Group == group {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func inferCommandGroup(value string) string {
+	switch {
+	case strings.HasPrefix(value, "/plan"):
+		return "plan"
+	case strings.HasPrefix(value, "/session"),
+		strings.HasPrefix(value, "/sessions"),
+		strings.HasPrefix(value, "/resume"):
+		return "session"
+	default:
+		return ""
+	}
+}
+
+func commandFilterQuery(value, group string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "/" {
+		return ""
+	}
+	value = strings.TrimPrefix(value, "/")
+	if group != "" {
+		if strings.HasPrefix(value, group) {
+			value = strings.TrimSpace(strings.TrimPrefix(value, group))
+		}
+	}
+	return strings.ToLower(strings.TrimSpace(strings.TrimPrefix(value, "/")))
+}
+
+func matchesCommandItem(item commandItem, query string) bool {
+	if query == "" {
+		return true
+	}
+	query = strings.ToLower(query)
+	name := strings.ToLower(strings.TrimPrefix(item.Name, "/"))
+	usage := strings.ToLower(strings.TrimPrefix(item.Usage, "/"))
+	desc := strings.ToLower(item.Description)
+	return strings.HasPrefix(name, query) ||
+		strings.HasPrefix(usage, query) ||
+		strings.Contains(desc, query)
 }
 
 func (m model) chatPanelWidth() int {
