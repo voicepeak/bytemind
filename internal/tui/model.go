@@ -28,7 +28,7 @@ const (
 	commandPageSize     = 3
 	pasteSubmitGuard    = 400 * time.Millisecond
 	assistantLabel      = "Bytemind"
-	thinkingLabel       = "Bytemind thinking"
+	thinkingLabel       = "Bytemind"
 	chatTitleLabel      = "Bytemind Chat"
 	tuiTitleLabel       = "Bytemind TUI"
 )
@@ -819,12 +819,7 @@ func (m *model) finalizeAssistantTurnForTool(toolName string) {
 	if m.streamingIndex >= 0 && m.streamingIndex < len(m.chatItems) {
 		item := &m.chatItems[m.streamingIndex]
 		if item.Kind == "assistant" {
-			if item.Status == "pending" ||
-				item.Body == m.thinkingText() ||
-				strings.TrimSpace(item.Body) == "" ||
-				(item.Status == "thinking" && strings.EqualFold(strings.TrimSpace(item.Body), "thinking")) {
-				item.Body = assistantToolIntro(toolName)
-			}
+			item.Body = assistantToolIntro(toolName)
 			item.Title = thinkingLabel
 			item.Status = "thinking"
 			m.streamingIndex = -1
@@ -1679,6 +1674,25 @@ func summarizeArgs(raw string) string {
 		return "default arguments"
 	}
 	return compact(raw, 88)
+}
+
+func legacyAssistantToolIntro(toolName string) string {
+	if strings.TrimSpace(toolName) == "" {
+		return "我先查看一下相关内容。"
+	}
+	return fmt.Sprintf("我先调用 `%s` 看一下相关内容。", toolName)
+}
+
+func legacyAssistantToolFollowUp(toolName, summary, status string) string {
+	if strings.TrimSpace(summary) == "" {
+		return "我拿到工具结果了，继续整理一下。"
+	}
+	switch status {
+	case "error", "warn":
+		return fmt.Sprintf("`%s` 已返回结果，我先根据这个情况继续判断。", toolName)
+	default:
+		return fmt.Sprintf("`%s` 已经执行完了，我继续往下整理。", toolName)
+	}
 }
 
 func assistantToolIntro(toolName string) string {
