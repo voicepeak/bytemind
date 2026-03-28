@@ -160,6 +160,29 @@ func TestHandleMouseWheelScrollsLandingInputWhenPointerIsOverInput(t *testing.T)
 	}
 }
 
+func TestCtrlLFromLandingOpensSessions(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create session store: %v", err)
+	}
+
+	m := model{
+		screen:       screenLanding,
+		sessionLimit: defaultSessionLimit,
+		store:        store,
+	}
+
+	got, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlL})
+	updated := got.(model)
+
+	if !updated.sessionsOpen {
+		t.Fatalf("expected ctrl+l on landing screen to open sessions")
+	}
+	if cmd == nil {
+		t.Fatalf("expected ctrl+l on landing screen to trigger session loading")
+	}
+}
+
 func TestWindowSizeMsgUpdatesViewportDimensions(t *testing.T) {
 	input := textarea.New()
 	m := model{

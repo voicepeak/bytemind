@@ -475,10 +475,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "ctrl+l":
-		if !m.busy && m.screen == screenChat {
+		if !m.busy {
 			m.sessionsOpen = true
 		}
-		return m, nil
+		return m, m.loadSessionsCmd()
 	case "ctrl+n":
 		if !m.busy && m.screen == screenChat {
 			if err := m.newSession(); err != nil {
@@ -1033,7 +1033,7 @@ func (m model) renderLanding() string {
 	if m.commandOpen {
 		parts = append(parts, m.renderCommandPalette(), "")
 	}
-	parts = append(parts, inputBox, "", mutedStyle.Render("Type / for supported commands, Ctrl+C to quit."))
+	parts = append(parts, inputBox, "", mutedStyle.Render("Type / for supported commands, Ctrl+L for sessions, Ctrl+C to quit."))
 	content := lipgloss.JoinVertical(lipgloss.Center, parts...)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 }
