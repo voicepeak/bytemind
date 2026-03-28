@@ -3,15 +3,16 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 var (
-	colorPanel   = lipgloss.Color("#0F1720")
-	colorBorder  = lipgloss.Color("#314156")
-	colorAccent  = lipgloss.Color("#7DD3FC")
-	colorHotPink = lipgloss.Color("#F05AA6")
-	colorUser    = lipgloss.Color("#F6AD7B")
-	colorTool    = lipgloss.Color("#F9D67A")
-	colorMuted   = lipgloss.Color("#93A4B8")
-	colorDanger  = lipgloss.Color("#F7A8A8")
-	colorSuccess = lipgloss.Color("#8EE6A0")
+	colorPanel    = lipgloss.Color("#0F1720")
+	colorBorder   = lipgloss.Color("#314156")
+	colorAccent   = lipgloss.Color("#7DD3FC")
+	colorHotPink  = lipgloss.Color("#F05AA6")
+	colorThinking = lipgloss.Color("#C3A6FF")
+	colorUser     = lipgloss.Color("#F6AD7B")
+	colorTool     = lipgloss.Color("#F9D67A")
+	colorMuted    = lipgloss.Color("#93A4B8")
+	colorDanger   = lipgloss.Color("#F7A8A8")
+	colorSuccess  = lipgloss.Color("#8EE6A0")
 )
 
 var (
@@ -83,6 +84,16 @@ var (
 				BorderForeground(colorAccent).
 				Padding(0, 1).
 				Background(lipgloss.Color("#111C27"))
+
+	chatThinkingStyle = lipgloss.NewStyle().
+				BorderLeft(true).
+				BorderForeground(colorThinking).
+				Padding(0, 1).
+				Background(lipgloss.Color("#161326"))
+
+	thinkingBodyStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#D9CCFF")).
+				Faint(true)
 
 	chatUserStyle = lipgloss.NewStyle().
 			BorderLeft(true).

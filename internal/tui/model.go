@@ -28,6 +28,7 @@ const (
 	commandPageSize     = 3
 	pasteSubmitGuard    = 400 * time.Millisecond
 	assistantLabel      = "Bytemind"
+	thinkingLabel       = "Bytemind thinking"
 	chatTitleLabel      = "Bytemind Chat"
 	tuiTitleLabel       = "Bytemind TUI"
 )
@@ -681,9 +682,9 @@ func (m model) submitPrompt(value string) (tea.Model, tea.Cmd) {
 	})
 	m.chatItems = append(m.chatItems, chatEntry{
 		Kind:   "assistant",
-		Title:  assistantLabel,
+		Title:  thinkingLabel,
 		Body:   m.thinkingText(),
-		Status: "pending",
+		Status: "thinking",
 	})
 	m.streamingIndex = len(m.chatItems) - 1
 	m.statusNote = "Request sent to LLM. Waiting for response..."
@@ -754,7 +755,10 @@ func (m *model) appendAssistantDelta(delta string) {
 	}
 	if m.streamingIndex >= 0 && m.streamingIndex < len(m.chatItems) {
 		current := m.chatItems[m.streamingIndex].Body
-		if m.chatItems[m.streamingIndex].Status == "pending" || current == m.thinkingText() {
+		if m.chatItems[m.streamingIndex].Status == "pending" ||
+			m.chatItems[m.streamingIndex].Status == "thinking" ||
+			current == m.thinkingText() {
+			m.chatItems[m.streamingIndex].Title = assistantLabel
 			m.chatItems[m.streamingIndex].Body = delta
 		} else if strings.HasPrefix(delta, current) {
 			m.chatItems[m.streamingIndex].Body = delta
@@ -781,14 +785,24 @@ func (m *model) finishAssistantMessage(content string) {
 		return
 	}
 	if m.streamingIndex >= 0 && m.streamingIndex < len(m.chatItems) {
-		m.chatItems[m.streamingIndex].Body = content
-		m.chatItems[m.streamingIndex].Status = "final"
-		m.streamingIndex = -1
-		return
+		current := &m.chatItems[m.streamingIndex]
+		if current.Status == "thinking" &&
+			strings.TrimSpace(current.Body) != "" &&
+			current.Body != m.thinkingText() {
+			current.Title = thinkingLabel
+			current.Status = "thinking"
+			m.streamingIndex = -1
+		} else {
+			current.Title = assistantLabel
+			current.Body = content
+			current.Status = "final"
+			m.streamingIndex = -1
+			return
+		}
 	}
 	if len(m.chatItems) > 0 {
 		last := &m.chatItems[len(m.chatItems)-1]
-		if last.Kind == "assistant" && strings.TrimSpace(last.Body) == content {
+		if last.Kind == "assistant" && last.Title == assistantLabel && strings.TrimSpace(last.Body) == content {
 			last.Status = "final"
 			return
 		}
@@ -809,10 +823,14 @@ func (m *model) finalizeAssistantTurnForTool(toolName string) {
 	if m.streamingIndex >= 0 && m.streamingIndex < len(m.chatItems) {
 		item := &m.chatItems[m.streamingIndex]
 		if item.Kind == "assistant" {
-			if item.Status == "pending" || item.Body == m.thinkingText() || strings.TrimSpace(item.Body) == "" {
+			if item.Status == "pending" ||
+				item.Body == m.thinkingText() ||
+				strings.TrimSpace(item.Body) == "" ||
+				(item.Status == "thinking" && strings.EqualFold(strings.TrimSpace(item.Body), "thinking")) {
 				item.Body = assistantToolIntro(toolName)
 			}
-			item.Status = "final"
+			item.Title = thinkingLabel
+			item.Status = "thinking"
 			m.streamingIndex = -1
 			return
 		}
@@ -825,9 +843,9 @@ func (m *model) finalizeAssistantTurnForTool(toolName string) {
 	}
 	m.appendChat(chatEntry{
 		Kind:   "assistant",
-		Title:  assistantLabel,
+		Title:  thinkingLabel,
 		Body:   assistantToolIntro(toolName),
-		Status: "final",
+		Status: "thinking",
 	})
 }
 
@@ -839,15 +857,16 @@ func (m *model) appendAssistantToolFollowUp(toolName, summary, status string) {
 	if len(m.chatItems) > 0 {
 		last := &m.chatItems[len(m.chatItems)-1]
 		if last.Kind == "assistant" && strings.TrimSpace(last.Body) == step {
-			last.Status = "final"
+			last.Title = thinkingLabel
+			last.Status = "thinking"
 			return
 		}
 	}
 	m.appendChat(chatEntry{
 		Kind:   "assistant",
-		Title:  assistantLabel,
+		Title:  thinkingLabel,
 		Body:   step,
-		Status: "final",
+		Status: "thinking",
 	})
 }
 
@@ -878,9 +897,11 @@ func (m *model) updateThinkingCard() {
 		return
 	}
 	item := &m.chatItems[m.streamingIndex]
-	if item.Kind != "assistant" || item.Status != "pending" {
+	if item.Kind != "assistant" || (item.Status != "pending" && item.Status != "thinking") {
 		return
 	}
+	item.Title = thinkingLabel
+	item.Status = "thinking"
 	item.Body = m.thinkingText()
 }
 
@@ -1237,6 +1258,8 @@ func rebuildSessionTimeline(sess *session.Session) ([]chatEntry, []toolRun) {
 func renderChatCard(item chatEntry, width int) string {
 	title := cardTitleStyle.Foreground(colorAccent)
 	border := chatAssistantStyle
+	bodyStyle := lipgloss.NewStyle()
+	status := item.Status
 	switch item.Kind {
 	case "user":
 		title = cardTitleStyle.Foreground(colorUser)
@@ -1247,13 +1270,24 @@ func renderChatCard(item chatEntry, width int) string {
 	case "system":
 		title = cardTitleStyle.Foreground(colorMuted)
 		border = chatSystemStyle
+	default:
+		if item.Status == "thinking" {
+			title = cardTitleStyle.Foreground(colorThinking)
+			border = chatThinkingStyle
+			bodyStyle = thinkingBodyStyle
+			status = ""
+		}
 	}
 	outerWidth := max(12, width)
 	innerWidth := max(8, outerWidth-border.GetHorizontalFrameSize())
+	headContent := title.Render(item.Title)
+	if status != "" {
+		headContent = lipgloss.JoinHorizontal(lipgloss.Left, headContent, mutedStyle.Render("  "+status))
+	}
 	head := lipgloss.NewStyle().
 		Width(innerWidth).
-		Render(lipgloss.JoinHorizontal(lipgloss.Left, title.Render(item.Title), mutedStyle.Render("  "+item.Status)))
-	body := lipgloss.NewStyle().Width(innerWidth).Render(formatChatBody(item, innerWidth))
+		Render(headContent)
+	body := bodyStyle.Width(innerWidth).Render(formatChatBody(item, innerWidth))
 	return border.Width(outerWidth).Render(lipgloss.JoinVertical(lipgloss.Left, head, body))
 }
 

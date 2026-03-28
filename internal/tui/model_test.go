@@ -774,7 +774,7 @@ func TestHandleAgentEventShowsToolProgressInChat(t *testing.T) {
 	m := model{
 		chatItems: []chatEntry{
 			{Kind: "user", Title: "You", Body: "what project is this", Status: "final"},
-			{Kind: "assistant", Title: assistantLabel, Body: "thinking", Status: "pending"},
+			{Kind: "assistant", Title: thinkingLabel, Body: "thinking", Status: "thinking"},
 		},
 		streamingIndex: 1,
 	}
@@ -787,7 +787,7 @@ func TestHandleAgentEventShowsToolProgressInChat(t *testing.T) {
 	if len(m.chatItems) != 3 {
 		t.Fatalf("expected tool start to keep assistant step then append tool call, got %d items", len(m.chatItems))
 	}
-	if m.chatItems[1].Kind != "assistant" || !strings.Contains(m.chatItems[1].Body, "read_file") {
+	if m.chatItems[1].Kind != "assistant" || m.chatItems[1].Title != thinkingLabel || m.chatItems[1].Status != "thinking" || !strings.Contains(m.chatItems[1].Body, "read_file") {
 		t.Fatalf("expected assistant step before tool call, got %+v", m.chatItems[1])
 	}
 	if m.chatItems[2].Kind != "tool" || m.chatItems[2].Status != "running" || !strings.Contains(m.chatItems[2].Title, "Tool Call | read_file") {
@@ -834,11 +834,33 @@ func TestToolStartKeepsStreamedAssistantTurn(t *testing.T) {
 	if len(m.chatItems) != 3 {
 		t.Fatalf("expected tool start to append only tool call after streamed assistant turn, got %d items", len(m.chatItems))
 	}
-	if m.chatItems[1].Body != "let me inspect the repo structure first" || m.chatItems[1].Status != "final" {
+	if m.chatItems[1].Body != "let me inspect the repo structure first" || m.chatItems[1].Status != "thinking" || m.chatItems[1].Title != thinkingLabel {
 		t.Fatalf("expected streamed assistant turn to be preserved and finalized, got %+v", m.chatItems[1])
 	}
 	if !strings.Contains(m.chatItems[2].Title, "Tool Call | list_files") {
 		t.Fatalf("expected tool call entry, got %+v", m.chatItems[2])
+	}
+}
+
+func TestFinishAssistantMessageAppendsFinalCardAfterThinking(t *testing.T) {
+	m := model{
+		chatItems: []chatEntry{
+			{Kind: "user", Title: "You", Body: "what project is this", Status: "final"},
+			{Kind: "assistant", Title: thinkingLabel, Body: "let me inspect the repo structure first", Status: "thinking"},
+		},
+		streamingIndex: 1,
+	}
+
+	m.finishAssistantMessage("This is a Go TUI project.")
+
+	if len(m.chatItems) != 3 {
+		t.Fatalf("expected final answer to be appended after thinking, got %d items", len(m.chatItems))
+	}
+	if m.chatItems[1].Title != thinkingLabel || m.chatItems[1].Status != "thinking" {
+		t.Fatalf("expected thinking card to remain visible, got %+v", m.chatItems[1])
+	}
+	if m.chatItems[2].Title != assistantLabel || m.chatItems[2].Status != "final" || m.chatItems[2].Body != "This is a Go TUI project." {
+		t.Fatalf("expected final assistant card after thinking, got %+v", m.chatItems[2])
 	}
 }
 
