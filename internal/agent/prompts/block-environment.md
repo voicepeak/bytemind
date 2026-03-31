@@ -1,0 +1,10 @@
+[Runtime Context]
+workspace_root: {{WORKSPACE}}
+cwd: {{CWD}}
+platform: {{PLATFORM}}
+date: {{DATE}}
+provider_type: {{PROVIDER_TYPE}}
+model: {{MODEL}}
+approval_policy: {{APPROVAL_POLICY}}
+mode: {{MODE}}
+max_iterations: {{MAX_ITERATIONS}}

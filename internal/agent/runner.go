@@ -93,8 +93,16 @@ func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput
 	for step := 0; step < r.config.MaxIterations; step++ {
 		messages := make([]llm.Message, 0, len(sess.Messages)+1)
 		messages = append(messages, llm.Message{
-			Role:    "system",
-			Content: systemPrompt(r.workspace, r.config.ApprovalPolicy),
+			Role: "system",
+			Content: systemPrompt(PromptInput{
+				Workspace:      r.workspace,
+				ApprovalPolicy: r.config.ApprovalPolicy,
+				ProviderType:   r.config.Provider.Type,
+				Model:          r.config.Provider.Model,
+				MaxIterations:  r.config.MaxIterations,
+				Mode:           "build",
+				Plan:           append([]session.PlanItem(nil), sess.Plan...),
+			}),
 		})
 		messages = append(messages, sess.Messages...)
 
