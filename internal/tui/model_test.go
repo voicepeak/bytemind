@@ -300,6 +300,22 @@ func TestCtrlLFromLandingOpensSessions(t *testing.T) {
 	}
 }
 
+func TestCtrlGOpensAndClosesHelp(t *testing.T) {
+	m := model{}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlG})
+	opened := got.(model)
+	if !opened.helpOpen {
+		t.Fatalf("expected ctrl+g to open help")
+	}
+
+	got, _ = opened.handleKey(tea.KeyMsg{Type: tea.KeyCtrlG})
+	closed := got.(model)
+	if closed.helpOpen {
+		t.Fatalf("expected ctrl+g to close help")
+	}
+}
+
 func TestTabTogglesBetweenBuildAndPlanModes(t *testing.T) {
 	m := model{
 		mode: modeBuild,
@@ -355,6 +371,53 @@ func TestRefreshViewportPreservesManualScrollOffset(t *testing.T) {
 
 	if m.viewport.YOffset != beforeOffset {
 		t.Fatalf("expected manual scroll offset %d to be preserved, got %d", beforeOffset, m.viewport.YOffset)
+	}
+}
+
+func TestContinueExecutionInputPreparesPlanAndSubmitsPrompt(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	input.SetWidth(40)
+	input.SetHeight(3)
+	input.SetValue("继续执行")
+	input.CursorEnd()
+	m := model{
+		screen:    screenChat,
+		width:     100,
+		height:    24,
+		input:     input,
+		viewport:  viewport.New(0, 0),
+		planView:  viewport.New(0, 0),
+		mode:      modePlan,
+		sess:      session.New("E:\\bytemind"),
+		workspace: "E:\\bytemind",
+		plan: planpkg.State{
+			Goal:       "Finish plan mode",
+			Phase:      planpkg.PhaseReady,
+			NextAction: "Start: Implement continuation",
+			Steps: []planpkg.Step{
+				{Title: "Implement continuation", Status: planpkg.StepPending},
+				{Title: "Verify workflow", Status: planpkg.StepPending},
+			},
+		},
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+	if updated.mode != modeBuild {
+		t.Fatalf("expected continue execution to switch to build mode, got %q", updated.mode)
+	}
+	if updated.plan.Phase != planpkg.PhaseExecuting {
+		t.Fatalf("expected plan phase to become executing, got %q", updated.plan.Phase)
+	}
+	if len(updated.chatItems) < 2 {
+		t.Fatalf("expected continue execution to submit a prompt")
+	}
+	if updated.chatItems[0].Body != "继续执行" {
+		t.Fatalf("expected original continue input to be appended, got %q", updated.chatItems[0].Body)
+	}
+	if updated.plan.Steps[0].Status != planpkg.StepInProgress {
+		t.Fatalf("expected first pending step to become in progress, got %q", updated.plan.Steps[0].Status)
 	}
 }
 
@@ -599,6 +662,8 @@ func TestHelpTextOnlyMentionsSupportedEntryPoints(t *testing.T) {
 		"/session",
 		"/quit",
 		"/new",
+		"Ctrl+G",
+		"continue execution",
 	} {
 		if !strings.Contains(text, wanted) {
 			t.Fatalf("help text should mention %q", wanted)

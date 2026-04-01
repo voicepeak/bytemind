@@ -492,7 +492,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		m.toggleMode()
 		return m, nil
-	case "?":
+	case "ctrl+g":
 		if m.approval == nil {
 			m.helpOpen = !m.helpOpen
 		}
@@ -516,7 +516,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.helpOpen {
-		if msg.String() == "esc" || msg.String() == "?" {
+		if msg.String() == "esc" || msg.String() == "ctrl+g" {
 			m.helpOpen = false
 		}
 		return m, nil
@@ -604,16 +604,36 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if value == "" {
 			return m, nil
 		}
+		if isContinueExecutionInput(value) && planpkg.HasStructuredPlan(m.plan) {
+			state, err := preparePlanForContinuation(m.plan)
+			if err != nil {
+				m.statusNote = err.Error()
+				return m, nil
+			}
+			m.plan = state
+			m.mode = modeBuild
+			if m.sess != nil {
+				m.sess.Mode = planpkg.ModeBuild
+				m.sess.Plan = copyPlanState(state)
+				if m.store != nil {
+					if err := m.store.Save(m.sess); err != nil {
+						m.statusNote = err.Error()
+						return m, nil
+					}
+				}
+			}
+		}
 		if value == "/quit" {
 			return m, tea.Quit
 		}
 		if strings.HasPrefix(value, "/") {
 			m.input.Reset()
-			if err := m.handleSlashCommand(value); err != nil {
+			next, cmd, err := m.executeCommand(value)
+			if err != nil {
 				m.statusNote = err.Error()
+				return m, nil
 			}
-			m.refreshViewport()
-			return m, m.loadSessionsCmd()
+			return next, cmd
 		}
 		return m.submitPrompt(value)
 	}
@@ -670,23 +690,25 @@ func (m model) handleCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.closeCommandPalette()
 			m.input.Reset()
-			if err := m.handleSlashCommand(value); err != nil {
+			next, cmd, err := m.executeCommand(value)
+			if err != nil {
 				m.statusNote = err.Error()
+				return m, nil
 			}
-			m.refreshViewport()
-			return m, m.loadSessionsCmd()
+			return next, cmd
 		}
 		m.closeCommandPalette()
-		if shouldExecuteFromPalette(selected) {
+		if shouldExecuteFromPalette(selected) || selected.Name == "/continue" {
 			if selected.Name == "/quit" {
 				return m, tea.Quit
 			}
 			m.input.Reset()
-			if err := m.handleSlashCommand(selected.Name); err != nil {
+			next, cmd, err := m.executeCommand(selected.Name)
+			if err != nil {
 				m.statusNote = err.Error()
+				return m, nil
 			}
-			m.refreshViewport()
-			return m, m.loadSessionsCmd()
+			return next, cmd
 		}
 		m.setInputValue(selected.Usage)
 		m.statusNote = selected.Description
@@ -1333,6 +1355,14 @@ func (m *model) handleSlashCommand(input string) error {
 		return fmt.Errorf("unknown command: %s", fields[0])
 	}
 }
+
+func (m model) executeCommand(input string) (tea.Model, tea.Cmd, error) {
+	if err := m.handleSlashCommand(input); err != nil {
+		return m, nil, err
+	}
+	m.refreshViewport()
+	return m, m.loadSessionsCmd(), nil
+}
 func (m *model) newSession() error {
 	next := session.New(m.workspace)
 	if err := m.store.Save(next); err != nil {
@@ -1374,6 +1404,13 @@ func (m *model) resumeSession(prefix string) error {
 	m.chatItems, m.toolRuns = rebuildSessionTimeline(next)
 	m.streamingIndex = -1
 	m.statusNote = "Resumed session " + shortID(next.ID)
+	if planpkg.HasStructuredPlan(m.plan) {
+		if m.mode == modeBuild && canContinuePlan(m.plan) {
+			m.statusNote += ". Type 'continue execution' to keep executing the saved plan."
+		} else if m.mode == modePlan {
+			m.statusNote += ". Type 'continue execution' when you are ready to execute the saved plan."
+		}
+	}
 	m.chatAutoFollow = true
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()
@@ -2004,6 +2041,8 @@ func (m model) helpText() string {
 		"UI notes",
 		"Tab toggles between Build and Plan modes.",
 		"Plan mode keeps the plan panel visible and focused on structured steps.",
+		"Use Ctrl+G to open or close the help panel.",
+		"After restoring a session with a saved plan, type 'continue execution' to resume it.",
 		"Approval requests appear above the input area when a shell command needs confirmation.",
 		"The footer keeps only the essential shortcuts: tab agents, / commands, Ctrl+L sessions, Ctrl+C quit.",
 	}, "\n")
@@ -2131,6 +2170,60 @@ func parsePlanSteps(raw string) []string {
 		}
 	}
 	return steps
+}
+
+func canContinuePlan(state planpkg.State) bool {
+	state = planpkg.NormalizeState(state)
+	if !planpkg.HasStructuredPlan(state) {
+		return false
+	}
+	switch planpkg.NormalizePhase(string(state.Phase)) {
+	case planpkg.PhaseBlocked, planpkg.PhaseCompleted:
+		return false
+	default:
+		return true
+	}
+}
+
+func isContinueExecutionInput(input string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	switch normalized {
+	case "continue", "continue execution", "continue plan", "resume", "resume execution", "继续", "继续执行", "继续做", "继续任务":
+		return true
+	default:
+		return false
+	}
+}
+
+func preparePlanForContinuation(state planpkg.State) (planpkg.State, error) {
+	state = planpkg.NormalizeState(state)
+	if !planpkg.HasStructuredPlan(state) {
+		return state, fmt.Errorf("no structured plan is available to continue")
+	}
+	switch planpkg.NormalizePhase(string(state.Phase)) {
+	case planpkg.PhaseBlocked:
+		if state.BlockReason != "" {
+			return state, fmt.Errorf("plan is blocked: %s", state.BlockReason)
+		}
+		return state, fmt.Errorf("plan is blocked and cannot continue yet")
+	case planpkg.PhaseCompleted:
+		return state, fmt.Errorf("plan is already completed")
+	}
+
+	if _, ok := planpkg.CurrentStep(state); !ok {
+		for i := range state.Steps {
+			if planpkg.NormalizeStepStatus(string(state.Steps[i].Status)) == planpkg.StepPending {
+				state.Steps[i].Status = planpkg.StepInProgress
+				break
+			}
+		}
+	}
+
+	state.Phase = planpkg.PhaseExecuting
+	if strings.TrimSpace(state.NextAction) == "" {
+		state.NextAction = planpkg.DefaultNextAction(state)
+	}
+	return planpkg.NormalizeState(state), nil
 }
 
 func copyPlanState(state planpkg.State) planpkg.State {
