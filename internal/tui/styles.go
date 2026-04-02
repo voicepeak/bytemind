@@ -81,15 +81,18 @@ var (
 			Background(lipgloss.Color("#101923"))
 
 	chatAssistantStyle = lipgloss.NewStyle().
-				Background(colorCard).
+				Background(colorPanel).
 				Padding(1, 1)
 
 	chatThinkingStyle = lipgloss.NewStyle().
-				Background(colorCard).
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderLeft(true).
+				BorderForeground(colorThinking).
+				Background(colorPanel).
 				Padding(1, 1)
 
 	thinkingBodyStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#A695C4")).
+				Foreground(lipgloss.Color("#9A8EB2")).
 				Faint(true)
 
 	chatUserStyle = lipgloss.NewStyle().
@@ -100,15 +103,18 @@ var (
 			Padding(1, 1)
 
 	chatToolStyle = lipgloss.NewStyle().
-			Background(colorCard).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderLeft(true).
+			BorderForeground(colorMuted).
+			Background(colorPanel).
 			Padding(1, 1)
 
 	toolBodyStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#A89671")).
+			Foreground(lipgloss.Color("#9AA7B7")).
 			Faint(true)
 
 	chatSystemStyle = lipgloss.NewStyle().
-			Background(colorCard).
+			Background(colorPanel).
 			Padding(1, 1)
 
 	approvalBannerStyle = lipgloss.NewStyle().

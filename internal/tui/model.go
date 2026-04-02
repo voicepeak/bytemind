@@ -32,6 +32,7 @@ const (
 	thinkingLabel       = "Bytemind"
 	chatTitleLabel      = "Bytemind Chat"
 	tuiTitleLabel       = "Bytemind TUI"
+	footerHintText      = "tab agents | / commands | Ctrl+L sessions | Ctrl+C quit"
 )
 
 type screenKind string
@@ -406,33 +407,7 @@ func (m model) mouseOverInput(y int) bool {
 }
 
 func (m model) mouseOverPlan(x, y int) bool {
-	if m.screen != screenChat || !m.hasPlanPanel() || m.width <= 0 || m.height <= 0 {
-		return false
-	}
-
-	footerHeight := lipgloss.Height(m.renderFooter())
-	bodyHeight := max(0, m.height-footerHeight)
-	if bodyHeight == 0 {
-		return false
-	}
-
-	innerTop := panelStyle.GetVerticalFrameSize() / 2
-	innerLeft := panelStyle.GetHorizontalFrameSize() / 2
-	panelHeight := m.planPanelRenderHeight()
-
-	if m.showPlanSidebar() {
-		left := innerLeft + m.conversationPanelWidth() + 1
-		right := left + m.planPanelWidth() - 1
-		top := innerTop
-		bottom := min(bodyHeight-1, top+panelHeight-1)
-		return x >= left && x <= right && y >= top && y <= bottom
-	}
-
-	top := innerTop
-	bottom := min(bodyHeight-1, top+panelHeight-1)
-	left := innerLeft
-	right := left + m.chatPanelInnerWidth() - 1
-	return x >= left && x <= right && y >= top && y <= bottom
+	return false
 }
 
 func (m model) mouseOverChatInput(y int) bool {
@@ -474,7 +449,7 @@ func (m model) mouseOverLandingInput(y int) bool {
 			Width(m.landingInputShellWidth()).
 			Render(m.input.View()),
 	)
-	hintHeight := lipgloss.Height(mutedStyle.Render("tab agents  路  / commands  路  Ctrl+L sessions  路  Ctrl+C quit"))
+	hintHeight := lipgloss.Height(mutedStyle.Render(footerHintText))
 	contentHeight := logoHeight + 1 + titleHeight + subtitleHeight + 1 + inputHeight + 1 + hintHeight
 	contentTop := max(0, (m.height-contentHeight)/2)
 	inputTop := contentTop + logoHeight + 1 + titleHeight + subtitleHeight + 1
@@ -813,13 +788,7 @@ func (m model) submitPrompt(value string) (tea.Model, tea.Cmd) {
 		Body:   value,
 		Status: "final",
 	})
-	m.chatItems = append(m.chatItems, chatEntry{
-		Kind:   "assistant",
-		Title:  thinkingLabel,
-		Body:   m.thinkingText(),
-		Status: "thinking",
-	})
-	m.streamingIndex = len(m.chatItems) - 1
+	m.streamingIndex = -1
 	m.statusNote = "Request sent to LLM. Waiting for response..."
 	m.phase = "thinking"
 	m.llmConnected = true
@@ -963,25 +932,15 @@ func (m *model) finalizeAssistantTurnForTool(toolName string) {
 	if m.streamingIndex >= 0 && m.streamingIndex < len(m.chatItems) {
 		item := &m.chatItems[m.streamingIndex]
 		if item.Kind == "assistant" {
-			item.Body = assistantToolIntro(toolName)
 			item.Title = thinkingLabel
 			item.Status = "thinking"
+			if strings.TrimSpace(item.Body) == "" || item.Body == m.thinkingText() {
+				item.Body = assistantToolIntro(toolName)
+			}
 			m.streamingIndex = -1
 			return
 		}
 	}
-	if len(m.chatItems) > 0 {
-		last := &m.chatItems[len(m.chatItems)-1]
-		if last.Kind == "assistant" {
-			return
-		}
-	}
-	m.appendChat(chatEntry{
-		Kind:   "assistant",
-		Title:  thinkingLabel,
-		Body:   assistantToolIntro(toolName),
-		Status: "thinking",
-	})
 }
 
 func (m *model) appendAssistantToolFollowUp(toolName, summary, status string) {
@@ -1145,8 +1104,20 @@ func (m model) renderConversation() string {
 	}
 	width = max(24, width)
 	blocks := make([]string, 0, len(m.chatItems))
-	for _, item := range m.chatItems {
-		blocks = append(blocks, renderChatRow(item, width))
+	for i := 0; i < len(m.chatItems); {
+		item := m.chatItems[i]
+		if item.Kind == "user" {
+			blocks = append(blocks, renderChatRow(item, width))
+			i++
+			continue
+		}
+
+		j := i
+		for j < len(m.chatItems) && m.chatItems[j].Kind != "user" {
+			j++
+		}
+		blocks = append(blocks, renderBytemindRunRow(m.chatItems[i:j], width))
+		i = j
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, blocks...)
 }
@@ -1160,43 +1131,18 @@ func (m *model) syncViewportSize() {
 	if bodyHeight < 6 {
 		bodyHeight = 6
 	}
-	panelInnerWidth := m.chatPanelInnerWidth()
 	statusHeight := lipgloss.Height(m.renderStatusBar())
 	panelInnerHeight := max(4, bodyHeight-panelStyle.GetVerticalFrameSize()-statusHeight-1)
-	extraHeight := 0
-	if m.hasPlanPanel() {
-		planInnerWidth := m.planPanelWidth() - modalBoxStyle.GetHorizontalFrameSize()
-		if m.showPlanSidebar() {
-			m.planView.Width = max(16, planInnerWidth)
-			m.planView.Height = max(3, panelInnerHeight-modalBoxStyle.GetVerticalFrameSize())
-		} else {
-			m.planView.Width = max(16, panelInnerWidth-modalBoxStyle.GetHorizontalFrameSize())
-			m.planView.Height = max(3, min(12, panelInnerHeight/3))
-			extraHeight = m.planPanelRenderHeight() + 1
-		}
-	} else {
-		m.planView.Width = 0
-		m.planView.Height = 0
-	}
-	contentHeight := max(3, panelInnerHeight-extraHeight)
+	m.planView.Width = 0
+	m.planView.Height = 0
+	contentHeight := max(3, panelInnerHeight)
 	m.viewport.Width = m.conversationPanelWidth()
 	m.viewport.Height = contentHeight
 }
 
 func (m model) renderMainPanel() string {
 	statusBar := m.renderStatusBar()
-	if !m.hasPlanPanel() {
-		return lipgloss.JoinVertical(lipgloss.Left, statusBar, "", m.viewport.View())
-	}
-	var content string
-	if m.showPlanSidebar() {
-		conversation := lipgloss.NewStyle().Width(m.conversationPanelWidth()).Render(m.viewport.View())
-		planPanel := m.renderPlanPanel(m.planPanelWidth())
-		content = lipgloss.JoinHorizontal(lipgloss.Top, conversation, spacer(1), planPanel)
-	} else {
-		content = lipgloss.JoinVertical(lipgloss.Left, m.renderPlanPanel(m.chatPanelInnerWidth()), "", m.viewport.View())
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, statusBar, "", content)
+	return lipgloss.JoinVertical(lipgloss.Left, statusBar, "", m.viewport.View())
 }
 
 func (m model) renderLanding() string {
@@ -1216,7 +1162,7 @@ func (m model) renderLanding() string {
 	if m.commandOpen {
 		parts = append(parts, m.renderCommandPalette(), "")
 	}
-	parts = append(parts, inputBox, "", mutedStyle.Render("tab agents  路  / commands  路  Ctrl+L sessions  路  Ctrl+C quit"))
+	parts = append(parts, inputBox, "", mutedStyle.Render(footerHintText))
 	content := lipgloss.JoinVertical(lipgloss.Center, parts...)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 }
@@ -1226,7 +1172,7 @@ func (m model) renderFooter() string {
 		Width(m.chatPanelInnerWidth()).
 		Align(lipgloss.Right).
 		Foreground(colorMuted).
-		Render("tab agents  路  / commands  路  Ctrl+L sessions  路  Ctrl+C quit")
+		Render(footerHintText)
 	inputBorder := m.inputBorderStyle().
 		Width(m.chatPanelInnerWidth()).
 		Render(m.input.View())
@@ -1493,8 +1439,25 @@ func rebuildSessionTimeline(sess *session.Session) ([]chatEntry, []toolRun) {
 }
 
 func renderChatCard(item chatEntry, width int) string {
-	title := cardTitleStyle.Foreground(colorAccent)
 	border := chatAssistantStyle
+	switch item.Kind {
+	case "user":
+		border = chatUserStyle
+	case "tool":
+		border = chatToolStyle
+	case "system":
+		border = chatSystemStyle
+	default:
+		if item.Status == "thinking" {
+			border = chatThinkingStyle
+		}
+	}
+	contentWidth := max(8, width-border.GetHorizontalFrameSize())
+	return border.Width(contentWidth).Render(renderChatSection(item, contentWidth))
+}
+
+func renderChatSection(item chatEntry, width int) string {
+	title := cardTitleStyle.Foreground(colorAccent)
 	bodyStyle := chatBodyStyle
 	status := item.Status
 	displayTitle := item.Title
@@ -1504,33 +1467,28 @@ func renderChatCard(item chatEntry, width int) string {
 	switch item.Kind {
 	case "user":
 		title = cardTitleStyle.Foreground(colorUser)
-		border = chatUserStyle
 	case "tool":
-		title = cardTitleStyle.Foreground(colorTool)
-		border = chatToolStyle
+		title = cardTitleStyle.Foreground(colorMuted)
 		bodyStyle = toolBodyStyle
 	case "system":
 		title = cardTitleStyle.Foreground(colorMuted)
-		border = chatSystemStyle
 	default:
 		if item.Status == "thinking" {
-			title = cardTitleStyle.Foreground(colorThinking).Italic(true)
-			border = chatThinkingStyle
+			title = cardTitleStyle.Foreground(colorMuted).Faint(true)
 			bodyStyle = thinkingBodyStyle
-			displayTitle = "Thinking:"
+			displayTitle = "thinking"
 			status = ""
 		}
 	}
-	contentWidth := max(8, width-border.GetHorizontalFrameSize())
 	headContent := title.Render(displayTitle)
 	if status != "" {
 		headContent = lipgloss.JoinHorizontal(lipgloss.Left, headContent, mutedStyle.Render("  "+status))
 	}
 	head := lipgloss.NewStyle().
-		Width(contentWidth).
+		Width(width).
 		Render(headContent)
-	body := bodyStyle.Width(contentWidth).Render(formatChatBody(item, contentWidth))
-	return border.Width(contentWidth).Render(lipgloss.JoinVertical(lipgloss.Left, head, body))
+	body := bodyStyle.Width(width).Render(formatChatBody(item, width))
+	return lipgloss.JoinVertical(lipgloss.Left, head, body)
 }
 
 func renderChatRow(item chatEntry, width int) string {
@@ -1539,6 +1497,26 @@ func renderChatRow(item chatEntry, width int) string {
 	return lipgloss.NewStyle().
 		MarginBottom(1).
 		Render(lipgloss.PlaceHorizontal(width, lipgloss.Left, card))
+}
+
+func renderBytemindRunRow(items []chatEntry, width int) string {
+	if len(items) == 0 {
+		return ""
+	}
+	card := renderBytemindRunCard(items, width)
+	return lipgloss.NewStyle().
+		MarginBottom(1).
+		Render(lipgloss.PlaceHorizontal(width, lipgloss.Left, card))
+}
+
+func renderBytemindRunCard(items []chatEntry, width int) string {
+	outer := chatAssistantStyle
+	contentWidth := max(8, width-outer.GetHorizontalFrameSize())
+	sections := make([]string, 0, len(items))
+	for _, item := range items {
+		sections = append(sections, renderChatSection(item, contentWidth))
+	}
+	return outer.Width(contentWidth).Render(strings.Join(sections, "\n"))
 }
 
 func renderModal(width, height int, modal string) string {
@@ -2217,7 +2195,15 @@ func currentOrNextStepTitle(state planpkg.State) string {
 func isContinueExecutionInput(input string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(input))
 	switch normalized {
-	case "continue", "continue execution", "continue plan", "resume", "resume execution", "继续", "继续执行", "继续做", "继续任务":
+	case "continue",
+		"continue execution",
+		"continue plan",
+		"resume",
+		"resume execution",
+		"\u7ee7\u7eed",
+		"\u7ee7\u7eed\u6267\u884c",
+		"\u7ee7\u7eed\u505a",
+		"\u7ee7\u7eed\u4efb\u52a1":
 		return true
 	default:
 		return false
@@ -2298,7 +2284,7 @@ func toAgentMode(mode planpkg.AgentMode) agentMode {
 }
 
 func (m model) hasPlanPanel() bool {
-	return m.mode == modeBuild && planpkg.HasStructuredPlan(m.plan)
+	return false
 }
 
 func (m model) showPlanSidebar() bool {
