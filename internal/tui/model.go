@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -23,16 +24,28 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
+var (
+	markdownHeadingNoSpacePattern = regexp.MustCompile(`^(#{1,6})(\S)`)
+	markdownOrderNoSpacePattern   = regexp.MustCompile(`^(\d+)\.(\S)`)
+	markdownBulletNoSpacePattern  = regexp.MustCompile(`^(\s*[-*])(\S)`)
+	markdownTrailingHashesPattern = regexp.MustCompile(`#{2,}\s*$`)
+)
+
 const (
-	defaultSessionLimit = 8
-	scrollStep          = 3
-	commandPageSize     = 3
-	pasteSubmitGuard    = 400 * time.Millisecond
-	assistantLabel      = "Bytemind"
-	thinkingLabel       = "Bytemind"
-	chatTitleLabel      = "Bytemind Chat"
-	tuiTitleLabel       = "Bytemind TUI"
-	footerHintText      = "tab agents | / commands | Ctrl+L sessions | Ctrl+C quit"
+	defaultSessionLimit  = 8
+	scrollStep           = 3
+	commandPageSize      = 3
+	pasteSubmitGuard     = 400 * time.Millisecond
+	assistantLabel       = "Bytemind"
+	thinkingLabel        = "Bytemind"
+	chatTitleLabel       = "Bytemind Chat"
+	tuiTitleLabel        = "Bytemind TUI"
+	footerHintText       = "tab agents | / commands | Ctrl+L sessions | Ctrl+C quit"
+	minConversationWidth = 24
+	minCardContentWidth  = 8
+	minPlanContentWidth  = 16
+	enablePlanPanel      = true
+	planSidebarMinWidth  = 104
 )
 
 type screenKind string
@@ -408,7 +421,16 @@ func (m model) mouseOverInput(y int) bool {
 }
 
 func (m model) mouseOverPlan(x, y int) bool {
-	return false
+	if !m.showPlanSidebar() || m.planView.Width <= 0 || m.planView.Height <= 0 {
+		return false
+	}
+	contentLeft := panelStyle.GetHorizontalFrameSize() / 2
+	planLeft := contentLeft + m.conversationPanelWidth() + 1
+	planRight := planLeft + m.planView.Width - 1
+
+	contentTop := panelStyle.GetVerticalFrameSize()/2 + lipgloss.Height(m.renderStatusBar()) + 1
+	contentBottom := contentTop + m.planView.Height - 1
+	return x >= planLeft && x <= planRight && y >= contentTop && y <= contentBottom
 }
 
 func (m model) mouseOverChatInput(y int) bool {
@@ -959,6 +981,12 @@ func (m *model) finalizeAssistantTurnForTool(toolName string) {
 			return
 		}
 	}
+	m.appendChat(chatEntry{
+		Kind:   "assistant",
+		Title:  thinkingLabel,
+		Body:   assistantToolIntro(toolName),
+		Status: "thinking",
+	})
 }
 
 func (m *model) removeStreamingAssistantPlaceholder() {
@@ -1069,9 +1097,14 @@ func (m *model) refreshViewport() {
 		m.viewport.SetYOffset(chatOffset)
 	}
 
-	planOffset := m.planView.YOffset
-	m.planView.SetContent(m.planPanelContent(max(16, m.planView.Width)))
-	m.planView.SetYOffset(planOffset)
+	if m.hasPlanPanel() {
+		planOffset := m.planView.YOffset
+		m.planView.SetContent(m.planPanelContent(max(minPlanContentWidth, m.planView.Width)))
+		m.planView.SetYOffset(planOffset)
+	} else {
+		m.planView.SetContent("")
+		m.planView.SetYOffset(0)
+	}
 }
 
 func (m *model) syncLayoutForCurrentScreen() {
@@ -1127,7 +1160,7 @@ func (m model) renderConversation() string {
 	if width <= 0 {
 		width = m.conversationPanelWidth()
 	}
-	width = max(24, width)
+	width = max(minConversationWidth, width)
 	blocks := make([]string, 0, len(m.chatItems))
 	for i := 0; i < len(m.chatItems); {
 		item := m.chatItems[i]
@@ -1158,16 +1191,31 @@ func (m *model) syncViewportSize() {
 	}
 	statusHeight := lipgloss.Height(m.renderStatusBar())
 	panelInnerHeight := max(4, bodyHeight-panelStyle.GetVerticalFrameSize()-statusHeight-1)
-	m.planView.Width = 0
-	m.planView.Height = 0
 	contentHeight := max(3, panelInnerHeight)
+	if m.hasPlanPanel() {
+		m.planView.Width = m.planPanelWidth()
+		m.planView.Height = contentHeight
+	} else {
+		m.planView.Width = 0
+		m.planView.Height = 0
+	}
 	m.viewport.Width = m.conversationPanelWidth()
 	m.viewport.Height = contentHeight
 }
 
 func (m model) renderMainPanel() string {
 	statusBar := m.renderStatusBar()
-	return lipgloss.JoinVertical(lipgloss.Left, statusBar, "", m.viewport.View())
+	conversation := m.viewport.View()
+	if !m.showPlanSidebar() {
+		return lipgloss.JoinVertical(lipgloss.Left, statusBar, "", conversation)
+	}
+	content := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		conversation,
+		spacer(1),
+		m.renderPlanPanel(m.planPanelWidth()),
+	)
+	return lipgloss.JoinVertical(lipgloss.Left, statusBar, "", content)
 }
 
 func (m model) renderLanding() string {
@@ -1223,7 +1271,7 @@ func (m model) renderModeTabs() string {
 }
 
 func (m model) renderFooterInfoLine() string {
-	width := max(24, m.chatPanelInnerWidth())
+	width := max(minConversationWidth, m.chatPanelInnerWidth())
 	left := m.renderModeTabs()
 	rightParts := []string{footerHintText}
 	if modelName := strings.TrimSpace(m.currentModelLabel()); modelName != "" && modelName != "-" {
@@ -1278,7 +1326,7 @@ func (m model) renderHelpModal() string {
 }
 
 func (m model) renderApprovalBanner() string {
-	width := max(24, m.chatPanelInnerWidth())
+	width := max(minConversationWidth, m.chatPanelInnerWidth())
 	commandWidth := max(20, width-4)
 	lines := []string{
 		accentStyle.Render("Approval required"),
@@ -1290,22 +1338,16 @@ func (m model) renderApprovalBanner() string {
 }
 
 func (m model) renderStatusBar() string {
-	width := max(24, m.chatPanelInnerWidth())
-	stepTitle := currentOrNextStepTitle(m.plan)
-	if stepTitle == "" {
-		stepTitle = "-"
+	width := max(minConversationWidth, m.chatPanelInnerWidth())
+	left := strings.ToLower(chatTitleLabel)
+	rightParts := []string{fmt.Sprintf("%d msgs", len(m.chatItems))}
+	if phase := strings.TrimSpace(m.currentPhaseLabel()); phase != "" && phase != "idle" && phase != "none" {
+		rightParts = append([]string{"phase: " + phase}, rightParts...)
 	}
-	left := strings.Join([]string{
-		"Mode: " + strings.ToUpper(string(m.mode)),
-		"Phase: " + m.currentPhaseLabel(),
-		"Step: " + stepTitle,
-	}, "  |  ")
-	right := strings.Join([]string{
-		fmt.Sprintf("%d msgs", len(m.chatItems)),
-		"Session: " + m.currentSessionLabel(),
-		"Follow: " + m.autoFollowLabel(),
-		"Model: " + m.currentModelLabel(),
-	}, "  |  ")
+	if model := strings.TrimSpace(m.currentModelLabel()); model != "" && model != "-" {
+		rightParts = append(rightParts, model)
+	}
+	right := strings.Join(rightParts, "  ·  ")
 
 	line := m.renderTopInfoLine(left, right, width)
 	return statusBarStyle.Width(width).Render(line)
@@ -1506,59 +1548,75 @@ func rebuildSessionTimeline(sess *session.Session) ([]chatEntry, []toolRun) {
 	return items, runs
 }
 
-func renderChatCard(item chatEntry, width int) string {
-	border := chatAssistantStyle
+type chatItemStyles struct {
+	border       lipgloss.Style
+	title        lipgloss.Style
+	body         lipgloss.Style
+	displayTitle string
+	status       string
+	showHeader   bool
+}
+
+func stylesForChatItem(item chatEntry) chatItemStyles {
+	styles := chatItemStyles{
+		border:       chatAssistantStyle,
+		title:        cardTitleStyle.Foreground(colorAccent),
+		body:         chatBodyStyle,
+		displayTitle: item.Title,
+		status:       item.Status,
+		showHeader:   true,
+	}
+	if styles.status == "final" {
+		styles.status = ""
+	}
+
 	switch item.Kind {
 	case "user":
-		border = chatUserStyle
+		styles.border = chatUserStyle
+		styles.title = cardTitleStyle.Foreground(colorUser)
 	case "tool":
-		border = chatToolStyle
+		styles.border = chatToolStyle
+		styles.title = cardTitleStyle.Foreground(colorMuted).Faint(true)
+		styles.body = toolBodyStyle
 	case "system":
-		border = chatSystemStyle
+		styles.border = chatSystemStyle
+		styles.title = cardTitleStyle.Foreground(colorMuted)
 	default:
 		if item.Status == "thinking" {
-			border = chatThinkingStyle
+			styles.border = chatThinkingStyle
+			styles.title = cardTitleStyle.Foreground(colorMuted).Faint(true)
+			styles.body = thinkingBodyStyle
+			styles.displayTitle = "thinking"
+			styles.status = ""
+		} else {
+			styles.showHeader = false
 		}
 	}
-	contentWidth := max(8, width-border.GetHorizontalFrameSize())
-	return border.Width(contentWidth).Render(renderChatSection(item, contentWidth))
+	return styles
+}
+
+func renderChatCard(item chatEntry, width int) string {
+	styles := stylesForChatItem(item)
+	contentWidth := max(minCardContentWidth, width-styles.border.GetHorizontalFrameSize())
+	return styles.border.Width(contentWidth).Render(renderChatSection(item, contentWidth))
 }
 
 func renderChatSection(item chatEntry, width int) string {
-	title := cardTitleStyle.Foreground(colorAccent)
-	bodyStyle := chatBodyStyle
-	status := item.Status
-	displayTitle := item.Title
-	if status == "final" {
-		status = ""
+	styles := stylesForChatItem(item)
+	body := styles.body.Width(width).Render(formatChatBody(item, width))
+	if !styles.showHeader {
+		return body
 	}
-	switch item.Kind {
-	case "user":
-		title = cardTitleStyle.Foreground(colorUser)
-	case "tool":
-		title = cardTitleStyle.Foreground(colorMuted).Faint(true)
-		bodyStyle = toolBodyStyle
-	case "system":
-		title = cardTitleStyle.Foreground(colorMuted)
-	default:
-		if item.Status == "thinking" {
-			title = cardTitleStyle.Foreground(colorMuted).Faint(true)
-			bodyStyle = thinkingBodyStyle
-			displayTitle = "thinking"
-			status = ""
-		}
-	}
-	headContent := title.Render(displayTitle)
+	headContent := styles.title.Render(styles.displayTitle)
 	if item.Kind == "user" && strings.TrimSpace(item.Meta) != "" {
 		headContent = mutedStyle.Copy().Faint(true).Render(item.Meta)
 	}
-	if status != "" {
-		headContent = lipgloss.JoinHorizontal(lipgloss.Left, headContent, mutedStyle.Render("  "+status))
+	if styles.status != "" {
+		headContent = lipgloss.JoinHorizontal(lipgloss.Left, headContent, mutedStyle.Render("  "+styles.status))
 	}
 	head := lipgloss.NewStyle().
 		Width(width).
 		Render(headContent)
-	body := bodyStyle.Width(width).Render(formatChatBody(item, width))
 	return lipgloss.JoinVertical(lipgloss.Left, head, body)
 }
 
@@ -1582,7 +1640,7 @@ func renderBytemindRunRow(items []chatEntry, width int) string {
 
 func renderBytemindRunCard(items []chatEntry, width int) string {
 	outer := chatAssistantStyle
-	contentWidth := max(8, width-outer.GetHorizontalFrameSize())
+	contentWidth := max(minCardContentWidth, width-outer.GetHorizontalFrameSize())
 	sections := make([]string, 0, len(items))
 	for _, item := range items {
 		sections = append(sections, renderChatSection(item, contentWidth))
@@ -1700,7 +1758,8 @@ func renderAssistantBody(text string, width int) string {
 	}
 
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
+		normalized := normalizeMarkdownLine(line)
+		trimmed := strings.TrimSpace(normalized)
 		if strings.HasPrefix(trimmed, "```") {
 			if inCodeBlock {
 				flushCodeBlock()
@@ -1722,13 +1781,13 @@ func renderAssistantBody(text string, width int) string {
 		case isMarkdownHeading(trimmed):
 			out = append(out, renderMarkdownHeading(trimmed, width))
 		case isMarkdownListItem(trimmed):
-			out = append(out, renderMarkdownListItem(line, width))
+			out = append(out, renderMarkdownListItem(normalized, width))
 		case strings.HasPrefix(trimmed, ">"):
 			out = append(out, renderMarkdownQuote(trimmed, width))
 		case looksLikeMarkdownTable(trimmed):
 			out = append(out, tableLineStyle.Render(trimmed))
 		default:
-			out = append(out, wrapPlainText(line, width))
+			out = append(out, wrapPlainText(cleanInlineMarkdown(normalized), width))
 		}
 	}
 
@@ -1740,9 +1799,20 @@ func renderAssistantBody(text string, width int) string {
 }
 
 func isMarkdownHeading(line string) bool {
-	return strings.HasPrefix(line, "# ") ||
-		strings.HasPrefix(line, "## ") ||
-		strings.HasPrefix(line, "### ")
+	if !strings.HasPrefix(line, "#") {
+		return false
+	}
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level == 0 || level > 6 {
+		return false
+	}
+	if len(line) == level {
+		return true
+	}
+	return line[level] == ' '
 }
 
 func renderMarkdownHeading(line string, width int) string {
@@ -1750,7 +1820,7 @@ func renderMarkdownHeading(line string, width int) string {
 	for level < len(line) && line[level] == '#' {
 		level++
 	}
-	text := strings.TrimSpace(line[level:])
+	text := cleanInlineMarkdown(strings.TrimSpace(line[level:]))
 	style := assistantHeading3Style
 	switch level {
 	case 1:
@@ -1808,9 +1878,10 @@ func renderMarkdownListItem(line string, width int) string {
 	if content == "" {
 		content = trimmed
 	}
+	content = cleanInlineMarkdown(content)
 
 	prefix := indent + marker + " "
-	contentWidth := max(8, width-runewidth.StringWidth(prefix))
+	contentWidth := max(minCardContentWidth, width-runewidth.StringWidth(prefix))
 	wrapped := strings.Split(wrapPlainText(content, contentWidth), "\n")
 	lines := make([]string, 0, len(wrapped))
 	for i, part := range wrapped {
@@ -1824,8 +1895,8 @@ func renderMarkdownListItem(line string, width int) string {
 }
 
 func renderMarkdownQuote(line string, width int) string {
-	content := strings.TrimSpace(strings.TrimPrefix(line, ">"))
-	wrapped := strings.Split(wrapPlainText(content, max(8, width-2)), "\n")
+	content := cleanInlineMarkdown(strings.TrimSpace(strings.TrimPrefix(line, ">")))
+	wrapped := strings.Split(wrapPlainText(content, max(minCardContentWidth, width-2)), "\n")
 	rendered := make([]string, 0, len(wrapped))
 	for _, part := range wrapped {
 		rendered = append(rendered, quoteLineStyle.Render(part))
@@ -1835,6 +1906,28 @@ func renderMarkdownQuote(line string, width int) string {
 
 func looksLikeMarkdownTable(line string) bool {
 	return strings.Count(line, "|") >= 2
+}
+
+func normalizeMarkdownLine(line string) string {
+	line = strings.TrimRight(line, " \t")
+	line = markdownHeadingNoSpacePattern.ReplaceAllString(line, "$1 $2")
+	line = markdownOrderNoSpacePattern.ReplaceAllString(line, "$1. $2")
+	line = markdownBulletNoSpacePattern.ReplaceAllString(line, "$1 $2")
+	return line
+}
+
+func cleanInlineMarkdown(text string) string {
+	if text == "" {
+		return ""
+	}
+	cleaned := strings.NewReplacer(
+		"**", "",
+		"__", "",
+		"~~", "",
+		"`", "",
+	).Replace(text)
+	cleaned = markdownTrailingHashesPattern.ReplaceAllString(cleaned, "")
+	return cleaned
 }
 
 func chatBubbleWidth(item chatEntry, width int) int {
@@ -2268,7 +2361,7 @@ func (m model) landingInputShellWidth() int {
 
 func (m model) landingInputContentWidth() int {
 	width := m.landingInputShellWidth() - landingInputStyle.GetHorizontalFrameSize()
-	return max(24, width)
+	return max(minConversationWidth, width)
 }
 
 func (m model) inputBorderStyle() lipgloss.Style {
@@ -2450,11 +2543,11 @@ func toAgentMode(mode planpkg.AgentMode) agentMode {
 }
 
 func (m model) hasPlanPanel() bool {
-	return false
+	return enablePlanPanel && m.screen == screenChat && m.mode == modePlan
 }
 
 func (m model) showPlanSidebar() bool {
-	return m.hasPlanPanel() && m.chatPanelInnerWidth() >= 104
+	return m.hasPlanPanel() && m.chatPanelInnerWidth() >= planSidebarMinWidth
 }
 
 func (m model) planPanelWidth() int {
@@ -2469,7 +2562,7 @@ func (m model) conversationPanelWidth() int {
 	if m.showPlanSidebar() {
 		width -= m.planPanelWidth() + 1
 	}
-	return max(24, width)
+	return max(minConversationWidth, width)
 }
 
 func (m model) planModeLabel() string {
@@ -2491,12 +2584,12 @@ func (m model) planPhaseLabel() string {
 }
 
 func (m model) renderPlanPanel(width int) string {
-	width = max(24, width)
+	width = max(minConversationWidth, width)
 	return modalBoxStyle.Width(width).Render(m.planView.View())
 }
 
 func (m model) planPanelContent(width int) string {
-	width = max(16, width)
+	width = max(minPlanContentWidth, width)
 	lines := []string{
 		accentStyle.Render(m.planModeLabel()),
 		mutedStyle.Render("Phase: " + m.planPhaseLabel()),

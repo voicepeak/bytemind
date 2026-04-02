@@ -183,7 +183,7 @@ func TestHandleMouseWheelScrollsLandingInputWhenPointerIsOverInput(t *testing.T)
 	}
 }
 
-func TestPlanModeDoesNotShowDetailedPlanPanel(t *testing.T) {
+func TestPlanModeShowsDetailedPlanPanel(t *testing.T) {
 	input := textarea.New()
 	m := model{
 		screen:    screenChat,
@@ -207,15 +207,24 @@ func TestPlanModeDoesNotShowDetailedPlanPanel(t *testing.T) {
 
 	m.refreshViewport()
 
-	if m.hasPlanPanel() {
-		t.Fatalf("expected detailed plan panel to stay hidden in plan mode")
+	if !m.hasPlanPanel() {
+		t.Fatalf("expected detailed plan panel to be enabled in plan mode")
 	}
-	for y := 0; y < m.height; y++ {
+	if !m.showPlanSidebar() {
+		t.Fatalf("expected wide layout to render plan sidebar")
+	}
+
+	foundPlanRegion := false
+	for y := 0; y < m.height && !foundPlanRegion; y++ {
 		for x := 0; x < m.width; x++ {
 			if m.mouseOverPlan(x, y) {
-				t.Fatalf("did not expect a mouse-active plan panel region in plan mode")
+				foundPlanRegion = true
+				break
 			}
 		}
+	}
+	if !foundPlanRegion {
+		t.Fatalf("expected a mouse-active plan panel region in plan mode")
 	}
 }
 
@@ -696,15 +705,24 @@ func TestRenderStatusBarShowsCurrentRuntimeState(t *testing.T) {
 
 	bar := m.renderStatusBar()
 	for _, want := range []string{
-		"Mode: BUILD",
-		"Phase: executing",
-		"Session: 1234567890ab",
-		"Step: Implement plan resumption",
-		"Follow: manual",
-		"Model: deepseek-chat",
+		"bytemind chat",
+		"phase: executing",
+		"0 msgs",
+		"deepseek-chat",
 	} {
 		if !strings.Contains(bar, want) {
 			t.Fatalf("expected status bar to contain %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		"Mode:",
+		"Step:",
+		"Session:",
+		"Follow:",
+		"Model:",
+	} {
+		if strings.Contains(bar, unwanted) {
+			t.Fatalf("expected simplified top info to omit %q", unwanted)
 		}
 	}
 }
@@ -1059,6 +1077,42 @@ func TestRenderConversationIncludesToolEntries(t *testing.T) {
 	}
 }
 
+func TestRenderAssistantFinalTextOmitsAssistantHeaderLabel(t *testing.T) {
+	row := renderChatRow(chatEntry{
+		Kind:   "assistant",
+		Title:  assistantLabel,
+		Body:   "This is the final answer body.",
+		Status: "final",
+	}, 80)
+
+	if strings.Contains(strings.ToLower(row), strings.ToLower(assistantLabel)) {
+		t.Fatalf("expected final assistant row to omit assistant title label, got %q", row)
+	}
+	if !strings.Contains(row, "This is the final answer body.") {
+		t.Fatalf("expected final assistant row to keep body text, got %q", row)
+	}
+}
+
+func TestRenderAssistantBodyNormalizesLooseMarkdownSyntax(t *testing.T) {
+	row := renderChatRow(chatEntry{
+		Kind:  "assistant",
+		Title: assistantLabel,
+		Body: "####2. 执行工具超控制时不足-\n-**建议所有**：添加工具超时上下文支持，输出统计####",
+		Status: "final",
+	}, 100)
+
+	for _, unwanted := range []string{"####2.", "-**", "**", "####"} {
+		if strings.Contains(row, unwanted) {
+			t.Fatalf("expected rendered assistant text to avoid raw markdown token %q, got %q", unwanted, row)
+		}
+	}
+	for _, wanted := range []string{"2. 执行工具超控制时不足-", "建议所有", "输出统计"} {
+		if !strings.Contains(row, wanted) {
+			t.Fatalf("expected rendered assistant text to keep content %q, got %q", wanted, row)
+		}
+	}
+}
+
 func TestHandleAgentEventShowsToolProgressInChat(t *testing.T) {
 	m := model{
 		chatItems: []chatEntry{
@@ -1183,7 +1237,7 @@ func TestToolStartKeepsStreamedAssistantReasoning(t *testing.T) {
 	}
 }
 
-func TestToolStartWithoutAssistantDeltaDoesNotInjectThinkingCard(t *testing.T) {
+func TestToolStartWithoutAssistantDeltaInjectsThinkingCard(t *testing.T) {
 	m := model{
 		chatItems: []chatEntry{
 			{Kind: "user", Title: "You", Body: "list files", Status: "final"},
@@ -1197,11 +1251,194 @@ func TestToolStartWithoutAssistantDeltaDoesNotInjectThinkingCard(t *testing.T) {
 		ToolArguments: `{"path":"."}`,
 	})
 
-	if len(m.chatItems) != 2 {
-		t.Fatalf("expected only tool call entry to be appended, got %d items", len(m.chatItems))
+	if len(m.chatItems) != 3 {
+		t.Fatalf("expected thinking and tool entries to be appended, got %d items", len(m.chatItems))
 	}
-	if m.chatItems[1].Kind != "tool" || !strings.Contains(m.chatItems[1].Title, "Tool Call | list_files") {
-		t.Fatalf("expected tool call entry, got %+v", m.chatItems[1])
+	if m.chatItems[1].Kind != "assistant" || m.chatItems[1].Title != thinkingLabel || m.chatItems[1].Status != "thinking" {
+		t.Fatalf("expected injected thinking entry, got %+v", m.chatItems[1])
+	}
+	if !strings.Contains(m.chatItems[1].Body, "call `list_files`") {
+		t.Fatalf("expected thinking entry to explain upcoming tool, got %+v", m.chatItems[1])
+	}
+	if m.chatItems[2].Kind != "tool" || !strings.Contains(m.chatItems[2].Title, "Tool Call | list_files") {
+		t.Fatalf("expected tool call entry, got %+v", m.chatItems[2])
+	}
+}
+
+func TestBuildModeKeepsPlanPanelDisabled(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		screen: screenChat,
+		width:  140,
+		height: 24,
+		input:  input,
+		mode:   modeBuild,
+	}
+	m.syncViewportSize()
+	if m.hasPlanPanel() {
+		t.Fatalf("expected plan panel to stay disabled in build mode")
+	}
+	if m.showPlanSidebar() {
+		t.Fatalf("expected build mode to avoid sidebar")
+	}
+	if m.planView.Width != 0 || m.planView.Height != 0 {
+		t.Fatalf("expected plan viewport to stay zero-sized in build mode, got %dx%d", m.planView.Width, m.planView.Height)
+	}
+}
+
+func TestStylesForChatItemThinkingHidesStatusAndShowsHeader(t *testing.T) {
+	styles := stylesForChatItem(chatEntry{
+		Kind:   "assistant",
+		Title:  assistantLabel,
+		Body:   "thinking",
+		Status: "thinking",
+	})
+	if !styles.showHeader {
+		t.Fatalf("expected thinking item to keep header")
+	}
+	if styles.status != "" {
+		t.Fatalf("expected thinking item status to be hidden, got %q", styles.status)
+	}
+	if styles.displayTitle != "thinking" {
+		t.Fatalf("expected thinking display title, got %q", styles.displayTitle)
+	}
+}
+
+func TestStylesForChatItemAssistantFinalHidesHeader(t *testing.T) {
+	styles := stylesForChatItem(chatEntry{
+		Kind:   "assistant",
+		Title:  assistantLabel,
+		Body:   "done",
+		Status: "final",
+	})
+	if styles.showHeader {
+		t.Fatalf("expected final assistant output to hide header")
+	}
+	if styles.status != "" {
+		t.Fatalf("expected final status to be hidden, got %q", styles.status)
+	}
+}
+
+func TestMouseOverPlanOutsideSidebarReturnsFalse(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		screen: screenChat,
+		width:  90,
+		height: 24,
+		input:  input,
+		mode:   modePlan,
+	}
+	m.syncViewportSize()
+	if m.showPlanSidebar() {
+		t.Fatalf("expected narrow layout to hide sidebar")
+	}
+	if m.mouseOverPlan(10, 10) {
+		t.Fatalf("expected mouse position outside plan area to return false")
+	}
+}
+
+func TestShowPlanSidebarThresholdBoundary(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		screen: screenChat,
+		height: 24,
+		input:  input,
+		mode:   modePlan,
+	}
+
+	innerThreshold := planSidebarMinWidth
+	frame := panelStyle.GetHorizontalFrameSize()
+
+	m.width = innerThreshold + frame - 1
+	if m.showPlanSidebar() {
+		t.Fatalf("expected width below threshold to hide sidebar")
+	}
+
+	m.width = innerThreshold + frame
+	if !m.showPlanSidebar() {
+		t.Fatalf("expected width at threshold to show sidebar")
+	}
+}
+
+func TestRenderMainPanelIncludesPlanSidebarInPlanMode(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		screen:    screenChat,
+		width:     140,
+		height:    24,
+		input:     input,
+		viewport:  viewport.New(0, 0),
+		planView:  viewport.New(0, 0),
+		mode:      modePlan,
+		workspace: "E:\\bytemind",
+		plan: planpkg.State{
+			Phase: planpkg.PhaseReady,
+			Goal:  "Ship panel rendering",
+			Steps: []planpkg.Step{{Title: "Step 1", Status: planpkg.StepInProgress}},
+		},
+	}
+
+	m.refreshViewport()
+	panel := m.renderMainPanel()
+	if !strings.Contains(panel, "PLAN") {
+		t.Fatalf("expected main panel to include plan sidebar content, got %q", panel)
+	}
+	if !strings.Contains(panel, "Phase: ready") {
+		t.Fatalf("expected plan phase details in sidebar, got %q", panel)
+	}
+}
+
+func TestRefreshViewportClearsPlanViewWhenPanelDisabled(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		screen:    screenChat,
+		width:     140,
+		height:    24,
+		input:     input,
+		viewport:  viewport.New(0, 0),
+		planView:  viewport.New(0, 0),
+		mode:      modeBuild,
+		workspace: "E:\\bytemind",
+	}
+	m.planView.SetContent("stale plan")
+	m.planView.SetYOffset(3)
+
+	m.refreshViewport()
+
+	if m.planView.View() != "" {
+		t.Fatalf("expected plan viewport content to be cleared in build mode")
+	}
+	if m.planView.YOffset != 0 {
+		t.Fatalf("expected plan viewport offset reset, got %d", m.planView.YOffset)
+	}
+}
+
+func TestMouseOverPlanRespectsComputedBounds(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		screen:   screenChat,
+		width:    140,
+		height:   24,
+		input:    input,
+		viewport: viewport.New(0, 0),
+		planView: viewport.New(0, 0),
+		mode:     modePlan,
+	}
+	m.syncViewportSize()
+	if m.planView.Width <= 0 || m.planView.Height <= 0 {
+		t.Fatalf("expected plan viewport dimensions in plan mode, got %dx%d", m.planView.Width, m.planView.Height)
+	}
+	contentLeft := panelStyle.GetHorizontalFrameSize() / 2
+	planLeft := contentLeft + m.conversationPanelWidth() + 1
+	contentTop := panelStyle.GetVerticalFrameSize()/2 + lipgloss.Height(m.renderStatusBar()) + 1
+	if !m.mouseOverPlan(planLeft, contentTop) {
+		t.Fatalf("expected top-left plan coordinate to be inside panel")
+	}
+	if m.mouseOverPlan(planLeft-1, contentTop) {
+		t.Fatalf("expected coordinate left of plan panel to be outside")
+	}
+	if m.mouseOverPlan(planLeft, contentTop+m.planView.Height) {
+		t.Fatalf("expected coordinate below plan panel to be outside")
 	}
 }
 
