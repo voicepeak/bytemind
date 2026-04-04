@@ -7,6 +7,50 @@ import (
 	"time"
 )
 
+func TestWorkspaceFileIndexNilSafety(t *testing.T) {
+	var idx *WorkspaceFileIndex
+	if got := idx.Search("", 0); got != nil {
+		t.Fatalf("expected nil search result for nil index, got %#v", got)
+	}
+	stats := idx.Stats()
+	if stats.Count != 0 || stats.MaxFiles != 0 || stats.Truncated || stats.Ready {
+		t.Fatalf("expected zero stats for nil index, got %#v", stats)
+	}
+}
+
+func TestNewStaticWorkspaceFileIndexNormalizesCandidates(t *testing.T) {
+	idx := NewStaticWorkspaceFileIndex([]Candidate{
+		{Path: " internal\\tui\\model.go "},
+		{Path: ""},
+		{Path: "README.md", BaseName: "README.md", TypeTag: "md"},
+	}, 0, true)
+
+	stats := idx.Stats()
+	if !stats.Ready {
+		t.Fatalf("expected static index to be ready")
+	}
+	if !stats.Truncated {
+		t.Fatalf("expected static index to preserve truncated flag")
+	}
+	if stats.MaxFiles != 2 {
+		t.Fatalf("expected max files to default to valid candidate count, got %d", stats.MaxFiles)
+	}
+
+	results := idx.Search("", 10)
+	if len(results) != 2 {
+		t.Fatalf("expected two valid candidates, got %d", len(results))
+	}
+	if results[0].Path != "README.md" || results[0].BaseName != "README.md" || results[0].TypeTag != "md" {
+		t.Fatalf("unexpected first candidate: %#v", results[0])
+	}
+	if results[1].Path != "internal/tui/model.go" {
+		t.Fatalf("expected normalized slash path, got %#v", results[1])
+	}
+	if results[1].BaseName != "model.go" || results[1].TypeTag != "go" {
+		t.Fatalf("expected basename/tag to be auto-filled, got %#v", results[1])
+	}
+}
+
 func TestFindActiveToken(t *testing.T) {
 	t.Run("detects trailing mention", func(t *testing.T) {
 		token, ok := FindActiveToken("please check @model")
@@ -52,6 +96,31 @@ func TestInsertIntoInput(t *testing.T) {
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
+}
+
+func TestInsertIntoInputHandlesMidTokenAndInvalidRange(t *testing.T) {
+	t.Run("insert before non-space tail", func(t *testing.T) {
+		input := "open @mod,now"
+		token := Token{
+			Query: "mod",
+			Start: len([]rune("open ")),
+			End:   len([]rune("open @mod")),
+		}
+		got := InsertIntoInput(input, token, "internal/tui/model.go")
+		want := "open @internal/tui/model.go ,now"
+		if got != want {
+			t.Fatalf("expected %q, got %q", want, got)
+		}
+	})
+
+	t.Run("invalid token range keeps original", func(t *testing.T) {
+		input := "open @mod"
+		token := Token{Start: -1, End: 3}
+		got := InsertIntoInput(input, token, "x.go")
+		if got != input {
+			t.Fatalf("expected input to remain unchanged, got %q", got)
+		}
+	})
 }
 
 func TestWorkspaceFileIndexSearchSkipsIgnoredDirectories(t *testing.T) {
@@ -203,6 +272,47 @@ func TestMentionTypeTag(t *testing.T) {
 		if got := mentionTypeTag(input); got != want {
 			t.Fatalf("expected mentionTypeTag(%q)=%q, got %q", input, want, got)
 		}
+	}
+}
+
+func TestMentionMaxFilesFromEnvFallbacks(t *testing.T) {
+	t.Setenv("BYTEMIND_MENTION_MAX_FILES", "abc")
+	if got := mentionMaxFilesFromEnv(); got != mentionIndexDefaultMaxFiles {
+		t.Fatalf("expected invalid env to use default max files, got %d", got)
+	}
+
+	t.Setenv("BYTEMIND_MENTION_MAX_FILES", "0")
+	if got := mentionMaxFilesFromEnv(); got != mentionIndexDefaultMaxFiles {
+		t.Fatalf("expected non-positive env to use default max files, got %d", got)
+	}
+}
+
+func TestMentionIgnoreMatcherCoversExactAndGlob(t *testing.T) {
+	matcher := mentionIgnoreMatcher{
+		exact: map[string]struct{}{
+			"secret.txt":      {},
+			"docs/private.md": {},
+		},
+		globs: []string{"logs/*", "*.tmp"},
+	}
+
+	if !matcher.SkipFile("secret.txt", "secret.txt") {
+		t.Fatalf("expected exact name rule to match")
+	}
+	if !matcher.SkipFile("private.md", "docs/private.md") {
+		t.Fatalf("expected exact path rule to match")
+	}
+	if !matcher.SkipFile("error.log", "logs/error.log") {
+		t.Fatalf("expected glob path rule to match")
+	}
+	if !matcher.SkipFile("cache.tmp", "cache.tmp") {
+		t.Fatalf("expected glob name rule to match")
+	}
+	if matcher.SkipFile("README.md", "README.md") {
+		t.Fatalf("did not expect non-matching file to be skipped")
+	}
+	if matcher.SkipFile("", "") {
+		t.Fatalf("did not expect empty values to be skipped")
 	}
 }
 

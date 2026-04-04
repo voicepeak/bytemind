@@ -364,6 +364,14 @@ func TestContinueExecutionInputPreparesPlanAndSubmitsPrompt(t *testing.T) {
 	}
 }
 
+func TestIsContinueExecutionInputSupportsPlanAlias(t *testing.T) {
+	for _, input := range []string{"continue plan", "继续做"} {
+		if !isContinueExecutionInput(input) {
+			t.Fatalf("expected %q to be treated as continue input", input)
+		}
+	}
+}
+
 func TestWindowSizeMsgUpdatesViewportDimensions(t *testing.T) {
 	input := textarea.New()
 	m := model{

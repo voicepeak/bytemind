@@ -64,9 +64,7 @@ func NewWorkspaceFileIndex(workspace string) *WorkspaceFileIndex {
 }
 
 func NewStaticWorkspaceFileIndex(candidates []Candidate, maxFiles int, truncated bool) *WorkspaceFileIndex {
-	if maxFiles <= 0 {
-		maxFiles = len(candidates)
-	}
+	defaultMax := maxFiles <= 0
 	copied := make([]Candidate, 0, len(candidates))
 	for _, item := range candidates {
 		candidate := item
@@ -81,6 +79,9 @@ func NewStaticWorkspaceFileIndex(candidates []Candidate, maxFiles int, truncated
 			candidate.TypeTag = mentionTypeTag(candidate.Path)
 		}
 		copied = append(copied, candidate)
+	}
+	if defaultMax {
+		maxFiles = len(copied)
 	}
 	sort.Slice(copied, func(i, j int) bool {
 		return copied[i].Path < copied[j].Path
