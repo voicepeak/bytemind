@@ -5,6 +5,7 @@ import (
 	"io"
 	"strconv"
 
+	"bytemind/internal/assets"
 	"bytemind/internal/config"
 	"bytemind/internal/tui"
 )
@@ -50,12 +51,21 @@ func runTUI(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if *maxIterations > 0 {
 		cfg.MaxIterations = *maxIterations
 	}
+	home, err := config.EnsureHomeLayout()
+	if err != nil {
+		return err
+	}
+	imageStore, err := assets.NewFileAssetStore(home)
+	if err != nil {
+		return err
+	}
 
 	return tui.Run(tui.Options{
-		Runner:    app,
-		Store:     store,
-		Session:   sess,
-		Config:    cfg,
-		Workspace: sess.Workspace,
+		Runner:     app,
+		Store:      store,
+		Session:    sess,
+		ImageStore: imageStore,
+		Config:     cfg,
+		Workspace:  sess.Workspace,
 	})
 }

@@ -545,6 +545,58 @@ func TestAltEnterInsertsNewlineWithoutSubmitting(t *testing.T) {
 	}
 }
 
+func TestAltVPastesClipboardImage(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.clipboard = fakeClipboardImageReader{
+		mediaType: "image/png",
+		data:      []byte("clipboard"),
+		fileName:  "clipboard.png",
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}, Alt: true})
+	updated := got.(model)
+	if updated.input.Value() != "[Image #1]" {
+		t.Fatalf("expected alt+v to paste clipboard image placeholder, got %q", updated.input.Value())
+	}
+	if !strings.Contains(updated.statusNote, "Attached image from clipboard") {
+		t.Fatalf("expected clipboard status note, got %q", updated.statusNote)
+	}
+}
+
+func TestTerminalPasteEventWithEmptyPayloadPastesClipboardImage(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.clipboard = fakeClipboardImageReader{
+		mediaType: "image/png",
+		data:      []byte("clipboard"),
+		fileName:  "clipboard.png",
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Paste: true})
+	updated := got.(model)
+	if updated.input.Value() != "[Image #1]" {
+		t.Fatalf("expected empty paste event to attach clipboard image, got %q", updated.input.Value())
+	}
+}
+
+func TestTerminalPasteEventWithTextDoesNotForceClipboardImage(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.clipboard = fakeClipboardImageReader{
+		err: errors.New("clipboard image unavailable"),
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello"), Paste: true})
+	updated := got.(model)
+	if updated.input.Value() != "hello" {
+		t.Fatalf("expected text paste to remain text, got %q", updated.input.Value())
+	}
+	if strings.Contains(updated.input.Value(), "[Image #") {
+		t.Fatalf("expected no image placeholder for text paste")
+	}
+}
+
 func TestImmediateEnterAfterPasteDoesNotSubmit(t *testing.T) {
 	input := textarea.New()
 	input.Focus()

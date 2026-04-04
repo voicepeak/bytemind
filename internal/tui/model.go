@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"bytemind/internal/agent"
+	"bytemind/internal/assets"
 	"bytemind/internal/config"
+	"bytemind/internal/llm"
 	"bytemind/internal/mention"
 	planpkg "bytemind/internal/plan"
 	"bytemind/internal/session"
@@ -118,11 +120,12 @@ var commandItems = []commandItem{
 }
 
 type model struct {
-	runner    *agent.Runner
-	store     *session.Store
-	sess      *session.Session
-	cfg       config.Config
-	workspace string
+	runner     *agent.Runner
+	store      *session.Store
+	sess       *session.Session
+	imageStore assets.ImageStore
+	cfg        config.Config
+	workspace  string
 
 	width  int
 	height int
@@ -159,6 +162,10 @@ type model struct {
 	mentionIndex   *mention.WorkspaceFileIndex
 	mentionRecent  map[string]int
 	mentionSeq     int
+	inputImageRefs map[int]llm.AssetID
+	orphanedImages map[llm.AssetID]time.Time
+	nextImageID    int
+	clipboard      clipboardImageReader
 	lastPasteAt    time.Time
 	lastInputAt    time.Time
 	inputBurstSize int
@@ -208,6 +215,7 @@ func newModel(opts Options) model {
 		runner:         opts.Runner,
 		store:          opts.Store,
 		sess:           opts.Session,
+		imageStore:     opts.ImageStore,
 		cfg:            opts.Config,
 		workspace:      opts.Workspace,
 		async:          async,
@@ -228,7 +236,12 @@ func newModel(opts Options) model {
 		llmConnected:   true,
 		chatAutoFollow: true,
 		mentionIndex:   mention.NewWorkspaceFileIndex(opts.Workspace),
+		inputImageRefs: make(map[int]llm.AssetID, 8),
+		orphanedImages: make(map[llm.AssetID]time.Time, 8),
+		nextImageID:    nextSessionImageID(opts.Session),
+		clipboard:      defaultClipboardImageReader{},
 	}
+	m.ensureSessionImageAssets()
 	m.syncInputStyle()
 	m.syncInputOverlays()
 	if m.mentionIndex != nil {
@@ -303,7 +316,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		if m.input.Value() != before {
-			m.noteInputMutation(before, m.input.Value(), "")
+			m.handleInputMutation(before, m.input.Value(), "")
 			m.syncInputOverlays()
 		}
 		return m, cmd
@@ -559,6 +572,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.sessionsOpen = true
 		}
 		return m, m.loadSessionsCmd()
+	case "alt+v":
+		if !m.busy {
+			if note := m.handleEmptyClipboardPaste(); strings.TrimSpace(note) != "" {
+				m.statusNote = note
+			}
+			m.syncInputOverlays()
+		}
+		return m, nil
 	case "ctrl+n":
 		if !m.busy && m.screen == screenChat {
 			if err := m.newSession(); err != nil {
@@ -585,7 +606,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		if m.input.Value() != before {
-			m.noteInputMutation(before, m.input.Value(), "alt+enter")
+			m.handleInputMutation(before, m.input.Value(), "alt+enter")
 			m.syncInputOverlays()
 		}
 		return m, cmd
@@ -597,7 +618,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			if m.input.Value() != before {
-				m.noteInputMutation(before, m.input.Value(), "paste-enter")
+				m.handleInputMutation(before, m.input.Value(), "paste-enter")
 				m.syncInputOverlays()
 			}
 			return m, cmd
@@ -643,8 +664,26 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	before := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	if m.input.Value() != before {
-		m.noteInputMutation(before, m.input.Value(), msg.String())
+	after := m.input.Value()
+	if after != before {
+		m.handleInputMutation(before, after, msg.String())
+		after = m.input.Value()
+	}
+	triggerClipboardImagePaste := shouldTriggerClipboardImagePaste(before, after, msg.String())
+	if !triggerClipboardImagePaste && msg.Paste {
+		_, inserted, _ := insertionDiff(before, after)
+		cleanInserted := strings.TrimSpace(strings.ReplaceAll(inserted, ctrlVMarkerRune, ""))
+		if cleanInserted == "" {
+			triggerClipboardImagePaste = true
+		}
+	}
+	if triggerClipboardImagePaste {
+		if cleaned, changed := stripCtrlVMarker(m.input.Value()); changed {
+			m.setInputValue(cleaned)
+		}
+		if note := m.handleEmptyClipboardPaste(); strings.TrimSpace(note) != "" {
+			m.statusNote = note
+		}
 	}
 	m.syncInputOverlays()
 	return m, cmd
@@ -721,7 +760,7 @@ func (m model) handleCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	if m.input.Value() != before {
-		m.noteInputMutation(before, m.input.Value(), msg.String())
+		m.handleInputMutation(before, m.input.Value(), msg.String())
 		m.syncInputOverlays()
 	}
 	return m, cmd
@@ -787,7 +826,7 @@ func (m model) handleMentionPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	if m.input.Value() != before {
-		m.noteInputMutation(before, m.input.Value(), msg.String())
+		m.handleInputMutation(before, m.input.Value(), msg.String())
 		m.syncInputOverlays()
 	}
 	return m, cmd
@@ -864,6 +903,17 @@ func (m *model) noteInputMutation(before, after, source string) {
 	}
 }
 
+func (m *model) handleInputMutation(before, after, source string) {
+	m.noteInputMutation(before, after, source)
+	updated, note := m.applyInputImagePipeline(before, after, source)
+	if updated != after {
+		m.setInputValue(updated)
+	}
+	if strings.TrimSpace(note) != "" {
+		m.statusNote = note
+	}
+}
+
 func lenCommonPrefix(a, b string) int {
 	limit := min(len(a), len(b))
 	for i := 0; i < limit; i++ {
@@ -875,13 +925,19 @@ func lenCommonPrefix(a, b string) int {
 }
 
 func (m model) submitPrompt(value string) (tea.Model, tea.Cmd) {
+	promptInput, displayText, err := m.buildPromptInput(value)
+	if err != nil {
+		m.statusNote = err.Error()
+		return m, nil
+	}
+
 	m.input.Reset()
 	m.screen = screenChat
 	m.appendChat(chatEntry{
 		Kind:   "user",
 		Title:  "You",
 		Meta:   formatUserMeta(m.currentModelLabel(), time.Now()),
-		Body:   value,
+		Body:   displayText,
 		Status: "final",
 	})
 	m.streamingIndex = -1
@@ -894,7 +950,7 @@ func (m model) submitPrompt(value string) (tea.Model, tea.Cmd) {
 		m.syncLayoutForCurrentScreen()
 		m.refreshViewport()
 	}
-	return m, tea.Batch(m.startRunCmd(value, string(m.mode)), m.spinner.Tick, waitForAsync(m.async))
+	return m, tea.Batch(m.startRunCmd(promptInput, string(m.mode)), m.spinner.Tick, waitForAsync(m.async))
 }
 
 func (m *model) handleAgentEvent(event agent.Event) {
@@ -1730,6 +1786,10 @@ func (m *model) newSession() error {
 	m.streamingIndex = -1
 	m.statusNote = "Started a new session."
 	m.chatAutoFollow = true
+	m.inputImageRefs = make(map[int]llm.AssetID, 8)
+	m.orphanedImages = make(map[llm.AssetID]time.Time, 8)
+	m.nextImageID = nextSessionImageID(next)
+	m.ensureSessionImageAssets()
 	m.input.Reset()
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()
@@ -1758,6 +1818,11 @@ func (m *model) resumeSession(prefix string) error {
 	m.streamingIndex = -1
 	m.statusNote = "Resumed session " + shortID(next.ID)
 	m.chatAutoFollow = true
+	m.inputImageRefs = make(map[int]llm.AssetID, 8)
+	m.orphanedImages = make(map[llm.AssetID]time.Time, 8)
+	m.nextImageID = nextSessionImageID(next)
+	m.ensureSessionImageAssets()
+	m.syncInputImageRefs("")
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()
 		m.refreshViewport()
@@ -1765,10 +1830,10 @@ func (m *model) resumeSession(prefix string) error {
 	return nil
 }
 
-func (m model) startRunCmd(prompt, mode string) tea.Cmd {
+func (m model) startRunCmd(prompt agent.RunPromptInput, mode string) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
-			_, err := m.runner.RunPrompt(context.Background(), m.sess, prompt, mode, io.Discard)
+			_, err := m.runner.RunPromptWithInput(context.Background(), m.sess, prompt, mode, io.Discard)
 			m.async <- runFinishedMsg{Err: err}
 		}()
 		return nil
@@ -2479,6 +2544,7 @@ func (m *model) syncCommandPalette() {
 func (m *model) syncInputOverlays() {
 	m.syncCommandPalette()
 	m.syncMentionPalette()
+	m.syncInputImageRefs(m.input.Value())
 }
 
 func (m *model) syncMentionPalette() {
