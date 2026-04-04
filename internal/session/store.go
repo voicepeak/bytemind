@@ -24,6 +24,12 @@ const (
 	schemaVersion     = 1
 )
 
+type ActiveSkill struct {
+	Name        string            `json:"name"`
+	Args        map[string]string `json:"args,omitempty"`
+	ActivatedAt time.Time         `json:"activated_at,omitempty"`
+}
+
 type Session struct {
 	ID           string            `json:"id"`
 	Workspace    string            `json:"workspace"`
@@ -33,6 +39,7 @@ type Session struct {
 	Messages     []llm.Message     `json:"messages,omitempty"`
 	Mode         planpkg.AgentMode `json:"mode,omitempty"`
 	Plan         planpkg.State     `json:"plan,omitempty"`
+	ActiveSkill  *ActiveSkill      `json:"active_skill,omitempty"`
 }
 
 type Conversation struct {
@@ -123,6 +130,7 @@ func (s *Store) Save(session *Session) error {
 		}
 	}
 	session.Plan = planpkg.NormalizeState(session.Plan)
+	session.ActiveSkill = normalizeActiveSkill(session.ActiveSkill)
 	if len(session.Plan.Steps) > 0 {
 		session.Plan.UpdatedAt = session.UpdatedAt
 	}
@@ -305,8 +313,38 @@ func normalizeLoadedSession(sess *Session, path string) {
 		sess.Mode = planpkg.ModeBuild
 	}
 	sess.Plan = planpkg.NormalizeState(sess.Plan)
+	sess.ActiveSkill = normalizeActiveSkill(sess.ActiveSkill)
 	if len(sess.Plan.Steps) > 0 && sess.Plan.UpdatedAt.IsZero() {
 		sess.Plan.UpdatedAt = sess.UpdatedAt
+	}
+}
+
+func normalizeActiveSkill(raw *ActiveSkill) *ActiveSkill {
+	if raw == nil {
+		return nil
+	}
+	name := strings.TrimSpace(raw.Name)
+	if name == "" {
+		return nil
+	}
+
+	args := make(map[string]string, len(raw.Args))
+	for key, value := range raw.Args {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		args[key] = value
+	}
+	if len(args) == 0 {
+		args = nil
+	}
+
+	return &ActiveSkill{
+		Name:        name,
+		Args:        args,
+		ActivatedAt: raw.ActivatedAt,
 	}
 }
 
