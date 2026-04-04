@@ -138,3 +138,56 @@ func TestRunPromptWithInputFallsBackToDisplayTextWhenUserMessageEmpty(t *testing
 		t.Fatalf("expected fallback display text to be used, got %q", sess.Messages[0].Text())
 	}
 }
+
+func TestRunPromptWithInputPlanModeSetsGoalFromUserMessageWhenDisplayTextBlank(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+
+	client := &fakeClient{
+		replies: []llm.Message{
+			llm.NewAssistantTextMessage("drafted plan"),
+		},
+	}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "gpt-4o"},
+			MaxIterations: 2,
+			Stream:        false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPromptWithInput(context.Background(), sess, RunPromptInput{
+		UserMessage: llm.Message{
+			Role: llm.RoleUser,
+			Parts: []llm.Part{
+				{Type: llm.PartText, Text: &llm.TextPart{Value: "plan from structured prompt"}},
+			},
+		},
+		DisplayText: "   ",
+	}, "plan", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(answer, "drafted plan") {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+	if !strings.Contains(answer, "Plan mode requires a structured plan") {
+		t.Fatalf("expected plan-mode reminder in answer, got %q", answer)
+	}
+	if sess.Plan.Goal != "plan from structured prompt" {
+		t.Fatalf("expected plan goal from structured user message text, got %q", sess.Plan.Goal)
+	}
+	if sess.Mode != "plan" {
+		t.Fatalf("expected session mode to be plan, got %q", sess.Mode)
+	}
+}

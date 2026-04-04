@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -371,5 +372,198 @@ func TestIsCtrlVKeyAcceptsControlMarker(t *testing.T) {
 	}
 	if !isCtrlVKey("[" + ctrlVMarkerRune + "]") {
 		t.Fatalf("expected bracketed control marker to be treated as ctrl+v")
+	}
+}
+
+func TestDefaultClipboardImageReaderReturnsUnavailableOnNonWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-windows behavior only")
+	}
+
+	_, _, _, err := defaultClipboardImageReader{}.ReadImage(context.Background())
+	if err == nil {
+		t.Fatal("expected clipboard reader to fail on non-windows")
+	}
+	perr, ok := err.(*llm.ProviderError)
+	if !ok {
+		t.Fatalf("expected provider error, got %T", err)
+	}
+	if perr.Code != llm.ErrorCodeClipboardUnavailable {
+		t.Fatalf("expected clipboard_unavailable code, got %q", perr.Code)
+	}
+}
+
+func TestApplyWholeInputImagePathFallbackRequiresPasteSignalOrRecentPaste(t *testing.T) {
+	m := newImagePipelineModel(t)
+	imagePath := filepath.Join(m.workspace, "fallback.png")
+	if err := os.WriteFile(imagePath, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+
+	unchanged, note := m.applyWholeInputImagePathFallback(imagePath, "rune")
+	if unchanged != imagePath {
+		t.Fatalf("expected no fallback conversion without paste signal, got %q", unchanged)
+	}
+	if note != "" {
+		t.Fatalf("expected no note without conversion, got %q", note)
+	}
+
+	m.lastPasteAt = time.Now()
+	updated, note := m.applyWholeInputImagePathFallback(imagePath, "rune")
+	if updated != "[Image #1]" {
+		t.Fatalf("expected fallback conversion with recent paste window, got %q", updated)
+	}
+	if !strings.Contains(note, "Attached 1 image") {
+		t.Fatalf("expected attach note, got %q", note)
+	}
+}
+
+func TestBindMentionImageAssetRebindMarksPreviousAssetOrphaned(t *testing.T) {
+	m := newImagePipelineModel(t)
+	_ = mustIngestTestImage(t, m, "first")
+	_ = mustIngestTestImage(t, m, "second")
+	asset1 := findAssetIDByImageID(t, m, 1)
+	asset2 := findAssetIDByImageID(t, m, 2)
+
+	m.bindMentionImageAsset("2.1.jpg", asset1)
+	m.bindMentionImageAsset("2.1.jpg", asset2)
+
+	key := normalizeImageMentionPath("2.1.jpg")
+	if m.inputImageMentions[key] != asset2 {
+		t.Fatalf("expected mention key %q to point to new asset", key)
+	}
+	if _, ok := m.orphanedImages[asset1]; !ok {
+		t.Fatalf("expected previous mention asset %q to be orphaned after rebind", asset1)
+	}
+}
+
+func TestBuildPromptInputIgnoresForgedInvalidPlaceholderIDs(t *testing.T) {
+	m := newImagePipelineModel(t)
+	raw := "look [Image #999999999999999999999999]"
+
+	input, display, err := m.buildPromptInput(raw)
+	if err != nil {
+		t.Fatalf("build prompt input: %v", err)
+	}
+	if display != raw {
+		t.Fatalf("expected display text unchanged, got %q", display)
+	}
+	if len(input.Assets) != 0 {
+		t.Fatalf("expected no assets for forged placeholders, got %d", len(input.Assets))
+	}
+	if input.UserMessage.Text() != raw {
+		t.Fatalf("expected forged placeholders to remain literal text, got %q", input.UserMessage.Text())
+	}
+}
+
+func TestCollectImageAssetIDsFromMessagesDeduplicatesAndSkipsInvalid(t *testing.T) {
+	assetA := llm.AssetID("session-a:1")
+	assetB := llm.AssetID("session-a:2")
+	ids := collectImageAssetIDsFromMessages([]llm.Message{
+		{
+			Role: llm.RoleUser,
+			Parts: []llm.Part{
+				{Type: llm.PartText, Text: &llm.TextPart{Value: "text only"}},
+				{Type: llm.PartImageRef, Image: &llm.ImagePartRef{AssetID: assetA}},
+				{Type: llm.PartImageRef, Image: &llm.ImagePartRef{AssetID: assetA}},
+				{Type: llm.PartImageRef, Image: &llm.ImagePartRef{AssetID: "   "}},
+			},
+		},
+		{
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{
+				{Type: llm.PartImageRef, Image: &llm.ImagePartRef{AssetID: assetB}},
+			},
+		},
+	})
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 unique asset ids, got %#v", ids)
+	}
+	if ids[0] != assetA || ids[1] != assetB {
+		t.Fatalf("unexpected asset id order/content: %#v", ids)
+	}
+}
+
+func TestSplitPathTokensHandlesQuotedPathsWithSpaces(t *testing.T) {
+	tokens := splitPathTokens(`"a b/c.png" 'd e/f.jpg' plain.webp`)
+	if len(tokens) != 3 {
+		t.Fatalf("expected 3 tokens, got %#v", tokens)
+	}
+	if tokens[0] != "a b/c.png" || tokens[1] != "d e/f.jpg" || tokens[2] != "plain.webp" {
+		t.Fatalf("unexpected token split result: %#v", tokens)
+	}
+}
+
+func TestIngestImageBinaryRejectsInvalidRuntimeState(t *testing.T) {
+	t.Run("nil model", func(t *testing.T) {
+		var m *model
+		_, note, ok := m.ingestImageBinary("image/png", "x.png", []byte("png"))
+		if ok {
+			t.Fatal("expected ingest to fail for nil model")
+		}
+		if !strings.Contains(note, "session unavailable") {
+			t.Fatalf("unexpected note: %q", note)
+		}
+	})
+
+	t.Run("missing image store", func(t *testing.T) {
+		m := newImagePipelineModel(t)
+		m.imageStore = nil
+		_, note, ok := m.ingestImageBinary("image/png", "x.png", []byte("png"))
+		if ok {
+			t.Fatal("expected ingest to fail without image store")
+		}
+		if !strings.Contains(note, "image store unavailable") {
+			t.Fatalf("unexpected note: %q", note)
+		}
+	})
+
+	t.Run("empty payload", func(t *testing.T) {
+		m := newImagePipelineModel(t)
+		_, note, ok := m.ingestImageBinary("image/png", "x.png", nil)
+		if ok {
+			t.Fatal("expected ingest to fail for empty payload")
+		}
+		if !strings.Contains(note, "empty image payload") {
+			t.Fatalf("unexpected note: %q", note)
+		}
+	})
+}
+
+func TestHandleEmptyClipboardPasteReturnsReaderError(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.clipboard = fakeClipboardImageReader{
+		err: llm.WrapError("clipboard", llm.ErrorCodeClipboardUnavailable, os.ErrNotExist),
+	}
+
+	note := m.handleEmptyClipboardPaste()
+	if !strings.Contains(note, "file does not exist") && !strings.Contains(strings.ToLower(note), "not exist") {
+		t.Fatalf("expected clipboard error message to propagate, got %q", note)
+	}
+}
+
+func TestNormalizeImageMentionPathCleansRelativeSegments(t *testing.T) {
+	got := normalizeImageMentionPath("@./images/../2.1.jpg")
+	if got == "" {
+		t.Fatal("expected normalized mention path")
+	}
+	if strings.Contains(got, "..") {
+		t.Fatalf("expected cleaned mention path, got %q", got)
+	}
+	if strings.HasPrefix(got, "./") {
+		t.Fatalf("expected normalized path without ./ prefix, got %q", got)
+	}
+}
+
+func TestExtractMentionImageSpansOnlyReturnsBoundMentions(t *testing.T) {
+	bindings := map[string]llm.AssetID{
+		normalizeImageMentionPath("a.png"): "sess:1",
+	}
+	spans := extractMentionImageSpans("check @a.png and @b.png", bindings)
+	if len(spans) != 1 {
+		t.Fatalf("expected only bound mention span, got %#v", spans)
+	}
+	if spans[0].AssetID != "sess:1" {
+		t.Fatalf("unexpected bound asset id: %q", spans[0].AssetID)
 	}
 }
