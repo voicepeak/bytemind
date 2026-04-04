@@ -2009,6 +2009,63 @@ func TestBusyEnterQueuesBTWAndCancelsRun(t *testing.T) {
 	}
 }
 
+func TestBusyEnterInToolPhaseDefersBTWCancel(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	input.SetValue("change plan after this step")
+	input.CursorEnd()
+
+	canceled := false
+	m := model{
+		screen:    screenChat,
+		busy:      true,
+		phase:     "tool",
+		input:     input,
+		sess:      session.New("E:\\bytemind"),
+		workspace: "E:\\bytemind",
+		runCancel: func() { canceled = true },
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+
+	if canceled {
+		t.Fatalf("expected tool phase btw to defer cancel until tool step completes")
+	}
+	if !updated.interrupting || !updated.interruptSafe {
+		t.Fatalf("expected deferred interrupt flags, got interrupting=%v interruptSafe=%v", updated.interrupting, updated.interruptSafe)
+	}
+	if updated.statusNote != "BTW queued. Waiting for current tool step to finish..." {
+		t.Fatalf("expected deferred tool note, got %q", updated.statusNote)
+	}
+}
+
+func TestToolCallCompletedTriggersDeferredBTWCancel(t *testing.T) {
+	canceled := false
+	m := model{
+		interrupting:  true,
+		interruptSafe: true,
+		pendingBTW:    []string{"change plan"},
+		runCancel:     func() { canceled = true },
+	}
+
+	m.handleAgentEvent(agent.Event{
+		Type:       agent.EventToolCallCompleted,
+		ToolName:   "read_file",
+		ToolResult: `{"path":"internal/tui/model.go","start_line":1,"end_line":3}`,
+	})
+
+	if !canceled {
+		t.Fatalf("expected deferred btw cancel to trigger after tool completion")
+	}
+	if m.interruptSafe {
+		t.Fatalf("expected deferred interrupt flag to clear after cancel")
+	}
+	if m.phase != "interrupting" {
+		t.Fatalf("expected phase to switch to interrupting, got %q", m.phase)
+	}
+}
+
 func TestRunFinishedWithPendingBTWRestartsRun(t *testing.T) {
 	m := model{
 		async:        make(chan tea.Msg, 1),
@@ -2100,6 +2157,16 @@ func TestFormatBTWUpdateScope(t *testing.T) {
 	}
 	if got := formatBTWUpdateScope(3); got != "3 updates" {
 		t.Fatalf("expected multi-entry scope text, got %q", got)
+	}
+}
+
+func TestComposeBTWPromptSingleEntryKeepsContinuationContext(t *testing.T) {
+	got := composeBTWPrompt([]string{"delete calculator.py"})
+	if !strings.Contains(got, "Continue the same task") {
+		t.Fatalf("expected single btw prompt to preserve continuation context, got %q", got)
+	}
+	if !strings.Contains(got, "delete calculator.py") {
+		t.Fatalf("expected single btw prompt to include update content, got %q", got)
 	}
 }
 

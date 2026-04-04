@@ -179,6 +179,7 @@ type model struct {
 	runCancel      context.CancelFunc
 	pendingBTW     []string
 	interrupting   bool
+	interruptSafe  bool
 	runSeq         int
 	activeRunID    int
 }
@@ -287,6 +288,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamingIndex = -1
 		m.runCancel = nil
 		m.activeRunID = 0
+		m.interruptSafe = false
 		shouldResumeBTW := m.interrupting && len(m.pendingBTW) > 0
 		m.interrupting = false
 		finishReason := classifyRunFinish(msg.Err, shouldResumeBTW)
@@ -1031,15 +1033,23 @@ func (m model) submitBTW(value string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	wasToolPhase := m.phase == "tool"
 	m.interrupting = true
 	m.phase = "interrupting"
-	m.statusNote = "BTW received. Stopping current run..."
 	if m.runCancel != nil {
-		m.runCancel()
+		if wasToolPhase {
+			m.interruptSafe = true
+			m.statusNote = "BTW queued. Waiting for current tool step to finish..."
+		} else {
+			m.interruptSafe = false
+			m.statusNote = "BTW received. Stopping current run..."
+			m.runCancel()
+		}
 	} else {
 		prompt := composeBTWPrompt(m.pendingBTW)
 		m.pendingBTW = nil
 		m.interrupting = false
+		m.interruptSafe = false
 		return m, m.beginRun(prompt, string(m.mode), "BTW accepted. Restarting with your update...")
 	}
 	if m.width > 0 && m.height > 0 {
@@ -1091,6 +1101,12 @@ func (m *model) handleAgentEvent(event agent.Event) {
 		}
 		m.statusNote = summary
 		m.phase = "thinking"
+		if m.interruptSafe && m.interrupting && len(m.pendingBTW) > 0 && m.runCancel != nil {
+			m.interruptSafe = false
+			m.phase = "interrupting"
+			m.statusNote = "BTW received. Stopping current run..."
+			m.runCancel()
+		}
 	case agent.EventPlanUpdated:
 		m.plan = copyPlanState(event.Plan)
 		m.phase = string(planpkg.NormalizePhase(string(m.plan.Phase)))
@@ -1884,6 +1900,7 @@ func (m *model) newSession() error {
 	m.chatAutoFollow = true
 	m.pendingBTW = nil
 	m.interrupting = false
+	m.interruptSafe = false
 	m.runCancel = nil
 	m.activeRunID = 0
 	m.input.Reset()
@@ -1916,6 +1933,7 @@ func (m *model) resumeSession(prefix string) error {
 	m.chatAutoFollow = true
 	m.pendingBTW = nil
 	m.interrupting = false
+	m.interruptSafe = false
 	m.runCancel = nil
 	m.activeRunID = 0
 	if m.width > 0 && m.height > 0 {
@@ -3120,14 +3138,18 @@ func composeBTWPrompt(entries []string) string {
 		return ""
 	}
 	if len(cleaned) == 1 {
-		return cleaned[0]
+		return strings.Join([]string{
+			"User sent a BTW update while you were executing an existing task.",
+			"Continue the same task from the latest progress, and apply this update with high priority unless it explicitly changes the goal:",
+			cleaned[0],
+		}, "\n")
 	}
 	lines := make([]string, 0, len(cleaned)+2)
 	lines = append(lines, "User sent multiple BTW updates during execution. Later items have higher priority:")
 	for i, entry := range cleaned {
 		lines = append(lines, fmt.Sprintf("%d. %s", i+1, entry))
 	}
-	lines = append(lines, "Please continue the same task with these updates.")
+	lines = append(lines, "Please continue the same task with these updates and keep unfinished steps unless explicitly changed.")
 	return strings.Join(lines, "\n")
 }
 
