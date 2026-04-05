@@ -20,6 +20,7 @@ type Config struct {
 	MaxIterations  int            `json:"max_iterations"`
 	SessionDir     string         `json:"session_dir"`
 	Stream         bool           `json:"stream"`
+	TokenQuota     int            `json:"token_quota"`
 }
 
 type ProviderConfig struct {
@@ -53,6 +54,7 @@ func Default(workspace string) Config {
 		MaxIterations:  32,
 		SessionDir:     sessionDir,
 		Stream:         true,
+		TokenQuota:     5000,
 	}
 }
 
@@ -160,6 +162,7 @@ func ensureDefaultConfigFile(home string) error {
 		MaxIterations:  32,
 		SessionDir:     filepath.Join(home, "sessions"),
 		Stream:         true,
+		TokenQuota:     5000,
 	}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -253,6 +256,11 @@ func applyEnv(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("BYTEMIND_SESSION_DIR")); value != "" {
 		cfg.SessionDir = value
 	}
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_TOKEN_QUOTA")); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.TokenQuota = parsed
+		}
+	}
 }
 
 func normalize(workspace string, cfg *Config) error {
@@ -324,6 +332,9 @@ func normalize(workspace string, cfg *Config) error {
 		cfg.SessionDir = filepath.Join(workspace, cfg.SessionDir)
 	}
 	cfg.SessionDir = filepath.Clean(cfg.SessionDir)
+	if cfg.TokenQuota < 1 {
+		cfg.TokenQuota = 5000
+	}
 	return nil
 }
 

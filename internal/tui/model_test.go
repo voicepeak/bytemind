@@ -8,6 +8,7 @@ import (
 
 	"bytemind/internal/agent"
 	"bytemind/internal/config"
+	"bytemind/internal/llm"
 	planpkg "bytemind/internal/plan"
 	"bytemind/internal/session"
 	"bytemind/internal/tools"
@@ -180,6 +181,154 @@ func TestHandleMouseWheelScrollsLandingInputWhenPointerIsOverInput(t *testing.T)
 
 	if updated.input.Line() >= beforeLine {
 		t.Fatalf("expected landing input cursor to move up, got line %d -> %d", beforeLine, updated.input.Line())
+	}
+}
+
+func TestWrapPlainTextPrefersWordBoundariesForEnglish(t *testing.T) {
+	text := "Risks - this section should keep words intact"
+	got := wrapPlainText(text, 8)
+	lines := strings.Split(got, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "Ris") && !strings.Contains(line, "Risks") {
+			t.Fatalf("expected not to split 'Risks' across lines, got %q", got)
+		}
+		if strings.Contains(line, "Act") && !strings.Contains(line, "Action") {
+			t.Fatalf("expected not to split words abruptly, got %q", got)
+		}
+	}
+}
+
+func TestRenderMainPanelShowsTokenUsageBadge(t *testing.T) {
+	m := model{
+		screen:     screenChat,
+		width:      120,
+		height:     28,
+		input:      textarea.New(),
+		viewport:   viewport.New(60, 10),
+		tokenUsage: newTokenUsageComponent(),
+	}
+	m.viewport.SetContent(strings.Repeat("line\n", 40))
+	m.tokenUsage.displayUsed = 1234
+	_ = m.tokenUsage.SetUsage(1234, 5000)
+
+	panel := m.renderMainPanel()
+	if !strings.Contains(panel, "1,234 / 5,000") {
+		t.Fatalf("expected token usage badge text in main panel, got %q", panel)
+	}
+}
+
+func TestHandleMouseHoverTokenUsageConsumesEvent(t *testing.T) {
+	m := model{
+		screen:     screenChat,
+		width:      120,
+		height:     28,
+		input:      textarea.New(),
+		viewport:   viewport.New(60, 10),
+		tokenUsage: newTokenUsageComponent(),
+	}
+	m.viewport.SetContent(strings.Repeat("line\n", 60))
+	_ = m.tokenUsage.SetUsage(1500, 5000)
+	m.refreshViewport()
+
+	x := m.tokenUsage.bounds.x + max(0, m.tokenUsage.bounds.w/2)
+	y := m.tokenUsage.bounds.y
+	got, _ := m.handleMouse(tea.MouseMsg{
+		Action: tea.MouseActionMotion,
+		X:      x,
+		Y:      y,
+	})
+	updated := got.(model)
+	if !updated.tokenUsage.hover {
+		t.Fatalf("expected hover state to activate over token badge")
+	}
+}
+
+func TestHandleAgentEventUsageUpdatedAccumulatesRealTokens(t *testing.T) {
+	m := model{
+		tokenUsage:  newTokenUsageComponent(),
+		tokenBudget: 5000,
+	}
+
+	m.handleAgentEvent(agent.Event{
+		Type: agent.EventUsageUpdated,
+		Usage: llm.Usage{
+			InputTokens:   120,
+			OutputTokens:  40,
+			ContextTokens: 30,
+			TotalTokens:   190,
+		},
+	})
+
+	if m.tokenUsedTotal != 190 {
+		t.Fatalf("expected cumulative used tokens 190, got %d", m.tokenUsedTotal)
+	}
+	if m.tokenInput != 120 || m.tokenOutput != 40 || m.tokenContext != 30 {
+		t.Fatalf("unexpected token breakdown input=%d output=%d context=%d", m.tokenInput, m.tokenOutput, m.tokenContext)
+	}
+	if m.tokenUsage.used != 190 {
+		t.Fatalf("expected token component used value 190, got %d", m.tokenUsage.used)
+	}
+}
+
+func TestAssistantDeltaEstimationsAreCalibratedByOfficialUsage(t *testing.T) {
+	m := model{
+		tokenUsage:  newTokenUsageComponent(),
+		tokenBudget: 5000,
+	}
+
+	m.handleAgentEvent(agent.Event{Type: agent.EventRunStarted})
+	m.handleAgentEvent(agent.Event{
+		Type:    agent.EventAssistantDelta,
+		Content: "This is a streamed delta chunk for token estimation.",
+	})
+
+	estimated := m.tempEstimatedOutput
+	if estimated <= 0 {
+		t.Fatalf("expected temporary estimated output tokens to increase")
+	}
+	if m.tokenUsedTotal != estimated || m.tokenOutput != estimated {
+		t.Fatalf("expected provisional usage to be reflected immediately, used=%d output=%d estimated=%d", m.tokenUsedTotal, m.tokenOutput, estimated)
+	}
+
+	m.handleAgentEvent(agent.Event{
+		Type: agent.EventUsageUpdated,
+		Usage: llm.Usage{
+			InputTokens:   20,
+			OutputTokens:  7,
+			ContextTokens: 3,
+			TotalTokens:   30,
+		},
+	})
+
+	if m.tempEstimatedOutput != 0 {
+		t.Fatalf("expected temporary estimate to be cleared after calibration, got %d", m.tempEstimatedOutput)
+	}
+	if m.tokenUsedTotal != 30 {
+		t.Fatalf("expected total tokens to be calibrated to official total 30, got %d", m.tokenUsedTotal)
+	}
+	if m.tokenInput != 20 || m.tokenOutput != 7 || m.tokenContext != 3 {
+		t.Fatalf("expected official breakdown after calibration, got input=%d output=%d context=%d", m.tokenInput, m.tokenOutput, m.tokenContext)
+	}
+}
+
+func TestApplyUsageFallsBackToBreakdownWhenTotalIsZero(t *testing.T) {
+	m := model{
+		tokenUsage:  newTokenUsageComponent(),
+		tokenBudget: 5000,
+	}
+
+	m.handleAgentEvent(agent.Event{
+		Type: agent.EventUsageUpdated,
+		Usage: llm.Usage{
+			InputTokens:   11,
+			OutputTokens:  5,
+			ContextTokens: 4,
+			TotalTokens:   0,
+		},
+	})
+
+	if m.tokenUsedTotal != 20 {
+		t.Fatalf("expected fallback sum of usage breakdown (20), got %d", m.tokenUsedTotal)
 	}
 }
 
@@ -1688,6 +1837,37 @@ func TestUpdateRunFinishedMsgResetsBusyState(t *testing.T) {
 	})
 }
 
+func TestRunFinishedKeepsStreamingSlotForLateAssistantMessage(t *testing.T) {
+	m := model{
+		async: make(chan tea.Msg, 1),
+		busy:  true,
+		chatItems: []chatEntry{
+			{Kind: "user", Title: "You", Body: "测试", Status: "final"},
+			{Kind: "assistant", Title: assistantLabel, Body: "收到，", Status: "streaming"},
+		},
+		streamingIndex: 1,
+	}
+
+	got, _ := m.Update(runFinishedMsg{})
+	updated := got.(model)
+	if updated.streamingIndex != 1 {
+		t.Fatalf("expected run finished to keep streaming index for late final message, got %d", updated.streamingIndex)
+	}
+
+	updated.handleAgentEvent(agent.Event{
+		Type:    agent.EventAssistantMessage,
+		Content: "收到，响应正常。",
+	})
+
+	if len(updated.chatItems) != 2 {
+		t.Fatalf("expected late final message to update existing assistant card, got %d items", len(updated.chatItems))
+	}
+	last := updated.chatItems[1]
+	if last.Status != "final" || strings.TrimSpace(last.Body) != "收到，响应正常。" {
+		t.Fatalf("expected assistant card to be finalized in place, got %+v", last)
+	}
+}
+
 func TestUpdateSessionsLoadedMsgUpdatesAndClampsSessions(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		m := model{
@@ -1774,8 +1954,11 @@ func TestFormatChatBodySeparatesParagraphAndList(t *testing.T) {
 	}
 
 	got := formatChatBody(item, 80)
-	if !strings.Contains(got, "Explanation\n\n- first") {
-		t.Fatalf("expected list to be separated from paragraph, got %q", got)
+	if !strings.Contains(got, "Explanation") {
+		t.Fatalf("expected explanation text to remain, got %q", got)
+	}
+	if !strings.Contains(got, "• first") {
+		t.Fatalf("expected markdown list marker to be normalized, got %q", got)
 	}
 }
 
@@ -1806,6 +1989,29 @@ func TestFormatChatBodyRendersCodeBlockWithoutFences(t *testing.T) {
 	}
 	if !strings.Contains(got, "fmt.Println(\"hi\")") {
 		t.Fatalf("expected code contents to remain, got %q", got)
+	}
+}
+
+func TestFormatChatBodyStripsInlineMarkdownTokens(t *testing.T) {
+	item := chatEntry{
+		Kind: "assistant",
+		Body: "我是 **ByteMind** 项目，支持 `go test ./...` 与 [文档](https://example.com/docs)。",
+	}
+
+	got := formatChatBody(item, 120)
+	for _, unwanted := range []string{"**", "`", "[", "]("} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("expected inline markdown token %q to be removed, got %q", unwanted, got)
+		}
+	}
+	if !strings.Contains(got, "ByteMind") {
+		t.Fatalf("expected bold content to remain after normalization, got %q", got)
+	}
+	if !strings.Contains(got, "go test ./...") {
+		t.Fatalf("expected inline code content to remain after normalization, got %q", got)
+	}
+	if !strings.Contains(got, "文档 (https://example.com/docs)") {
+		t.Fatalf("expected markdown link to be normalized to plain text, got %q", got)
 	}
 }
 
