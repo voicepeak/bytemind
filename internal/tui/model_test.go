@@ -2700,28 +2700,28 @@ func TestRenderChatSectionToolHeaderOmitsStatusWords(t *testing.T) {
 	}
 }
 
-func TestAssistantDeltaPlanningTextRendersAsThinking(t *testing.T) {
+func TestAssistantDeltaPlanningTextStaysStreaming(t *testing.T) {
 	m := model{
 		chatItems: []chatEntry{
-			{Kind: "user", Title: "You", Body: "please inspect this project", Status: "final"},
+			{Kind: "user", Title: "You", Body: "inspect the project", Status: "final"},
 		},
 		streamingIndex: -1,
 	}
 
 	m.handleAgentEvent(agent.Event{
 		Type:    agent.EventAssistantDelta,
-		Content: "I will first inspect structure and config, then code organization and dependencies, and finally verify with build and tests.",
+		Content: "I will first inspect the project structure, then validate the build.",
 	})
 
 	if len(m.chatItems) != 2 {
 		t.Fatalf("expected assistant delta to append one assistant item, got %d", len(m.chatItems))
 	}
-	if m.chatItems[1].Title != thinkingLabel || m.chatItems[1].Status != "thinking" {
-		t.Fatalf("expected planning delta to render as thinking, got %+v", m.chatItems[1])
+	if m.chatItems[1].Title != assistantLabel || m.chatItems[1].Status != "streaming" {
+		t.Fatalf("expected planning delta to stay as streaming assistant output, got %+v", m.chatItems[1])
 	}
 }
 
-func TestFinishAssistantMessageAppendsFinalCardAfterThinking(t *testing.T) {
+func TestFinishAssistantMessageReplacesThinkingStreamingCard(t *testing.T) {
 	m := model{
 		chatItems: []chatEntry{
 			{Kind: "user", Title: "You", Body: "what project is this", Status: "final"},
@@ -2732,14 +2732,11 @@ func TestFinishAssistantMessageAppendsFinalCardAfterThinking(t *testing.T) {
 
 	m.finishAssistantMessage("This is a Go TUI project.")
 
-	if len(m.chatItems) != 3 {
-		t.Fatalf("expected final answer to be appended after thinking, got %d items", len(m.chatItems))
+	if len(m.chatItems) != 2 {
+		t.Fatalf("expected final answer to replace streaming thinking card, got %d items", len(m.chatItems))
 	}
-	if m.chatItems[1].Title != thinkingLabel || m.chatItems[1].Status != "thinking" {
-		t.Fatalf("expected thinking card to remain visible, got %+v", m.chatItems[1])
-	}
-	if m.chatItems[2].Title != assistantLabel || m.chatItems[2].Status != "final" || m.chatItems[2].Body != "This is a Go TUI project." {
-		t.Fatalf("expected final assistant card after thinking, got %+v", m.chatItems[2])
+	if m.chatItems[1].Title != assistantLabel || m.chatItems[1].Status != "final" || m.chatItems[1].Body != "This is a Go TUI project." {
+		t.Fatalf("expected final assistant card to replace thinking stream, got %+v", m.chatItems[1])
 	}
 }
 
@@ -3620,6 +3617,30 @@ func TestFinishAssistantMessageDoesNotAppendDuplicateCard(t *testing.T) {
 	}
 	if m.chatItems[0].Status != "final" {
 		t.Fatalf("expected assistant card to be marked final, got %q", m.chatItems[0].Status)
+	}
+}
+
+func TestAppendAssistantDeltaMergesOverlappingChunks(t *testing.T) {
+	m := model{
+		chatItems: []chatEntry{
+			{
+				Kind:   "assistant",
+				Title:  assistantLabel,
+				Body:   "The result is stream",
+				Status: "streaming",
+			},
+		},
+		streamingIndex: 0,
+	}
+
+	m.appendAssistantDelta("streaming mode.")
+	if m.chatItems[0].Body != "The result is streaming mode." {
+		t.Fatalf("expected overlap-aware merge, got %q", m.chatItems[0].Body)
+	}
+
+	m.appendAssistantDelta("The result is streaming mode with details.")
+	if m.chatItems[0].Body != "The result is streaming mode with details." {
+		t.Fatalf("expected cumulative chunk to replace content, got %q", m.chatItems[0].Body)
 	}
 }
 
