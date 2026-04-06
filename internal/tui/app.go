@@ -10,15 +10,10 @@ import (
 )
 
 type Options struct {
-	Runner     *agent.Runner
-	Store      *session.Store
-	Session    *session.Session
-	ImageStore assets.ImageStore
-	Config     config.Config
-	Workspace  string
 	Runner       *agent.Runner
 	Store        *session.Store
 	Session      *session.Session
+	ImageStore   assets.ImageStore
 	Config       config.Config
 	Workspace    string
 	StartupGuide StartupGuide

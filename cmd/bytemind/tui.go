@@ -83,23 +83,14 @@ func runTUI(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return err
 	}
 
-<<<<<<< HEAD
 	return runTUIProgram(tui.Options{
-		Runner:     app,
-		Store:      store,
-		Session:    sess,
-		ImageStore: imageStore,
-		Config:     cfg,
-		Workspace:  sess.Workspace,
-=======
-	return tui.Run(tui.Options{
 		Runner:       app,
 		Store:        store,
 		Session:      sess,
+		ImageStore:   imageStore,
 		Config:       cfg,
 		Workspace:    sess.Workspace,
 		StartupGuide: guide,
->>>>>>> 122d737 (feat: 新增Ctrl+F历史检索、启动配置向导与全局安装能力)
 	})
 }
 
