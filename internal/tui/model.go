@@ -2559,6 +2559,8 @@ func renderChatCard(item chatEntry, width int) string {
 func renderChatSection(item chatEntry, width int) string {
 	title := cardTitleStyle.Foreground(colorAccent)
 	bodyStyle := chatBodyStyle
+	toolCallTitle := cardTitleStyle.Foreground(lipgloss.Color("#E5B567")).Bold(true)
+	toolResultTitle := cardTitleStyle.Foreground(lipgloss.Color("#7AC7FF")).Bold(true)
 	status := item.Status
 	displayTitle := item.Title
 	if status == "final" {
@@ -2569,9 +2571,9 @@ func renderChatSection(item chatEntry, width int) string {
 		title = cardTitleStyle.Foreground(colorUser)
 	case "tool":
 		if strings.HasPrefix(displayTitle, "Tool Result | ") {
-			title = toolResultTitleStyle
+			title = toolResultTitle
 		} else {
-			title = toolCallTitleStyle
+			title = toolCallTitle
 		}
 		bodyStyle = toolBodyStyle
 		status = ""
