@@ -1320,12 +1320,8 @@ func (m *model) appendAssistantDelta(delta string) {
 			m.chatItems[m.streamingIndex].Status == "thinking" ||
 			current == m.thinkingText() {
 			m.chatItems[m.streamingIndex].Body = delta
-		} else if strings.HasPrefix(delta, current) {
-			m.chatItems[m.streamingIndex].Body = delta
-		} else if strings.HasSuffix(current, delta) {
-			// Some providers may repeat the latest chunk; ignore it.
 		} else {
-			m.chatItems[m.streamingIndex].Body += delta
+			m.chatItems[m.streamingIndex].Body = mergeAssistantDelta(current, delta)
 		}
 		m.applyAssistantDeltaPresentation(&m.chatItems[m.streamingIndex])
 		return
@@ -1344,11 +1340,6 @@ func (m *model) applyAssistantDeltaPresentation(item *chatEntry) {
 	if item == nil || item.Kind != "assistant" {
 		return
 	}
-	if shouldRenderThinkingFromDelta(item.Body) {
-		item.Title = thinkingLabel
-		item.Status = "thinking"
-		return
-	}
 	item.Title = assistantLabel
 	item.Status = "streaming"
 }
@@ -1360,11 +1351,7 @@ func (m *model) finishAssistantMessage(content string) {
 	}
 	if m.streamingIndex >= 0 && m.streamingIndex < len(m.chatItems) {
 		current := &m.chatItems[m.streamingIndex]
-		if current.Status == "thinking" &&
-			strings.TrimSpace(current.Body) != "" &&
-			current.Body != m.thinkingText() {
-			current.Title = thinkingLabel
-			current.Status = "thinking"
+		if current.Kind != "assistant" {
 			m.streamingIndex = -1
 		} else {
 			current.Title = assistantLabel
@@ -1387,6 +1374,63 @@ func (m *model) finishAssistantMessage(content string) {
 		Body:   content,
 		Status: "final",
 	})
+}
+
+func mergeAssistantDelta(current, delta string) string {
+	if delta == "" {
+		return current
+	}
+	if current == "" {
+		return delta
+	}
+	// Some providers stream the entire accumulated content each chunk.
+	if strings.HasPrefix(delta, current) {
+		return delta
+	}
+	// Duplicate or regressive chunks should not be appended.
+	if strings.HasPrefix(current, delta) ||
+		strings.HasSuffix(current, delta) ||
+		strings.Contains(current, delta) {
+		return current
+	}
+	if strings.Contains(delta, current) {
+		return delta
+	}
+	// Some streams resend near-complete snapshots with tiny edits.
+	// When most of the existing body is a shared prefix, prefer replacement.
+	if prefix := commonPrefixLen(current, delta); prefix >= len(current)*3/4 && len(delta) > len(current) {
+		return delta
+	}
+	if overlap := suffixPrefixOverlap(current, delta); overlap > 0 {
+		return current + delta[overlap:]
+	}
+	return current + delta
+}
+
+func suffixPrefixOverlap(left, right string) int {
+	max := len(left)
+	if len(right) < max {
+		max = len(right)
+	}
+	for n := max; n > 0; n-- {
+		if strings.HasSuffix(left, right[:n]) {
+			return n
+		}
+	}
+	return 0
+}
+
+func commonPrefixLen(left, right string) int {
+	max := len(left)
+	if len(right) < max {
+		max = len(right)
+	}
+	for i := 0; i < max; i++ {
+		if left[i] != right[i] {
+			return i
+		}
+	}
+	return max
 }
 
 func (m *model) appendChat(item chatEntry) {

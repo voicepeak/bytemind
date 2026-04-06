@@ -369,7 +369,7 @@ func TestContinueExecutionInputPreparesPlanAndSubmitsPrompt(t *testing.T) {
 }
 
 func TestIsContinueExecutionInputSupportsPlanAlias(t *testing.T) {
-	for _, input := range []string{"continue plan", "继续做"} {
+	for _, input := range []string{"continue plan", "\u7ee7\u7eed\u6267\u884c"} {
 		if !isContinueExecutionInput(input) {
 			t.Fatalf("expected %q to be treated as continue input", input)
 		}
@@ -1592,6 +1592,189 @@ func TestToggleModeStartsAndExpiresPulseAnimation(t *testing.T) {
 	}
 }
 
+func TestOpenCommandPaletteRespectsReduceMotion(t *testing.T) {
+	t.Run("animated reveal", func(t *testing.T) {
+		input := textarea.New()
+		m := model{
+			reduceMotion: true,
+			commandOpen:  false,
+			mentionOpen:  true,
+			input:        input,
+		}
+		m.openCommandPalette()
+
+		if !m.commandOpen {
+			t.Fatalf("expected command palette to open")
+		}
+		if m.commandRevealRows != commandPageSize {
+			t.Fatalf("expected reduce-motion open to reveal all rows, got %d", m.commandRevealRows)
+		}
+		if m.input.Value() != "/" {
+			t.Fatalf("expected command opener to seed slash input, got %q", m.input.Value())
+		}
+		if m.mentionOpen {
+			t.Fatalf("expected mention palette to close when command palette opens")
+		}
+	})
+
+	t.Run("progressive reveal", func(t *testing.T) {
+		input := textarea.New()
+		m := model{
+			reduceMotion: false,
+			commandOpen:  false,
+			mentionOpen:  true,
+			input:        input,
+		}
+		m.openCommandPalette()
+		if m.commandRevealRows != commandRevealStartRows {
+			t.Fatalf("expected animated open to start from reveal row %d, got %d", commandRevealStartRows, m.commandRevealRows)
+		}
+	})
+}
+
+func TestStatusBarPulsePrefixAppearsDuringModePulse(t *testing.T) {
+	m := model{
+		width:           120,
+		mode:            modeBuild,
+		modePulseFrames: 2,
+		reduceMotion:    false,
+		llmConnected:    true,
+		chatItems: []chatEntry{
+			{Kind: "assistant", Title: assistantLabel, Body: "ok", Status: "final"},
+		},
+	}
+
+	bar := m.renderStatusBar()
+	if !strings.Contains(bar, ">> Mode: BUILD") {
+		t.Fatalf("expected status bar pulse prefix while mode pulse is active, got %q", bar)
+	}
+}
+
+func TestResolveReduceMotionFromEnv(t *testing.T) {
+	key := "BYTEMIND_TUI_REDUCE_MOTION"
+	original, existed := os.LookupEnv(key)
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(key, original)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+
+	_ = os.Unsetenv(key)
+	if resolveReduceMotion() {
+		t.Fatalf("expected empty env to disable reduce motion")
+	}
+
+	if err := os.Setenv(key, "true"); err != nil {
+		t.Fatalf("setenv failed: %v", err)
+	}
+	if !resolveReduceMotion() {
+		t.Fatalf("expected true env to enable reduce motion")
+	}
+
+	if err := os.Setenv(key, "nope"); err != nil {
+		t.Fatalf("setenv failed: %v", err)
+	}
+	if resolveReduceMotion() {
+		t.Fatalf("expected invalid env value to fall back to disabled reduce motion")
+	}
+}
+
+func TestAnimationTickHelpers(t *testing.T) {
+	msg := animationTickCmd(0)()
+	if _, ok := msg.(animationTickMsg); !ok {
+		t.Fatalf("expected animation tick cmd to return animationTickMsg, got %T", msg)
+	}
+
+	m := model{}
+	if got := m.nextAnimationTickInterval(); got != slowAnimationInterval {
+		t.Fatalf("expected idle animation interval %v, got %v", slowAnimationInterval, got)
+	}
+
+	m.busy = true
+	if got := m.nextAnimationTickInterval(); got != fastAnimationInterval {
+		t.Fatalf("expected busy animation interval %v, got %v", fastAnimationInterval, got)
+	}
+
+	m.busy = false
+	m.commandOpen = true
+	if got := m.nextAnimationTickInterval(); got != fastAnimationInterval {
+		t.Fatalf("expected command palette interval %v, got %v", fastAnimationInterval, got)
+	}
+
+	m.commandOpen = false
+	m.modePulseFrames = 1
+	if got := m.nextAnimationTickInterval(); got != fastAnimationInterval {
+		t.Fatalf("expected pulse interval %v, got %v", fastAnimationInterval, got)
+	}
+
+	m.reduceMotion = true
+	m.modePulseFrames = 0
+	if got := m.nextAnimationTickInterval(); got != slowAnimationInterval {
+		t.Fatalf("expected reduce-motion interval %v, got %v", slowAnimationInterval, got)
+	}
+}
+
+func TestUpdateAnimationTickSchedulesNextTick(t *testing.T) {
+	m := model{
+		width:  80,
+		height: 24,
+	}
+
+	got, cmd := m.Update(animationTickMsg{})
+	if cmd == nil {
+		t.Fatalf("expected animation tick update to schedule next tick")
+	}
+	updated := got.(model)
+	if updated.motionTick == 0 {
+		t.Fatalf("expected animation tick to advance motion counter")
+	}
+}
+
+func TestNewModelAppliesReduceMotionDefaults(t *testing.T) {
+	key := "BYTEMIND_TUI_REDUCE_MOTION"
+	original, existed := os.LookupEnv(key)
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(key, original)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+	if err := os.Setenv(key, "true"); err != nil {
+		t.Fatalf("setenv failed: %v", err)
+	}
+
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	runner := agent.NewRunner(agent.Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider: config.ProviderConfig{Model: "test-model"},
+		},
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+	})
+
+	m := newModel(Options{
+		Runner:    runner,
+		Store:     store,
+		Session:   sess,
+		Workspace: workspace,
+	})
+	if !m.reduceMotion {
+		t.Fatalf("expected new model to respect reduce-motion env")
+	}
+	if m.Init() == nil {
+		t.Fatalf("expected init command to be configured")
+	}
+}
+
 func TestAppendChatKeepsMotionValueUntouched(t *testing.T) {
 	m := model{}
 	m.appendChat(chatEntry{Kind: "assistant", Title: "Bytemind", Body: "hi", Status: "final"})
@@ -1908,28 +2091,27 @@ func TestToolStartWithGenericToolIntentDoesNotShowThinkingCard(t *testing.T) {
 	}
 }
 
-func TestAssistantDeltaPlanningTextRendersAsThinking(t *testing.T) {
+func TestAssistantDeltaPlanningTextStaysStreaming(t *testing.T) {
 	m := model{
 		chatItems: []chatEntry{
-			{Kind: "user", Title: "You", Body: "请检查项目", Status: "final"},
+			{Kind: "user", Title: "You", Body: "inspect the project", Status: "final"},
 		},
 		streamingIndex: -1,
 	}
 
 	m.handleAgentEvent(agent.Event{
 		Type:    agent.EventAssistantDelta,
-		Content: "我会先了解项目结构和配置，然后检查代码组织和依赖关系，最后通过构建和测试来验证功能。",
+		Content: "I will first inspect the project structure, then validate the build.",
 	})
 
 	if len(m.chatItems) != 2 {
 		t.Fatalf("expected assistant delta to append one assistant item, got %d", len(m.chatItems))
 	}
-	if m.chatItems[1].Title != thinkingLabel || m.chatItems[1].Status != "thinking" {
-		t.Fatalf("expected planning delta to render as thinking, got %+v", m.chatItems[1])
+	if m.chatItems[1].Title != assistantLabel || m.chatItems[1].Status != "streaming" {
+		t.Fatalf("expected planning delta to stay as streaming assistant output, got %+v", m.chatItems[1])
 	}
 }
-
-func TestFinishAssistantMessageAppendsFinalCardAfterThinking(t *testing.T) {
+func TestFinishAssistantMessageReplacesThinkingStreamingCard(t *testing.T) {
 	m := model{
 		chatItems: []chatEntry{
 			{Kind: "user", Title: "You", Body: "what project is this", Status: "final"},
@@ -1940,17 +2122,13 @@ func TestFinishAssistantMessageAppendsFinalCardAfterThinking(t *testing.T) {
 
 	m.finishAssistantMessage("This is a Go TUI project.")
 
-	if len(m.chatItems) != 3 {
-		t.Fatalf("expected final answer to be appended after thinking, got %d items", len(m.chatItems))
+	if len(m.chatItems) != 2 {
+		t.Fatalf("expected final answer to replace streaming thinking card, got %d items", len(m.chatItems))
 	}
-	if m.chatItems[1].Title != thinkingLabel || m.chatItems[1].Status != "thinking" {
-		t.Fatalf("expected thinking card to remain visible, got %+v", m.chatItems[1])
-	}
-	if m.chatItems[2].Title != assistantLabel || m.chatItems[2].Status != "final" || m.chatItems[2].Body != "This is a Go TUI project." {
-		t.Fatalf("expected final assistant card after thinking, got %+v", m.chatItems[2])
+	if m.chatItems[1].Title != assistantLabel || m.chatItems[1].Status != "final" || m.chatItems[1].Body != "This is a Go TUI project." {
+		t.Fatalf("expected final assistant card to replace thinking stream, got %+v", m.chatItems[1])
 	}
 }
-
 func TestApprovalBannerRendersAboveInput(t *testing.T) {
 	input := textarea.New()
 	m := model{
@@ -2755,6 +2933,30 @@ func TestFinishAssistantMessageDoesNotAppendDuplicateCard(t *testing.T) {
 	}
 	if m.chatItems[0].Status != "final" {
 		t.Fatalf("expected assistant card to be marked final, got %q", m.chatItems[0].Status)
+	}
+}
+
+func TestAppendAssistantDeltaMergesOverlappingChunks(t *testing.T) {
+	m := model{
+		chatItems: []chatEntry{
+			{
+				Kind:   "assistant",
+				Title:  assistantLabel,
+				Body:   "The result is stream",
+				Status: "streaming",
+			},
+		},
+		streamingIndex: 0,
+	}
+
+	m.appendAssistantDelta("streaming mode.")
+	if m.chatItems[0].Body != "The result is streaming mode." {
+		t.Fatalf("expected overlap-aware merge, got %q", m.chatItems[0].Body)
+	}
+
+	m.appendAssistantDelta("The result is streaming mode with details.")
+	if m.chatItems[0].Body != "The result is streaming mode with details." {
+		t.Fatalf("expected cumulative chunk to replace content, got %q", m.chatItems[0].Body)
 	}
 }
 
