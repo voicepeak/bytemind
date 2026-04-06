@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -49,6 +50,14 @@ const (
 	chatTitleLabel        = "Bytemind Chat"
 	tuiTitleLabel         = "Bytemind TUI"
 	footerHintText        = "tab agents | / commands | Ctrl+F history | Ctrl+L sessions | Ctrl+C quit"
+)
+
+const (
+	chatEntryMotionFrames  = 8
+	modePulseMotionFrames  = 8
+	fastAnimationInterval  = 90 * time.Millisecond
+	slowAnimationInterval  = 220 * time.Millisecond
+	commandRevealStartRows = 0
 )
 
 type screenKind string
@@ -92,6 +101,7 @@ type chatEntry struct {
 	Meta   string
 	Body   string
 	Status string
+	Motion int
 }
 
 type commandItem struct {
@@ -132,6 +142,8 @@ type runFinishedMsg struct {
 	RunID int
 	Err   error
 }
+
+type animationTickMsg struct{}
 
 type runFinishReason string
 
@@ -251,6 +263,7 @@ type model struct {
 
 func newModel(opts Options) model {
 	async := make(chan tea.Msg, 128)
+	reduceMotion := resolveReduceMotion()
 
 	input := textarea.New()
 	input.Placeholder = "Ask Bytemind to inspect, change, or verify this workspace..."
@@ -311,6 +324,7 @@ func newModel(opts Options) model {
 		phase:              "idle",
 		llmConnected:       true,
 		chatAutoFollow:     true,
+		reduceMotion:       reduceMotion,
 		mentionIndex:       mention.NewWorkspaceFileIndex(opts.Workspace),
 		tokenUsage:         newTokenUsageComponent(),
 		tokenBudget:        max(1, opts.Config.TokenQuota),
@@ -331,6 +345,9 @@ func newModel(opts Options) model {
 	m.restoreTokenUsageFromSession(opts.Session)
 	_ = m.tokenUsage.SetUsage(m.tokenUsedTotal, m.tokenBudget)
 	m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
+	if reduceMotion {
+		m.commandRevealRows = commandPageSize
+	}
 	m.ensureSessionImageAssets()
 	m.syncInputStyle()
 	m.syncInputOverlays()
@@ -344,6 +361,7 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
 		waitForAsync(m.async),
+		animationTickCmd(m.nextAnimationTickInterval()),
 		m.tokenUsage.tickCmd(),
 		m.loadSessionsCmd(),
 		m.fetchRemoteTokenUsageCmd(),
@@ -366,6 +384,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateThinkingCard()
 		m.refreshViewport()
 		return m, cmd
+	case animationTickMsg:
+		if m.advanceAnimations() {
+			m.refreshViewport()
+		}
+		return m, animationTickCmd(m.nextAnimationTickInterval())
 	case agentEventMsg:
 		m.handleAgentEvent(msg.Event)
 		m.refreshViewport()
@@ -1181,6 +1204,11 @@ func (m *model) bindMentionImageAsset(path string, assetID llm.AssetID) {
 
 func (m *model) openCommandPalette() {
 	m.commandOpen = true
+	if m.reduceMotion {
+		m.commandRevealRows = commandPageSize
+	} else {
+		m.commandRevealRows = commandRevealStartRows
+	}
 	m.commandCursor = 0
 	m.setInputValue("/")
 	m.closeMentionPalette()
@@ -1313,6 +1341,11 @@ func (m *model) toggleMode() {
 		m.mode = modeBuild
 		m.statusNote = "Switched to Build mode. Execution still requires confirmation."
 	}
+	if m.reduceMotion {
+		m.modePulseFrames = 0
+	} else {
+		m.modePulseFrames = modePulseMotionFrames
+	}
 	if m.sess != nil {
 		m.sess.Mode = planpkg.NormalizeMode(string(m.mode))
 		m.sess.Plan = copyPlanState(m.plan)
@@ -1328,6 +1361,7 @@ func (m *model) toggleMode() {
 
 func (m *model) closeCommandPalette() {
 	m.commandOpen = false
+	m.commandRevealRows = 0
 	m.commandCursor = 0
 	m.closeMentionPalette()
 	m.input.Reset()
@@ -1649,7 +1683,7 @@ func (m *model) appendAssistantDelta(delta string) {
 		m.applyAssistantDeltaPresentation(&m.chatItems[m.streamingIndex])
 		return
 	}
-	m.chatItems = append(m.chatItems, chatEntry{
+	m.appendChat(chatEntry{
 		Kind:   "assistant",
 		Title:  assistantLabel,
 		Body:   delta,
@@ -1700,7 +1734,7 @@ func (m *model) finishAssistantMessage(content string) {
 			return
 		}
 	}
-	m.chatItems = append(m.chatItems, chatEntry{
+	m.appendChat(chatEntry{
 		Kind:   "assistant",
 		Title:  assistantLabel,
 		Body:   content,
@@ -2236,12 +2270,16 @@ func (m model) renderStatusBarWithWidth(width int) string {
 	if stepTitle == "" {
 		stepTitle = "-"
 	}
+	pulsing := m.modePulseFrames > 0 && !m.reduceMotion
 	left := strings.Join([]string{
 		"Mode: " + strings.ToUpper(string(m.mode)),
 		"Phase: " + m.currentPhaseLabel(),
 		"Step: " + stepTitle,
 		"Skill: " + m.currentSkillLabel(),
 	}, "  |  ")
+	if pulsing {
+		left = ">> " + left
+	}
 	right := strings.Join([]string{
 		fmt.Sprintf("%d msgs", len(m.chatItems)),
 		"Session: " + m.currentSessionLabel(),
@@ -2250,7 +2288,15 @@ func (m model) renderStatusBarWithWidth(width int) string {
 	}, "  |  ")
 
 	line := m.renderTopInfoLine(left, right, width)
-	return statusBarStyle.Width(width).Render(line)
+	style := statusBarStyle.Width(width)
+	if pulsing {
+		if m.modePulseFrames%2 == 0 {
+			style = style.Copy().Bold(true).Foreground(colorPanel).Background(colorAccent)
+		} else {
+			style = style.Copy().Bold(true).Foreground(colorPanel).Background(colorThinking)
+		}
+	}
+	return style.Render(line)
 }
 
 func (m model) renderTopInfoLine(left, right string, width int) string {
@@ -2733,7 +2779,19 @@ func (m model) renderCommandPalette() string {
 	nameWidth := min(26, max(14, width/4))
 	descWidth := max(12, width-commandPaletteStyle.GetHorizontalFrameSize()-nameWidth-4)
 	rows := make([]string, 0, commandPageSize+1)
+	visibleRows := commandPageSize
+	if m.commandOpen && !m.reduceMotion {
+		visibleRows = min(commandPageSize, max(commandRevealStartRows, m.commandRevealRows))
+	}
+	if visibleRows <= 0 {
+		return commandPaletteStyle.Width(width).Render(
+			commandPaletteMetaStyle.Width(max(1, width-commandPaletteStyle.GetHorizontalFrameSize())).Render("Opening command palette..."),
+		)
+	}
 	for _, item := range m.visibleCommandItemsPage() {
+		if len(rows) >= visibleRows {
+			break
+		}
 		rowStyle := commandPaletteRowStyle
 		nameStyle := commandPaletteNameStyle
 		descStyle := commandPaletteDescStyle
@@ -2750,9 +2808,14 @@ func (m model) renderCommandPalette() string {
 		))
 	}
 	for len(rows) < commandPageSize {
+		if len(rows) >= visibleRows {
+			break
+		}
 		rows = append(rows, commandPaletteRowStyle.Width(max(1, width-commandPaletteStyle.GetHorizontalFrameSize())).Render(""))
 	}
-	rows = append(rows, commandPaletteMetaStyle.Render("Up/Down move  PgUp/PgDn page  Enter run  Esc close"))
+	if visibleRows >= commandPageSize {
+		rows = append(rows, commandPaletteMetaStyle.Render("Up/Down move  PgUp/PgDn page  Enter run  Esc close"))
+	}
 	return commandPaletteStyle.Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
 }
 
@@ -3009,6 +3072,8 @@ func (m *model) newSession() error {
 	m.interruptSafe = false
 	m.runCancel = nil
 	m.activeRunID = 0
+	m.commandRevealRows = 0
+	m.modePulseFrames = 0
 	m.input.Reset()
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()
@@ -3051,6 +3116,8 @@ func (m *model) resumeSession(prefix string) error {
 	m.interruptSafe = false
 	m.runCancel = nil
 	m.activeRunID = 0
+	m.commandRevealRows = 0
+	m.modePulseFrames = 0
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()
 		m.refreshViewport()
@@ -4066,17 +4133,97 @@ func shouldRenderThinkingFromDelta(body string) bool {
 }
 
 func (m model) thinkingText() string {
-	return fmt.Sprintf("%s Thinking... request already sent to the LLM, waiting for response.", m.spinner.View())
+	if m.reduceMotion {
+		return fmt.Sprintf("%s Thinking... request already sent to the LLM, waiting for response.", m.spinner.View())
+	}
+	dots := []string{".  ", ".. ", "..."}
+	sweep := []string{"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"}
+	return fmt.Sprintf(
+		"%s Thinking%s [%s] request already sent to the LLM, waiting for response.",
+		m.spinner.View(),
+		dots[m.motionTick%len(dots)],
+		sweep[m.motionTick%len(sweep)],
+	)
+}
+
+func animationTickCmd(delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return animationTickMsg{}
+	})
+}
+
+func resolveReduceMotion() bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv("BYTEMIND_TUI_REDUCE_MOTION")))
+	if value == "" {
+		return false
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false
+	}
+	return parsed
+}
+
+func (m model) nextAnimationTickInterval() time.Duration {
+	if m.reduceMotion {
+		return slowAnimationInterval
+	}
+	if m.busy || m.commandOpen || m.modePulseFrames > 0 {
+		return fastAnimationInterval
+	}
+	return slowAnimationInterval
+}
+
+func (m *model) advanceAnimations() bool {
+	changed := false
+	m.motionTick++
+
+	if !m.reduceMotion {
+		if m.commandOpen && m.commandRevealRows < commandPageSize && m.motionTick%2 == 0 {
+			m.commandRevealRows++
+			changed = true
+		}
+
+		if m.modePulseFrames > 0 {
+			m.modePulseFrames--
+			changed = true
+		}
+	}
+
+	if m.busy && m.streamingIndex >= 0 && m.streamingIndex < len(m.chatItems) {
+		before := m.chatItems[m.streamingIndex].Body
+		m.updateThinkingCard()
+		if before != m.chatItems[m.streamingIndex].Body {
+			changed = true
+		}
+	}
+
+	return changed
 }
 
 func (m *model) syncCommandPalette() {
 	value := strings.TrimSpace(m.input.Value())
+	wasOpen := m.commandOpen
 	if !strings.HasPrefix(value, "/") {
 		m.commandOpen = false
+		m.commandRevealRows = 0
 		m.commandCursor = 0
 		return
 	}
 	m.commandOpen = true
+	if !wasOpen {
+		if m.reduceMotion {
+			m.commandRevealRows = commandPageSize
+		} else {
+			m.commandRevealRows = commandRevealStartRows
+		}
+	} else if m.commandRevealRows <= 0 {
+		if m.reduceMotion {
+			m.commandRevealRows = commandPageSize
+		} else {
+			m.commandRevealRows = commandRevealStartRows
+		}
+	}
 	m.closeMentionPalette()
 	items := m.filteredCommands()
 	if len(items) == 0 {

@@ -1925,6 +1925,7 @@ func TestViewRendersCommandPaletteAsOverlaySection(t *testing.T) {
 		},
 	}
 	m.syncCommandPalette()
+	m.commandRevealRows = commandPageSize
 
 	view := m.View()
 	if !strings.Contains(view, "/help") {
@@ -1946,6 +1947,7 @@ func TestLandingViewRendersCommandPaletteAboveInput(t *testing.T) {
 		commandOpen: true,
 	}
 	m.syncCommandPalette()
+	m.commandRevealRows = commandPageSize
 
 	view := m.View()
 	if !strings.Contains(view, "Build") || !strings.Contains(view, "Plan") {
@@ -2293,6 +2295,7 @@ func TestRenderCommandPaletteDoesNotCorruptChineseDescriptions(t *testing.T) {
 		commandOpen: true,
 	}
 	m.syncCommandPalette()
+	m.commandRevealRows = commandPageSize
 
 	got := m.renderCommandPalette()
 	if strings.Contains(got, string('\uFFFD')) {
@@ -2302,6 +2305,96 @@ func TestRenderCommandPaletteDoesNotCorruptChineseDescriptions(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected command palette to contain %q, got %q", want, got)
 		}
+	}
+}
+
+func TestCommandPaletteRevealAnimationExpandsRows(t *testing.T) {
+	input := textarea.New()
+	input.SetValue("/")
+	m := model{
+		screen:            screenChat,
+		width:             90,
+		input:             input,
+		commandOpen:       true,
+		commandRevealRows: commandRevealStartRows,
+	}
+	m.syncCommandPalette()
+	m.commandRevealRows = commandRevealStartRows
+
+	first := m.renderCommandPalette()
+	if !strings.Contains(first, "Opening command palette") {
+		t.Fatalf("expected opening frame hint, got %q", first)
+	}
+
+	m.advanceAnimations()
+	m.advanceAnimations()
+	second := m.renderCommandPalette()
+	if !strings.Contains(second, "/help") {
+		t.Fatalf("expected reveal step to show first command row, got %q", second)
+	}
+
+	for i := 0; i < 6; i++ {
+		m.advanceAnimations()
+	}
+	expanded := m.renderCommandPalette()
+	for _, want := range []string{"/help", "/session", "/new"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expected expanded palette to contain %q, got %q", want, expanded)
+		}
+	}
+}
+
+func TestToggleModeStartsAndExpiresPulseAnimation(t *testing.T) {
+	m := model{mode: modeBuild}
+	m.toggleMode()
+	if m.modePulseFrames <= 0 {
+		t.Fatalf("expected mode switch to start pulse animation, got %d", m.modePulseFrames)
+	}
+
+	for i := 0; i < modePulseMotionFrames; i++ {
+		m.advanceAnimations()
+	}
+	if m.modePulseFrames != 0 {
+		t.Fatalf("expected pulse frames to decay to zero, got %d", m.modePulseFrames)
+	}
+}
+
+func TestAppendChatKeepsMotionValueUntouched(t *testing.T) {
+	m := model{}
+	m.appendChat(chatEntry{Kind: "assistant", Title: "Bytemind", Body: "hi", Status: "final"})
+	if len(m.chatItems) != 1 {
+		t.Fatalf("expected one chat item, got %d", len(m.chatItems))
+	}
+	if m.chatItems[0].Motion != 0 {
+		t.Fatalf("expected appendChat not to inject motion, got %d", m.chatItems[0].Motion)
+	}
+
+	m.appendChat(chatEntry{Kind: "assistant", Title: "Bytemind", Body: "hi", Status: "final", Motion: 2})
+	if len(m.chatItems) != 2 {
+		t.Fatalf("expected two chat items, got %d", len(m.chatItems))
+	}
+	if m.chatItems[1].Motion != 2 {
+		t.Fatalf("expected appendChat to preserve explicit motion value, got %d", m.chatItems[1].Motion)
+	}
+}
+
+func TestThinkingTextAnimatesAcrossMotionTicks(t *testing.T) {
+	m := model{
+		busy:           true,
+		streamingIndex: 0,
+		chatItems: []chatEntry{
+			{Kind: "assistant", Title: thinkingLabel, Status: "thinking"},
+		},
+	}
+	m.motionTick = 0
+	m.updateThinkingCard()
+	first := m.chatItems[0].Body
+	m.motionTick = 1
+	m.updateThinkingCard()
+	second := m.chatItems[0].Body
+
+	if first == second {
+		t.Fatalf("expected thinking text to animate across ticks, got %q", first)
 	}
 }
 
