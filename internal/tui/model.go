@@ -230,6 +230,10 @@ type model struct {
 	lastInputAt           time.Time
 	inputBurstSize        int
 	chatAutoFollow        bool
+	reduceMotion          bool
+	commandRevealRows     int
+	modePulseFrames       int
+	motionTick            int
 	draggingScrollbar     bool
 	scrollbarDragOffset   int
 	tokenUsage            tokenUsageComponent
