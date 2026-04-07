@@ -2826,11 +2826,11 @@ func (m *model) handleSlashCommand(input string) error {
 			Status: "final",
 		})
 		m.appendChat(chatEntry{Kind: "assistant", Title: assistantLabel, Body: m.helpText(), Status: "final"})
-		m.statusNote = "已在会话区打开帮助。"
+		m.statusNote = "Help opened in the conversation view."
 		return nil
 	case "/session":
 		m.sessionsOpen = true
-		m.statusNote = "已打开最近会话列表。"
+		m.statusNote = "Opened recent sessions."
 		return nil
 	case "/skills":
 		return m.runSkillsListCommand(input)
