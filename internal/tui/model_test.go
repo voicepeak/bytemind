@@ -1311,6 +1311,55 @@ func TestAltVPastesClipboardImage(t *testing.T) {
 	}
 }
 
+func TestCtrlVPastesClipboardImage(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.clipboard = fakeClipboardImageReader{
+		mediaType: "image/png",
+		data:      []byte("clipboard"),
+		fileName:  "clipboard.png",
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlV})
+	updated := got.(model)
+	if updated.input.Value() != "[Image #1]" {
+		t.Fatalf("expected ctrl+v to paste clipboard image placeholder, got %q", updated.input.Value())
+	}
+}
+
+func TestCtrlVControlMarkerRunePastesClipboardImage(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.clipboard = fakeClipboardImageReader{
+		mediaType: "image/png",
+		data:      []byte("clipboard"),
+		fileName:  "clipboard.png",
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'\x16'}})
+	updated := got.(model)
+	if updated.input.Value() != "[Image #1]" {
+		t.Fatalf("expected ctrl+v control marker to paste clipboard image placeholder, got %q", updated.input.Value())
+	}
+}
+
+func TestCtrlVWithoutImageShowsStatusNote(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.clipboard = fakeClipboardImageReader{
+		err: errors.New("clipboard has no image"),
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlV})
+	updated := got.(model)
+	if updated.input.Value() != "" {
+		t.Fatalf("expected input to stay empty, got %q", updated.input.Value())
+	}
+	if !strings.Contains(strings.ToLower(updated.statusNote), "clipboard has no image") {
+		t.Fatalf("expected no-image status note, got %q", updated.statusNote)
+	}
+}
+
 func TestTerminalPasteEventWithEmptyPayloadPastesClipboardImage(t *testing.T) {
 	m := newImagePipelineModel(t)
 	m.screen = screenChat
@@ -2369,12 +2418,12 @@ func TestRenderConversationIncludesToolEntries(t *testing.T) {
 		}(),
 		chatItems: []chatEntry{
 			{Kind: "user", Title: "You", Body: "check repo", Status: "final"},
-			{Kind: "tool", Title: "Tool Result | read_file", Body: "Read internal/tui/model.go lines 1-20", Status: "done"},
+			{Kind: "tool", Title: "Tool Call | read_file", Body: "Read internal/tui/model.go lines 1-20", Status: "done"},
 		},
 	}
 
 	got := m.renderConversation()
-	if !strings.Contains(got, "Tool Result | read_file") {
+	if !strings.Contains(got, "Tool Call | read_file") {
 		t.Fatalf("expected conversation to show tool entry, got %q", got)
 	}
 	if !strings.Contains(got, "Read internal/tui/model.go lines 1-20") {
@@ -2405,11 +2454,57 @@ func TestRebuildSessionTimelineParsesUserToolResultParts(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("expected user + tool items, got %#v", items)
 	}
-	if items[1].Kind != "tool" || !strings.Contains(items[1].Title, "Tool Result | read_file") {
+	if items[1].Kind != "tool" || !strings.Contains(items[1].Title, "Tool Call | read_file") {
 		t.Fatalf("expected tool item from tool_result part, got %#v", items[1])
 	}
 	if len(runs) != 1 || runs[0].Name != "read_file" {
 		t.Fatalf("expected tool run reconstructed, got %#v", runs)
+	}
+}
+
+func TestRebuildSessionTimelineFallsBackToGenericToolNameForUnknownToolUseID(t *testing.T) {
+	sess := &session.Session{
+		Messages: []llm.Message{
+			llm.NewToolResultMessage("missing-call-id", `{"ok":true}`),
+		},
+	}
+
+	items, runs := rebuildSessionTimeline(sess)
+	if len(items) != 1 {
+		t.Fatalf("expected only one tool item, got %#v", items)
+	}
+	if items[0].Kind != "tool" || items[0].Title != "Tool Call | tool" {
+		t.Fatalf("expected fallback tool title for unknown tool use id, got %#v", items[0])
+	}
+	if len(runs) != 1 || runs[0].Name != "tool" {
+		t.Fatalf("expected fallback tool run name, got %#v", runs)
+	}
+}
+
+func TestRebuildSessionTimelineParsesLegacyToolRoleMessage(t *testing.T) {
+	sess := &session.Session{
+		Messages: []llm.Message{
+			llm.NewAssistantTextMessage("analysis complete"),
+			{
+				Role:       llm.Role("tool"),
+				ToolCallID: "missing-call-id",
+				Content:    `{"path":"a.txt","content":"ok"}`,
+			},
+		},
+	}
+
+	items, runs := rebuildSessionTimeline(sess)
+	if len(items) != 2 {
+		t.Fatalf("expected assistant + tool items, got %#v", items)
+	}
+	if items[0].Kind != "assistant" || !strings.Contains(items[0].Body, "analysis complete") {
+		t.Fatalf("expected assistant text item from legacy message, got %#v", items[0])
+	}
+	if items[1].Kind != "tool" || items[1].Title != "Tool Call | tool" {
+		t.Fatalf("expected fallback tool title for legacy tool message, got %#v", items[1])
+	}
+	if len(runs) != 1 || runs[0].Name != "tool" {
+		t.Fatalf("expected tool run reconstructed from legacy tool message, got %#v", runs)
 	}
 }
 
@@ -2445,20 +2540,17 @@ func TestHandleAgentEventShowsToolProgressInChat(t *testing.T) {
 		ToolName:   "read_file",
 		ToolResult: `{"path":"internal/tui/model.go","start_line":1,"end_line":20}`,
 	})
-	if len(m.chatItems) != 4 {
-		t.Fatalf("expected completed tool to append tool result, got %d", len(m.chatItems))
+	if len(m.chatItems) != 3 {
+		t.Fatalf("expected completed tool to update existing tool call, got %d", len(m.chatItems))
 	}
-	if m.chatItems[2].Status != "running" {
-		t.Fatalf("expected tool call entry to remain running history, got %q", m.chatItems[2].Status)
+	if m.chatItems[2].Kind != "tool" || !strings.Contains(m.chatItems[2].Title, "Tool Call | read_file") {
+		t.Fatalf("expected tool call entry after completion, got %+v", m.chatItems[2])
 	}
-	if m.chatItems[3].Kind != "tool" || !strings.Contains(m.chatItems[3].Title, "Tool Result | read_file") {
-		t.Fatalf("expected tool result entry after tool call, got %+v", m.chatItems[3])
+	if m.chatItems[2].Status != "done" {
+		t.Fatalf("expected completed tool call status to be done, got %q", m.chatItems[2].Status)
 	}
-	if m.chatItems[3].Status != "done" {
-		t.Fatalf("expected completed tool result status to be done, got %q", m.chatItems[3].Status)
-	}
-	if !strings.Contains(m.chatItems[3].Body, "Read internal/tui/model.go lines 1-20") {
-		t.Fatalf("expected completed tool summary in result item, got %q", m.chatItems[3].Body)
+	if !strings.Contains(m.chatItems[2].Body, "Read internal/tui/model.go lines 1-20") {
+		t.Fatalf("expected completed tool summary in tool call item, got %q", m.chatItems[2].Body)
 	}
 }
 
@@ -2975,7 +3067,7 @@ func TestBusyEnterInToolPhaseDefersBTWCancel(t *testing.T) {
 func TestRenderChatCardToolUsesVisualSeparator(t *testing.T) {
 	got := renderChatCard(chatEntry{
 		Kind:   "tool",
-		Title:  "Tool Result | read_file",
+		Title:  "Tool Call | read_file",
 		Body:   "Read internal/tui/model.go lines 1-20",
 		Status: "done",
 	}, 64)
@@ -2983,7 +3075,7 @@ func TestRenderChatCardToolUsesVisualSeparator(t *testing.T) {
 	if !strings.Contains(got, "│") && !strings.Contains(got, "|") {
 		t.Fatalf("expected tool card to include a left border separator, got %q", got)
 	}
-	if !strings.Contains(got, "Tool Result | read_file") {
+	if !strings.Contains(got, "Tool Call | read_file") {
 		t.Fatalf("expected tool card title to render, got %q", got)
 	}
 }
