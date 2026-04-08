@@ -445,42 +445,6 @@ func TestAccumulateTokenUsageFallbackAndClamp(t *testing.T) {
 	}
 }
 
-func TestPlanModeDoesNotShowDetailedPlanPanel(t *testing.T) {
-	input := textarea.New()
-	m := model{
-		screen:    screenChat,
-		width:     140,
-		height:    24,
-		input:     input,
-		viewport:  viewport.New(0, 0),
-		planView:  viewport.New(0, 0),
-		mode:      modePlan,
-		sess:      session.New("E:\\bytemind"),
-		workspace: "E:\\bytemind",
-		plan: planpkg.State{
-			Phase: planpkg.PhaseReady,
-			Goal:  "Create a plan",
-			Steps: []planpkg.Step{
-				{Title: "Step 1", Status: planpkg.StepInProgress},
-				{Title: "Step 2", Status: planpkg.StepPending},
-			},
-		},
-	}
-
-	m.refreshViewport()
-
-	if m.hasPlanPanel() {
-		t.Fatalf("expected detailed plan panel to stay hidden in plan mode")
-	}
-	for y := 0; y < m.height; y++ {
-		for x := 0; x < m.width; x++ {
-			if m.mouseOverPlan(x, y) {
-				t.Fatalf("did not expect a mouse-active plan panel region in plan mode")
-			}
-		}
-	}
-}
-
 func TestCtrlLFromLandingOpensSessions(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -984,7 +948,6 @@ func TestRefreshViewportPreservesManualScrollOffset(t *testing.T) {
 		height:    24,
 		input:     input,
 		viewport:  viewport.New(0, 0),
-		planView:  viewport.New(0, 0),
 		sess:      session.New("E:\\bytemind"),
 		workspace: "E:\\bytemind",
 	}
@@ -1029,7 +992,6 @@ func TestContinueExecutionInputPreparesPlanAndSubmitsPrompt(t *testing.T) {
 		height:    24,
 		input:     input,
 		viewport:  viewport.New(0, 0),
-		planView:  viewport.New(0, 0),
 		mode:      modePlan,
 		sess:      session.New("E:\\bytemind"),
 		workspace: "E:\\bytemind",

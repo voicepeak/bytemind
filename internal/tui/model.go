@@ -182,7 +182,6 @@ type model struct {
 
 	async    chan tea.Msg
 	viewport viewport.Model
-	planView viewport.Model
 	input    textarea.Model
 	spinner  spinner.Model
 
@@ -269,11 +268,6 @@ func newModel(opts Options) model {
 	vp.MouseWheelEnabled = true
 	vp.MouseWheelDelta = scrollStep
 
-	planVP := viewport.New(0, 0)
-	planVP.YPosition = 0
-	planVP.MouseWheelEnabled = true
-	planVP.MouseWheelDelta = scrollStep
-
 	chatItems, toolRuns := rebuildSessionTimeline(opts.Session)
 
 	opts.Runner.SetObserver(agent.ObserverFunc(func(event agent.Event) {
@@ -287,39 +281,38 @@ func newModel(opts Options) model {
 	})
 
 	m := model{
-		runner:             opts.Runner,
-		store:              opts.Store,
-		sess:               opts.Session,
-		imageStore:         opts.ImageStore,
-		cfg:                opts.Config,
-		workspace:          opts.Workspace,
-		async:              async,
-		viewport:           vp,
-		planView:           planVP,
-		input:              input,
-		spinner:            spin,
-		chatItems:          chatItems,
-		toolRuns:           toolRuns,
-		plan:               copyPlanState(opts.Session.Plan),
-		sessions:           nil,
-		sessionLimit:       defaultSessionLimit,
-		screen:             initialScreen(opts.Session),
-		mode:               toAgentMode(opts.Session.Mode),
-		streamingIndex:     -1,
-		statusNote:         "Ready.",
-		phase:              "idle",
-		llmConnected:       true,
-		chatAutoFollow:     true,
-		mentionIndex:       mention.NewWorkspaceFileIndex(opts.Workspace),
-		tokenUsage:         newTokenUsageComponent(),
-		tokenBudget:        max(1, opts.Config.TokenQuota),
-		tokenEstimator:     newRealtimeTokenEstimator(opts.Config.Provider.Model),
-		inputImageRefs:     make(map[int]llm.AssetID, 8),
-		inputImageMentions: make(map[string]llm.AssetID, 8),
-		orphanedImages:     make(map[llm.AssetID]time.Time, 8),
-		nextImageID:        nextSessionImageID(opts.Session),
-		clipboard:          defaultClipboardImageReader{},
-		startupGuide:       opts.StartupGuide,
+		runner:               opts.Runner,
+		store:                opts.Store,
+		sess:                 opts.Session,
+		imageStore:           opts.ImageStore,
+		cfg:                  opts.Config,
+		workspace:            opts.Workspace,
+		async:                async,
+		viewport:             vp,
+		input:                input,
+		spinner:              spin,
+		chatItems:            chatItems,
+		toolRuns:             toolRuns,
+		plan:                 copyPlanState(opts.Session.Plan),
+		sessions:             nil,
+		sessionLimit:         defaultSessionLimit,
+		screen:               initialScreen(opts.Session),
+		mode:                 toAgentMode(opts.Session.Mode),
+		streamingIndex:       -1,
+		statusNote:           "Ready.",
+		phase:                "idle",
+		llmConnected:         true,
+		chatAutoFollow:       true,
+		mentionIndex:         mention.NewWorkspaceFileIndex(opts.Workspace),
+		tokenUsage:           newTokenUsageComponent(),
+		tokenBudget:          max(1, opts.Config.TokenQuota),
+		tokenEstimator:       newRealtimeTokenEstimator(opts.Config.Provider.Model),
+		inputImageRefs:       make(map[int]llm.AssetID, 8),
+		inputImageMentions:   make(map[string]llm.AssetID, 8),
+		orphanedImages:       make(map[llm.AssetID]time.Time, 8),
+		nextImageID:          nextSessionImageID(opts.Session),
+		clipboard:            defaultClipboardImageReader{},
+		startupGuide:         opts.StartupGuide,
 	}
 	if opts.StartupGuide.Active {
 		m.statusNote = opts.StartupGuide.Status
@@ -542,21 +535,6 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.screen == screenChat {
-		if m.mouseOverPlan(msg.X, msg.Y) {
-			m.ensurePlanMouse()
-			switch msg.Button {
-			case tea.MouseButtonWheelUp:
-				m.planView.LineUp(scrollStep)
-				return m, nil
-			case tea.MouseButtonWheelDown:
-				m.planView.LineDown(scrollStep)
-				return m, nil
-			default:
-				var cmd tea.Cmd
-				m.planView, cmd = m.planView.Update(msg)
-				return m, cmd
-			}
-		}
 		m.ensureViewportMouse()
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
@@ -581,13 +559,6 @@ func (m *model) ensureViewportMouse() {
 	m.viewport.MouseWheelEnabled = true
 	if m.viewport.MouseWheelDelta <= 0 {
 		m.viewport.MouseWheelDelta = scrollStep
-	}
-}
-
-func (m *model) ensurePlanMouse() {
-	m.planView.MouseWheelEnabled = true
-	if m.planView.MouseWheelDelta <= 0 {
-		m.planView.MouseWheelDelta = scrollStep
 	}
 }
 
@@ -640,10 +611,6 @@ func (m model) mouseOverInput(y int) bool {
 	default:
 		return false
 	}
-}
-
-func (m model) mouseOverPlan(x, y int) bool {
-	return false
 }
 
 func (m model) mouseOverChatInput(y int) bool {
@@ -1835,10 +1802,6 @@ func (m *model) refreshViewport() {
 	} else {
 		m.viewport.SetYOffset(chatOffset)
 	}
-
-	planOffset := m.planView.YOffset
-	m.planView.SetContent(m.planPanelContent(max(16, m.planView.Width)))
-	m.planView.SetYOffset(planOffset)
 }
 
 func (m *model) syncTokenUsageBounds() {
@@ -1947,8 +1910,6 @@ func (m *model) syncViewportSize() {
 	}
 	statusHeight := lipgloss.Height(m.renderStatusBar())
 	panelInnerHeight := max(4, bodyHeight-panelStyle.GetVerticalFrameSize()-statusHeight-1)
-	m.planView.Width = 0
-	m.planView.Height = 0
 	contentHeight := max(3, panelInnerHeight)
 	m.viewport.Width = max(8, m.conversationPanelWidth()-scrollbarWidth)
 	m.viewport.Height = contentHeight
@@ -4391,7 +4352,7 @@ func (m model) helpText() string {
 		"",
 		"UI notes",
 		"Tab toggles between Build and Plan modes.",
-		"Plan mode keeps the plan panel visible and focused on structured steps.",
+		"Plan mode keeps structured plan state synced for execution and resume.",
 		"Use Ctrl+G to open or close the help panel.",
 		"Use Ctrl+F to search prompt history and restore previous input.",
 		"If provider setup is required, paste an API key in the input and press Enter.",
@@ -4838,34 +4799,8 @@ func toAgentMode(mode planpkg.AgentMode) agentMode {
 	return modeBuild
 }
 
-func (m model) hasPlanPanel() bool {
-	return false
-}
-
-func (m model) showPlanSidebar() bool {
-	return m.hasPlanPanel() && m.chatPanelInnerWidth() >= 104
-}
-
-func (m model) planPanelWidth() int {
-	if !m.showPlanSidebar() {
-		return m.chatPanelInnerWidth()
-	}
-	return clamp(m.chatPanelInnerWidth()/3, 30, 42)
-}
-
 func (m model) conversationPanelWidth() int {
-	width := m.chatPanelInnerWidth()
-	if m.showPlanSidebar() {
-		width -= m.planPanelWidth() + 1
-	}
-	return max(24, width)
-}
-
-func (m model) planModeLabel() string {
-	if m.mode == modePlan {
-		return "PLAN"
-	}
-	return "BUILD"
+	return max(24, m.chatPanelInnerWidth())
 }
 
 func (m model) planPhaseLabel() string {
@@ -4878,72 +4813,6 @@ func (m model) planPhaseLabel() string {
 	}
 	return string(phase)
 }
-
-func (m model) renderPlanPanel(width int) string {
-	width = max(24, width)
-	return modalBoxStyle.Width(width).Render(m.planView.View())
-}
-
-func (m model) planPanelContent(width int) string {
-	width = max(16, width)
-	lines := []string{
-		accentStyle.Render(m.planModeLabel()),
-		mutedStyle.Render("Phase: " + m.planPhaseLabel()),
-	}
-
-	if goal := strings.TrimSpace(m.plan.Goal); goal != "" {
-		lines = append(lines, "", cardTitleStyle.Render("Goal"), wrapPlainText(goal, width))
-	}
-	if summary := strings.TrimSpace(m.plan.Summary); summary != "" {
-		lines = append(lines, "", cardTitleStyle.Render("Summary"), wrapPlainText(summary, width))
-	}
-
-	lines = append(lines, "", cardTitleStyle.Render("Steps"))
-	if len(m.plan.Steps) == 0 {
-		lines = append(lines, mutedStyle.Render("No structured plan yet. Use update_plan to create one."))
-	} else {
-		for _, step := range m.plan.Steps {
-			lines = append(lines, m.renderPlanStep(step, width), "")
-		}
-		if len(lines) > 0 && lines[len(lines)-1] == "" {
-			lines = lines[:len(lines)-1]
-		}
-	}
-
-	if nextAction := strings.TrimSpace(m.plan.NextAction); nextAction != "" {
-		lines = append(lines, "", cardTitleStyle.Render("Next Action"), wrapPlainText(nextAction, width))
-	}
-	if reason := strings.TrimSpace(m.plan.BlockReason); reason != "" {
-		lines = append(lines, "", cardTitleStyle.Render("Blocked Reason"), errorStyle.Render(wrapPlainText(reason, width)))
-	}
-
-	return strings.Join(lines, "\n")
-}
-
-func (m model) planPanelRenderHeight() int {
-	if !m.hasPlanPanel() {
-		return 0
-	}
-	return m.planView.Height + modalBoxStyle.GetVerticalFrameSize()
-}
-
-func (m model) renderPlanStep(step planpkg.Step, width int) string {
-	header := fmt.Sprintf("%s %s", statusGlyph(string(step.Status)), step.Title)
-	parts := []string{wrapPlainText(header, width)}
-	if desc := strings.TrimSpace(step.Description); desc != "" {
-		parts = append(parts, mutedStyle.Render(wrapPlainText(desc, width)))
-	}
-	if len(step.Files) > 0 {
-		parts = append(parts, mutedStyle.Render("Files: "+compact(strings.Join(step.Files, ", "), width)))
-	}
-	if len(step.Verify) > 0 {
-		parts = append(parts, mutedStyle.Render("Verify: "+compact(strings.Join(step.Verify, " | "), width)))
-	}
-	if risk := strings.TrimSpace(string(step.Risk)); risk != "" {
-		parts = append(parts, mutedStyle.Render("Risk: "+risk))
-	}
-	return strings.Join(parts, "\n")
-}
 func (m model) sessionText() string {
 	if m.sess == nil {
 		return "No active session."
@@ -4954,26 +4823,6 @@ func (m model) sessionText() string {
 		fmt.Sprintf("Updated: %s", m.sess.UpdatedAt.Local().Format("2006-01-02 15:04:05")),
 		fmt.Sprintf("Messages: %d", len(m.sess.Messages)),
 	}, "\n")
-}
-
-func statusGlyph(status string) string {
-	switch planpkg.NormalizeStepStatus(status) {
-	case planpkg.StepCompleted:
-		return doneStyle.Render("✓")
-	case planpkg.StepInProgress:
-		return accentStyle.Render(">")
-	case planpkg.StepBlocked:
-		return errorStyle.Render("!")
-	default:
-		switch status {
-		case "warn":
-			return warnStyle.Render("!")
-		case "error":
-			return errorStyle.Render("x")
-		default:
-			return mutedStyle.Render("-")
-		}
-	}
 }
 
 func formatUserMeta(model string, at time.Time) string {
