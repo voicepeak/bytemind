@@ -445,39 +445,39 @@ func TestAccumulateTokenUsageFallbackAndClamp(t *testing.T) {
 	}
 }
 
-func TestPlanModeDoesNotShowDetailedPlanPanel(t *testing.T) {
-	input := textarea.New()
+func TestRestoreTokenUsageFromSessionUsesCurrentSessionOnly(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create session store: %v", err)
+	}
+
+	workspace := t.TempDir()
+	current := session.New(workspace)
+	current.Messages = []llm.Message{
+		{Role: "assistant", Parts: []llm.Part{{Type: llm.PartText, Text: &llm.TextPart{Value: "ok"}}}, Usage: &llm.Usage{InputTokens: 30, OutputTokens: 20, ContextTokens: 10, TotalTokens: 60}},
+	}
+	other := session.New(workspace)
+	other.Messages = []llm.Message{
+		{Role: "assistant", Parts: []llm.Part{{Type: llm.PartText, Text: &llm.TextPart{Value: "ok"}}}, Usage: &llm.Usage{InputTokens: 200, OutputTokens: 100, ContextTokens: 50, TotalTokens: 350}},
+	}
+	if err := store.Save(current); err != nil {
+		t.Fatalf("failed to save current session: %v", err)
+	}
+	if err := store.Save(other); err != nil {
+		t.Fatalf("failed to save other session: %v", err)
+	}
+
 	m := model{
-		screen:    screenChat,
-		width:     140,
-		height:    24,
-		input:     input,
-		viewport:  viewport.New(0, 0),
-		planView:  viewport.New(0, 0),
-		mode:      modePlan,
-		sess:      session.New("E:\\bytemind"),
-		workspace: "E:\\bytemind",
-		plan: planpkg.State{
-			Phase: planpkg.PhaseReady,
-			Goal:  "Create a plan",
-			Steps: []planpkg.Step{
-				{Title: "Step 1", Status: planpkg.StepInProgress},
-				{Title: "Step 2", Status: planpkg.StepPending},
-			},
-		},
+		store:     store,
+		workspace: workspace,
 	}
+	m.restoreTokenUsageFromSession(current)
 
-	m.refreshViewport()
-
-	if m.hasPlanPanel() {
-		t.Fatalf("expected detailed plan panel to stay hidden in plan mode")
+	if m.tokenUsedTotal != 60 {
+		t.Fatalf("expected current session total 60, got %d", m.tokenUsedTotal)
 	}
-	for y := 0; y < m.height; y++ {
-		for x := 0; x < m.width; x++ {
-			if m.mouseOverPlan(x, y) {
-				t.Fatalf("did not expect a mouse-active plan panel region in plan mode")
-			}
-		}
+	if m.tokenInput != 30 || m.tokenOutput != 20 || m.tokenContext != 10 {
+		t.Fatalf("unexpected breakdown input=%d output=%d context=%d", m.tokenInput, m.tokenOutput, m.tokenContext)
 	}
 }
 
@@ -984,7 +984,6 @@ func TestRefreshViewportPreservesManualScrollOffset(t *testing.T) {
 		height:    24,
 		input:     input,
 		viewport:  viewport.New(0, 0),
-		planView:  viewport.New(0, 0),
 		sess:      session.New("E:\\bytemind"),
 		workspace: "E:\\bytemind",
 	}
@@ -1029,7 +1028,6 @@ func TestContinueExecutionInputPreparesPlanAndSubmitsPrompt(t *testing.T) {
 		height:    24,
 		input:     input,
 		viewport:  viewport.New(0, 0),
-		planView:  viewport.New(0, 0),
 		mode:      modePlan,
 		sess:      session.New("E:\\bytemind"),
 		workspace: "E:\\bytemind",
