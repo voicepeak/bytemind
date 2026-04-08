@@ -753,6 +753,41 @@ func TestPromptSearchPanelSupportsPageNavigation(t *testing.T) {
 	}
 }
 
+func TestRenderPromptSearchPaletteNoMatchesUsesHighContrastShortcuts(t *testing.T) {
+	m := model{
+		screen:              screenChat,
+		width:               140,
+		promptSearchMode:    promptSearchModeQuick,
+		promptSearchQuery:   "missing",
+		promptSearchMatches: nil,
+	}
+
+	got := m.renderPromptSearchPalette()
+	for _, want := range []string{"ws:<kw>", "workspace", "sid:<kw>", "session", "PgUp/PgDn", "Enter", "Esc"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected no-match prompt search palette to contain %q, got %q", want, got)
+		}
+	}
+}
+
+func TestRenderPromptSearchPaletteMetaLineUsesHighContrastShortcuts(t *testing.T) {
+	m := model{
+		screen:           screenChat,
+		width:            140,
+		promptSearchMode: promptSearchModeQuick,
+		promptSearchMatches: []history.PromptEntry{
+			{Prompt: "fix tui", Workspace: "repo-a", SessionID: "sess-1", Timestamp: time.Now()},
+		},
+	}
+
+	got := m.renderPromptSearchPalette()
+	for _, want := range []string{"ws:<kw>", "workspace", "sid:<kw>", "session", "Ctrl+F", "next", "Ctrl+S", "prev"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected prompt search meta line to contain %q, got %q", want, got)
+		}
+	}
+}
+
 func TestStartupGuideSequentialFlowAdvancesAndClearsInput(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(configPath, []byte(`{
@@ -1163,8 +1198,10 @@ func TestChatViewOmitsRedundantChrome(t *testing.T) {
 		}
 	}
 	for _, wanted := range []string{
-		"tab agents",
-		"/ commands",
+		"tab",
+		"agents",
+		"/",
+		"commands",
 		"Ctrl+L sessions",
 		"Ctrl+C quit",
 		"Build",
@@ -1536,8 +1573,10 @@ func TestRenderFooterOnlyShowsInputRegion(t *testing.T) {
 		}
 	}
 	for _, wanted := range []string{
-		"tab agents",
-		"/ commands",
+		"tab",
+		"agents",
+		"/",
+		"commands",
 		"Ctrl+L sessions",
 		"Ctrl+C quit",
 	} {
@@ -1564,7 +1603,7 @@ func TestRenderFooterInfoLineCombinesModeAndHints(t *testing.T) {
 	lines := strings.Split(footer, "\n")
 	infoLine := ""
 	for _, line := range lines {
-		if strings.Contains(line, "tab agents") {
+		if strings.Contains(line, "agents") && strings.Contains(line, "Ctrl+L") {
 			infoLine = line
 			break
 		}
@@ -1572,7 +1611,7 @@ func TestRenderFooterInfoLineCombinesModeAndHints(t *testing.T) {
 	if infoLine == "" {
 		t.Fatalf("expected footer to contain a quick-hint info line")
 	}
-	for _, want := range []string{"Build", "Plan", "deepseek-chat", "tab agents"} {
+	for _, want := range []string{"Build", "Plan", "deepseek-chat", "tab", "agents"} {
 		if !strings.Contains(infoLine, want) {
 			t.Fatalf("expected combined info line to contain %q, got %q", want, infoLine)
 		}

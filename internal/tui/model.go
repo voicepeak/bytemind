@@ -50,6 +50,32 @@ const (
 	footerHintText        = "tab agents | / commands | Ctrl+F history | Ctrl+L sessions | Ctrl+C quit"
 )
 
+type footerShortcutHint struct {
+	Key   string
+	Label string
+}
+
+var footerShortcutHints = []footerShortcutHint{
+	{Key: "tab", Label: "agents"},
+	{Key: "/", Label: "commands"},
+	{Key: "Ctrl+F", Label: "history"},
+	{Key: "Ctrl+L", Label: "sessions"},
+	{Key: "Ctrl+C", Label: "quit"},
+}
+
+var promptSearchFilterHints = []footerShortcutHint{
+	{Key: "ws:<kw>", Label: "workspace"},
+	{Key: "sid:<kw>", Label: "session"},
+}
+
+var promptSearchActionHints = []footerShortcutHint{
+	{Key: "PgUp/PgDn", Label: "page"},
+	{Key: "Ctrl+F", Label: "next"},
+	{Key: "Ctrl+S", Label: "prev"},
+	{Key: "Enter", Label: "apply"},
+	{Key: "Esc", Label: "close"},
+}
+
 type screenKind string
 
 const (
@@ -709,7 +735,7 @@ func (m model) mouseOverLandingInput(y int) bool {
 			Width(m.landingInputShellWidth()).
 			Render(m.input.View()),
 	)
-	hintHeight := lipgloss.Height(mutedStyle.Render(footerHintText))
+	hintHeight := lipgloss.Height(renderFooterShortcutHints())
 	contentHeight := logoHeight + 1 + titleHeight + subtitleHeight + 1 + overlayHeight + inputHeight + 1 + hintHeight
 	contentTop := max(0, (m.height-contentHeight)/2)
 	inputTop := contentTop + logoHeight + 1 + titleHeight + subtitleHeight + 1 + overlayHeight
@@ -2108,7 +2134,7 @@ func (m model) renderLanding() string {
 	} else if m.commandOpen {
 		parts = append(parts, m.renderCommandPalette(), "")
 	}
-	parts = append(parts, inputBox, "", mutedStyle.Render(footerHintText))
+	parts = append(parts, inputBox, "", renderFooterShortcutHints())
 	content := lipgloss.JoinVertical(lipgloss.Center, parts...)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 }
@@ -2155,12 +2181,11 @@ func (m model) renderModeTabs() string {
 func (m model) renderFooterInfoLine() string {
 	width := max(24, m.chatPanelInnerWidth())
 	left := m.renderModeTabs()
-	rightParts := []string{footerHintText}
-	if modelName := strings.TrimSpace(m.currentModelLabel()); modelName != "" && modelName != "-" {
-		rightParts = append([]string{modelName}, rightParts...)
+	modelName := strings.TrimSpace(m.currentModelLabel())
+	if modelName == "-" {
+		modelName = ""
 	}
-	rightRaw := strings.Join(rightParts, "  |  ")
-	right := mutedStyle.Render(rightRaw)
+	right := renderFooterInfoRight(modelName, 1<<30)
 
 	leftW := lipgloss.Width(left)
 	rightW := lipgloss.Width(right)
@@ -2168,15 +2193,116 @@ func (m model) renderFooterInfoLine() string {
 	if gap < 2 {
 		available := max(10, width-leftW-2)
 		if available <= 10 {
-			return lipgloss.NewStyle().Width(width).Render(mutedStyle.Render(compact(rightRaw, width)))
+			return lipgloss.NewStyle().Width(width).Render(renderFooterInfoRight(modelName, width))
 		}
-		compacted := mutedStyle.Render(compact(rightRaw, available))
+		compacted := renderFooterInfoRight(modelName, available)
 		gap = width - leftW - lipgloss.Width(compacted)
 		return lipgloss.NewStyle().Width(width).Render(left + strings.Repeat(" ", max(2, gap)) + compacted)
 	}
 
 	return lipgloss.NewStyle().Width(width).Render(left + strings.Repeat(" ", gap) + right)
 }
+
+func renderFooterInfoRight(modelName string, maxWidth int) string {
+	maxWidth = max(1, maxWidth)
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return renderInlineShortcutHintsCompacted(footerShortcutHints, maxWidth)
+	}
+	modelText := compact(modelName, maxWidth)
+	modelWidth := runewidth.StringWidth(modelText)
+	if modelWidth >= maxWidth {
+		return mutedStyle.Render(modelText)
+	}
+	dividerPlain := "  |  "
+	dividerWidth := runewidth.StringWidth(dividerPlain)
+	remaining := maxWidth - modelWidth - dividerWidth
+	if remaining <= 0 {
+		return mutedStyle.Render(modelText)
+	}
+	hints := renderInlineShortcutHintsCompacted(footerShortcutHints, remaining)
+	if strings.TrimSpace(hints) == "" {
+		return mutedStyle.Render(modelText)
+	}
+	return mutedStyle.Render(modelText) + footerHintDividerStyle.Render(dividerPlain) + hints
+}
+
+func renderFooterShortcutHints() string {
+	return renderInlineShortcutHints(footerShortcutHints)
+}
+
+func renderInlineShortcutHints(hints []footerShortcutHint) string {
+	parts := make([]string, 0, len(hints))
+	for _, hint := range hints {
+		parts = append(parts, footerHintKeyStyle.Render(hint.Key)+" "+footerHintLabelStyle.Render(hint.Label))
+	}
+	return strings.Join(parts, footerHintDividerStyle.Render("  |  "))
+}
+
+func renderInlineShortcutHintsCompacted(hints []footerShortcutHint, maxWidth int) string {
+	maxWidth = max(1, maxWidth)
+	dividerPlain := "  |  "
+	dividerWidth := runewidth.StringWidth(dividerPlain)
+
+	used := 0
+	parts := make([]string, 0, len(hints)*2)
+	for _, hint := range hints {
+		key := strings.TrimSpace(hint.Key)
+		label := strings.TrimSpace(hint.Label)
+		if key == "" {
+			continue
+		}
+		segmentPlain := key
+		segmentStyled := footerHintKeyStyle.Render(key)
+		if label != "" {
+			segmentPlain += " " + label
+			segmentStyled += " " + footerHintLabelStyle.Render(label)
+		}
+		needDivider := len(parts) > 0
+		prefixWidth := 0
+		if needDivider {
+			prefixWidth = dividerWidth
+		}
+		segmentWidth := runewidth.StringWidth(segmentPlain)
+		if used+prefixWidth+segmentWidth <= maxWidth {
+			if needDivider {
+				parts = append(parts, footerHintDividerStyle.Render(dividerPlain))
+				used += dividerWidth
+			}
+			parts = append(parts, segmentStyled)
+			used += segmentWidth
+			continue
+		}
+
+		remaining := maxWidth - used - prefixWidth
+		if remaining <= 0 {
+			break
+		}
+		if needDivider {
+			parts = append(parts, footerHintDividerStyle.Render(dividerPlain))
+			used += dividerWidth
+		}
+
+		keyWidth := runewidth.StringWidth(key)
+		if keyWidth >= remaining {
+			parts = append(parts, footerHintKeyStyle.Render(compact(key, remaining)))
+			break
+		}
+		if label == "" {
+			parts = append(parts, footerHintKeyStyle.Render(key))
+			break
+		}
+		labelSpace := remaining - keyWidth - 1
+		if labelSpace <= 0 {
+			parts = append(parts, footerHintKeyStyle.Render(key))
+			break
+		}
+		parts = append(parts, footerHintKeyStyle.Render(key)+" "+footerHintLabelStyle.Render(compact(label, labelSpace)))
+		break
+	}
+	return strings.Join(parts, "")
+}
+
 func (m model) renderSessionsModal() string {
 	lines := []string{modalTitleStyle.Render("Recent Sessions"), mutedStyle.Render("Up/Down to select, Enter to resume, Esc to close"), ""}
 	if len(m.sessions) == 0 {
@@ -2302,9 +2428,14 @@ func (m model) renderPromptSearchPalette() string {
 		}
 		content := []string{
 			commandPaletteMetaStyle.Render("Prompt history " + modeLabel),
-			commandPaletteMetaStyle.Render("query: " + query + "  (filters: ws:<kw> sid:<kw>)"),
+			commandPaletteMetaStyle.Render("query: "+query+"  (filters: ") + renderInlineShortcutHints(promptSearchFilterHints) + commandPaletteMetaStyle.Render(")"),
 			commandPaletteMetaStyle.Render("No matching prompts."),
-			commandPaletteMetaStyle.Render("Type to filter  PgUp/PgDn page  Enter apply  Esc close"),
+			commandPaletteMetaStyle.Render("Type to filter  ") +
+				renderInlineShortcutHints([]footerShortcutHint{
+					{Key: "PgUp/PgDn", Label: "page"},
+					{Key: "Enter", Label: "apply"},
+					{Key: "Esc", Label: "close"},
+				}),
 		}
 		return commandPaletteStyle.Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, content...))
 	}
@@ -2339,8 +2470,12 @@ func (m model) renderPromptSearchPalette() string {
 	if query == "" {
 		query = "(all)"
 	}
-	meta := fmt.Sprintf("%s  query:%s  |  ws:<kw> sid:<kw>  PgUp/PgDn page  Ctrl+F next  Ctrl+S prev  Enter apply  Esc close", modeLabel, compact(query, 24))
-	rows = append(rows, commandPaletteMetaStyle.Render(meta))
+	meta := commandPaletteMetaStyle.Render(fmt.Sprintf("%s  query:%s", modeLabel, compact(query, 24))) +
+		footerHintDividerStyle.Render("  |  ") +
+		renderInlineShortcutHints(promptSearchFilterHints) +
+		footerHintDividerStyle.Render("  |  ") +
+		renderInlineShortcutHints(promptSearchActionHints)
+	rows = append(rows, meta)
 	return commandPaletteStyle.Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
 }
 
