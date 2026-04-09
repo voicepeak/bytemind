@@ -42,7 +42,7 @@ func TestSystemPromptRendersMainModeSystemAndInstruction(t *testing.T) {
 	})
 
 	assertContains(t, prompt, "You are ByteMind")
-	assertContains(t, prompt, "# Core Contract")
+	assertContains(t, prompt, "Your capabilities:")
 	assertContains(t, prompt, "[Current Mode]")
 	assertContains(t, prompt, "plan")
 	assertContains(t, prompt, "[Runtime Context]")
@@ -59,13 +59,15 @@ func TestSystemPromptRendersMainModeSystemAndInstruction(t *testing.T) {
 	assertContains(t, prompt, "- list_files")
 	assertContains(t, prompt, "- read_file")
 	assertContains(t, prompt, "[Active Skill]")
+	assertContains(t, prompt, "Use this skill when it is relevant to the user's request.")
+	assertContains(t, prompt, "Follow the workflow and output contract defined here.")
 	assertContains(t, prompt, "Tool Policy: allowlist")
 	assertContains(t, prompt, "[Instructions]")
 	assertContains(t, prompt, "Instructions from:")
 	assertContains(t, prompt, "Use rg for search before broad shell scans.")
 	assertNotContains(t, prompt, "Primary objective:")
 	assertNotContains(t, prompt, "Tool Guidelines")
-	assertNotContains(t, prompt, "AGENTS.md spec")
+	assertNotContains(t, prompt, "Only the active skill block is currently in effect.")
 	assertNoTemplateMarkers(t, prompt)
 }
 
