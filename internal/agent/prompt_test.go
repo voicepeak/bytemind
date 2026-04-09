@@ -171,29 +171,29 @@ func TestFormatSkillsLimitsAndSummarizesOverflow(t *testing.T) {
 
 func TestFormatSkillsKeepsNonEnglishDescriptions(t *testing.T) {
 	got := formatSkills([]PromptSkill{
-		{Name: "review", Description: "\u4ee5\u6b63\u786e\u6027\u4e3a\u91cd\u70b9\u8fdb\u884c\u4ee3\u7801\u8bc4\u5ba1\u3002", Enabled: true},
+		{Name: "review", Description: "以正确性为重点进行代码评审。", Enabled: true},
 	})
 
-	assertContains(t, got, "- review: \u4ee5\u6b63\u786e\u6027\u4e3a\u91cd\u70b9\u8fdb\u884c\u4ee3\u7801\u8bc4\u5ba1\u3002 enabled=true")
+	assertContains(t, got, "- review: 以正确性为重点进行代码评审。 enabled=true")
 }
 
 func TestRenderActiveSkillPromptKeepsNonEnglishFields(t *testing.T) {
 	out := renderActiveSkillPrompt(&PromptActiveSkill{
 		Name:         "review",
-		Description:  "\u4ee5\u6b63\u786e\u6027\u4e3a\u91cd\u70b9\u8fdb\u884c\u4ee3\u7801\u8bc4\u5ba1\u3002",
-		WhenToUse:    "\u5f53\u7528\u6237\u8981\u6c42\u8bc4\u5ba1\u65f6\u4f7f\u7528\u3002",
-		Instructions: "\u4f18\u5148\u56de\u5f52\u98ce\u9669\u548c\u6d4b\u8bd5\u7f3a\u53e3\u3002",
+		Description:  "以正确性为重点进行代码评审。",
+		WhenToUse:    "当用户要求评审时使用。",
+		Instructions: "优先回归风险和测试缺口。",
 		Args: map[string]string{
-			"base_ref": "\u4e3b\u5206\u652f",
+			"base_ref": "主分支",
 		},
 		ToolPolicy: "allowlist",
 		Tools:      []string{"read_file"},
 	})
 
-	assertContains(t, out, "Description: \u4ee5\u6b63\u786e\u6027\u4e3a\u91cd\u70b9\u8fdb\u884c\u4ee3\u7801\u8bc4\u5ba1\u3002")
-	assertContains(t, out, "When To Use: \u5f53\u7528\u6237\u8981\u6c42\u8bc4\u5ba1\u65f6\u4f7f\u7528\u3002")
-	assertContains(t, out, "- base_ref=\u4e3b\u5206\u652f")
-	assertContains(t, out, "\u4f18\u5148\u56de\u5f52\u98ce\u9669\u548c\u6d4b\u8bd5\u7f3a\u53e3\u3002")
+	assertContains(t, out, "Description: 以正确性为重点进行代码评审。")
+	assertContains(t, out, "When To Use: 当用户要求评审时使用。")
+	assertContains(t, out, "- base_ref=主分支")
+	assertContains(t, out, "优先回归风险和测试缺口。")
 }
 
 func TestIsGitRepository(t *testing.T) {
