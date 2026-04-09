@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"bytemind/internal/agent"
 	"bytemind/internal/config"
@@ -25,6 +26,36 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+type compactCommandTestClient struct {
+	replies  []llm.Message
+	requests []llm.ChatRequest
+	index    int
+}
+
+func (c *compactCommandTestClient) CreateMessage(_ context.Context, req llm.ChatRequest) (llm.Message, error) {
+	c.requests = append(c.requests, req)
+	if len(c.replies) == 0 {
+		return llm.Message{}, nil
+	}
+	if c.index >= len(c.replies) {
+		return c.replies[len(c.replies)-1], nil
+	}
+	reply := c.replies[c.index]
+	c.index++
+	return reply, nil
+}
+
+func (c *compactCommandTestClient) StreamMessage(ctx context.Context, req llm.ChatRequest, onDelta func(string)) (llm.Message, error) {
+	reply, err := c.CreateMessage(ctx, req)
+	if err != nil {
+		return llm.Message{}, err
+	}
+	if onDelta != nil && strings.TrimSpace(reply.Content) != "" {
+		onDelta(reply.Content)
+	}
+	return reply, nil
+}
 
 func TestHandleMouseScrollsViewport(t *testing.T) {
 	m := model{
@@ -219,7 +250,7 @@ func TestRenderMainPanelShowsTokenUsageBadge(t *testing.T) {
 	_ = m.tokenUsage.SetUsage(1234, 5000)
 
 	panel := m.renderMainPanel()
-	if !strings.Contains(panel, "1,234 / 5,000") {
+	if !strings.Contains(panel, "token: 1,234") {
 		t.Fatalf("expected token usage badge text in main panel, got %q", panel)
 	}
 }
@@ -277,7 +308,7 @@ func TestHandleAgentEventUsageUpdatedAccumulatesRealTokens(t *testing.T) {
 	}
 }
 
-func TestAssistantDeltaEstimationsAreCalibratedByOfficialUsage(t *testing.T) {
+func TestAssistantDeltaDoesNotChangeUsageWithoutOfficialUsage(t *testing.T) {
 	m := model{
 		tokenUsage:  newTokenUsageComponent(),
 		tokenBudget: 5000,
@@ -286,15 +317,11 @@ func TestAssistantDeltaEstimationsAreCalibratedByOfficialUsage(t *testing.T) {
 	m.handleAgentEvent(agent.Event{Type: agent.EventRunStarted})
 	m.handleAgentEvent(agent.Event{
 		Type:    agent.EventAssistantDelta,
-		Content: "This is a streamed delta chunk for token estimation.",
+		Content: "This streamed delta should not change usage counters.",
 	})
 
-	estimated := m.tempEstimatedOutput
-	if estimated <= 0 {
-		t.Fatalf("expected temporary estimated output tokens to increase")
-	}
-	if m.tokenUsedTotal != estimated || m.tokenOutput != estimated {
-		t.Fatalf("expected provisional usage to be reflected immediately, used=%d output=%d estimated=%d", m.tokenUsedTotal, m.tokenOutput, estimated)
+	if m.tokenUsedTotal != 0 || m.tokenOutput != 0 {
+		t.Fatalf("expected no provisional usage without official usage, used=%d output=%d", m.tokenUsedTotal, m.tokenOutput)
 	}
 
 	m.handleAgentEvent(agent.Event{
@@ -307,11 +334,8 @@ func TestAssistantDeltaEstimationsAreCalibratedByOfficialUsage(t *testing.T) {
 		},
 	})
 
-	if m.tempEstimatedOutput != 0 {
-		t.Fatalf("expected temporary estimate to be cleared after calibration, got %d", m.tempEstimatedOutput)
-	}
 	if m.tokenUsedTotal != 30 {
-		t.Fatalf("expected total tokens to be calibrated to official total 30, got %d", m.tokenUsedTotal)
+		t.Fatalf("expected total tokens to follow official total 30, got %d", m.tokenUsedTotal)
 	}
 	if m.tokenInput != 20 || m.tokenOutput != 7 || m.tokenContext != 3 {
 		t.Fatalf("expected official breakdown after calibration, got input=%d output=%d context=%d", m.tokenInput, m.tokenOutput, m.tokenContext)
@@ -391,7 +415,7 @@ func TestFetchRemoteTokenUsageCmdReturnsUsageMsgOnSuccess(t *testing.T) {
 	}
 }
 
-func TestUpdateTokenUsagePulledMsgUsesMaxAndIgnoresErrors(t *testing.T) {
+func TestUpdateTokenUsagePulledMsgIgnoredForSessionOnly(t *testing.T) {
 	m := model{
 		tokenUsage:     newTokenUsageComponent(),
 		tokenBudget:    5000,
@@ -408,17 +432,8 @@ func TestUpdateTokenUsagePulledMsgUsesMaxAndIgnoresErrors(t *testing.T) {
 		Context: 10,
 	})
 	updated := got.(model)
-	if updated.tokenUsedTotal != 100 {
-		t.Fatalf("expected used total to keep local max 100, got %d", updated.tokenUsedTotal)
-	}
-	if updated.tokenInput != 60 {
-		t.Fatalf("expected input to keep local max 60, got %d", updated.tokenInput)
-	}
-	if updated.tokenOutput != 30 || updated.tokenContext != 10 {
-		t.Fatalf("expected output/context to use remote max values, got output=%d context=%d", updated.tokenOutput, updated.tokenContext)
-	}
-	if updated.tokenUsage.used != 100 {
-		t.Fatalf("expected token component to sync used=100, got %d", updated.tokenUsage.used)
+	if updated.tokenUsedTotal != 100 || updated.tokenInput != 60 || updated.tokenOutput != 20 || updated.tokenContext != 5 {
+		t.Fatalf("expected remote usage pull to be ignored, got used=%d input=%d output=%d context=%d", updated.tokenUsedTotal, updated.tokenInput, updated.tokenOutput, updated.tokenContext)
 	}
 
 	got, _ = updated.Update(tokenUsagePulledMsg{Err: errors.New("boom")})
@@ -441,6 +456,42 @@ func TestAccumulateTokenUsageFallbackAndClamp(t *testing.T) {
 		t.Fatalf("expected used total 38, got %d", m.tokenUsedTotal)
 	}
 	if m.tokenInput != 11 || m.tokenOutput != 13 || m.tokenContext != 2 {
+		t.Fatalf("unexpected breakdown input=%d output=%d context=%d", m.tokenInput, m.tokenOutput, m.tokenContext)
+	}
+}
+
+func TestRestoreTokenUsageFromSessionUsesCurrentSessionOnly(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create session store: %v", err)
+	}
+
+	workspace := t.TempDir()
+	current := session.New(workspace)
+	current.Messages = []llm.Message{
+		{Role: "assistant", Parts: []llm.Part{{Type: llm.PartText, Text: &llm.TextPart{Value: "ok"}}}, Usage: &llm.Usage{InputTokens: 30, OutputTokens: 20, ContextTokens: 10, TotalTokens: 60}},
+	}
+	other := session.New(workspace)
+	other.Messages = []llm.Message{
+		{Role: "assistant", Parts: []llm.Part{{Type: llm.PartText, Text: &llm.TextPart{Value: "ok"}}}, Usage: &llm.Usage{InputTokens: 200, OutputTokens: 100, ContextTokens: 50, TotalTokens: 350}},
+	}
+	if err := store.Save(current); err != nil {
+		t.Fatalf("failed to save current session: %v", err)
+	}
+	if err := store.Save(other); err != nil {
+		t.Fatalf("failed to save other session: %v", err)
+	}
+
+	m := model{
+		store:     store,
+		workspace: workspace,
+	}
+	m.restoreTokenUsageFromSession(current)
+
+	if m.tokenUsedTotal != 60 {
+		t.Fatalf("expected current session total 60, got %d", m.tokenUsedTotal)
+	}
+	if m.tokenInput != 30 || m.tokenOutput != 20 || m.tokenContext != 10 {
 		t.Fatalf("unexpected breakdown input=%d output=%d context=%d", m.tokenInput, m.tokenOutput, m.tokenContext)
 	}
 }
@@ -729,6 +780,41 @@ func TestPromptSearchPanelSupportsPageNavigation(t *testing.T) {
 	back := got.(model)
 	if back.promptSearchCursor != 0 {
 		t.Fatalf("expected pgup to move cursor back to 0, got %d", back.promptSearchCursor)
+	}
+}
+
+func TestRenderPromptSearchPaletteNoMatchesUsesHighContrastShortcuts(t *testing.T) {
+	m := model{
+		screen:              screenChat,
+		width:               140,
+		promptSearchMode:    promptSearchModeQuick,
+		promptSearchQuery:   "missing",
+		promptSearchMatches: nil,
+	}
+
+	got := m.renderPromptSearchPalette()
+	for _, want := range []string{"ws:<kw>", "workspace", "sid:<kw>", "session", "PgUp/PgDn", "Enter", "Esc"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected no-match prompt search palette to contain %q, got %q", want, got)
+		}
+	}
+}
+
+func TestRenderPromptSearchPaletteMetaLineUsesHighContrastShortcuts(t *testing.T) {
+	m := model{
+		screen:           screenChat,
+		width:            140,
+		promptSearchMode: promptSearchModeQuick,
+		promptSearchMatches: []history.PromptEntry{
+			{Prompt: "fix tui", Workspace: "repo-a", SessionID: "sess-1", Timestamp: time.Now()},
+		},
+	}
+
+	got := m.renderPromptSearchPalette()
+	for _, want := range []string{"ws:<kw>", "workspace", "sid:<kw>", "session", "Ctrl+F", "next", "Ctrl+S", "prev"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected prompt search meta line to contain %q, got %q", want, got)
+		}
 	}
 }
 
@@ -1064,7 +1150,7 @@ func TestContinueExecutionInputPreparesPlanAndSubmitsPrompt(t *testing.T) {
 }
 
 func TestIsContinueExecutionInputSupportsPlanAlias(t *testing.T) {
-	for _, input := range []string{"continue plan", "继续做"} {
+	for _, input := range []string{"continue plan", "resume execution"} {
 		if !isContinueExecutionInput(input) {
 			t.Fatalf("expected %q to be treated as continue input", input)
 		}
@@ -1142,8 +1228,10 @@ func TestChatViewOmitsRedundantChrome(t *testing.T) {
 		}
 	}
 	for _, wanted := range []string{
-		"tab agents",
-		"/ commands",
+		"tab",
+		"agents",
+		"/",
+		"commands",
 		"Ctrl+L sessions",
 		"Ctrl+C quit",
 		"Build",
@@ -1438,6 +1526,61 @@ func TestImmediateEnterAfterPasteStillSubmits(t *testing.T) {
 	}
 }
 
+func TestPasteEnterDoesNotSubmitAndKeepsNewline(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	input.SetWidth(40)
+	input.SetHeight(3)
+	input.SetValue("first line")
+	input.CursorEnd()
+
+	m := model{
+		screen:    screenChat,
+		input:     input,
+		workspace: "E:\\bytemind",
+		sess:      session.New("E:\\bytemind"),
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter, Paste: true})
+	updated := got.(model)
+
+	if len(updated.chatItems) != 0 {
+		t.Fatalf("expected paste enter not to submit, got %d chat items", len(updated.chatItems))
+	}
+	if !strings.Contains(updated.input.Value(), "\n") {
+		t.Fatalf("expected pasted enter to be inserted as newline, got %q", updated.input.Value())
+	}
+}
+
+func TestSuppressedEnterAfterPasteIsInsertedAsNewline(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	input.SetWidth(40)
+	input.SetHeight(3)
+	input.SetValue("line1")
+	input.CursorEnd()
+
+	m := model{
+		screen:         screenChat,
+		input:          input,
+		workspace:      "E:\\bytemind",
+		sess:           session.New("E:\\bytemind"),
+		lastPasteAt:    time.Now(),
+		lastInputAt:    time.Now(),
+		inputBurstSize: 12,
+	}
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+
+	if len(updated.chatItems) != 0 {
+		t.Fatalf("expected suppressed enter not to submit, got %d chat items", len(updated.chatItems))
+	}
+	if updated.input.Value() != "line1\n" {
+		t.Fatalf("expected suppressed enter to become newline, got %q", updated.input.Value())
+	}
+}
+
 func TestEnterSubmitsMultilinePrompt(t *testing.T) {
 	input := textarea.New()
 	input.Focus()
@@ -1484,6 +1627,9 @@ func TestHelpTextOnlyMentionsSupportedEntryPoints(t *testing.T) {
 		"go run ./cmd/bytemind chat",
 		"go run ./cmd/bytemind run -prompt",
 		"/session",
+		"/skill author",
+		"/skill clear",
+		"/skill delete <name>",
 		"/quit",
 		"/new",
 		"Ctrl+G",
@@ -1515,8 +1661,10 @@ func TestRenderFooterOnlyShowsInputRegion(t *testing.T) {
 		}
 	}
 	for _, wanted := range []string{
-		"tab agents",
-		"/ commands",
+		"tab",
+		"agents",
+		"/",
+		"commands",
 		"Ctrl+L sessions",
 		"Ctrl+C quit",
 	} {
@@ -1543,7 +1691,7 @@ func TestRenderFooterInfoLineCombinesModeAndHints(t *testing.T) {
 	lines := strings.Split(footer, "\n")
 	infoLine := ""
 	for _, line := range lines {
-		if strings.Contains(line, "tab agents") {
+		if strings.Contains(line, "agents") && strings.Contains(line, "Ctrl+L") {
 			infoLine = line
 			break
 		}
@@ -1551,7 +1699,7 @@ func TestRenderFooterInfoLineCombinesModeAndHints(t *testing.T) {
 	if infoLine == "" {
 		t.Fatalf("expected footer to contain a quick-hint info line")
 	}
-	for _, want := range []string{"Build", "Plan", "deepseek-chat", "tab agents"} {
+	for _, want := range []string{"Build", "Plan", "deepseek-chat", "tab", "agents"} {
 		if !strings.Contains(infoLine, want) {
 			t.Fatalf("expected combined info line to contain %q, got %q", want, infoLine)
 		}
@@ -1687,7 +1835,7 @@ func TestFilteredCommandsShowsRootSelectorGroups(t *testing.T) {
 		usages = append(usages, item.Usage)
 	}
 
-	for _, want := range []string{"/help", "/session", "/new", "/quit"} {
+	for _, want := range []string{"/help", "/session", "/new", "/compact", "/quit"} {
 		if !containsString(usages, want) {
 			t.Fatalf("expected root selector to contain %q, got %v", want, usages)
 		}
@@ -1696,6 +1844,65 @@ func TestFilteredCommandsShowsRootSelectorGroups(t *testing.T) {
 		if containsString(usages, unwanted) {
 			t.Fatalf("did not expect root selector to contain %q", unwanted)
 		}
+	}
+}
+
+func TestHandleSlashCompactCompactsSession(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	sess.Messages = append(sess.Messages,
+		llm.NewUserTextMessage("first ask"),
+		llm.NewAssistantTextMessage(strings.Repeat("history details ", 30)),
+		llm.NewUserTextMessage("second ask"),
+		llm.NewAssistantTextMessage(strings.Repeat("more details ", 30)),
+	)
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &compactCommandTestClient{
+		replies: []llm.Message{
+			{Role: llm.RoleAssistant, Content: "Goal: keep building\nDone: reviewed history\nPending: continue coding"},
+		},
+	}
+	runner := agent.NewRunner(agent.Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider: config.ProviderConfig{Model: "test-model"},
+			Stream:   false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	m := model{
+		runner:    runner,
+		store:     store,
+		sess:      sess,
+		workspace: workspace,
+		screen:    screenChat,
+	}
+	if err := m.handleSlashCommand("/compact"); err != nil {
+		t.Fatalf("expected /compact to succeed, got %v", err)
+	}
+	if m.statusNote != "Conversation compacted." {
+		t.Fatalf("expected compacted status note, got %q", m.statusNote)
+	}
+	if len(sess.Messages) != 1 || sess.Messages[0].Role != llm.RoleAssistant {
+		t.Fatalf("expected compacted session summary message, got %#v", sess.Messages)
+	}
+	if !strings.Contains(sess.Messages[0].Text(), "Goal: keep building") {
+		t.Fatalf("expected persisted summary content, got %q", sess.Messages[0].Text())
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("expected one compaction LLM request, got %d", len(client.requests))
 	}
 }
 
@@ -1742,6 +1949,7 @@ func TestHandleSlashSkillsListsDiscoveredSkills(t *testing.T) {
 		sess:      sess,
 		workspace: workspace,
 		screen:    screenChat,
+		input:     textarea.New(),
 	}
 	if err := m.handleSlashCommand("/skills"); err != nil {
 		t.Fatalf("expected /skills to succeed, got %v", err)
@@ -1752,9 +1960,12 @@ func TestHandleSlashSkillsListsDiscoveredSkills(t *testing.T) {
 	if !strings.Contains(m.chatItems[len(m.chatItems)-1].Body, "review") {
 		t.Fatalf("expected skills output to contain review, got %q", m.chatItems[len(m.chatItems)-1].Body)
 	}
+	if !strings.Contains(m.chatItems[len(m.chatItems)-1].Body, "Review code for correctness, regression risk, and missing tests.") {
+		t.Fatalf("expected builtin review description to be localized in /skills output, got %q", m.chatItems[len(m.chatItems)-1].Body)
+	}
 }
 
-func TestHandleSlashSkillActivateAndClear(t *testing.T) {
+func TestHandleSlashSkillActivateAndSwitch(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workspace, "internal", "skills", "bug-investigation"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1801,6 +2012,7 @@ func TestHandleSlashSkillActivateAndClear(t *testing.T) {
 		sess:      sess,
 		workspace: workspace,
 		screen:    screenChat,
+		input:     textarea.New(),
 	}
 	if err := m.handleSlashCommand("/bug-investigation"); err != nil {
 		t.Fatalf("expected /bug-investigation to succeed, got %v", err)
@@ -1817,11 +2029,290 @@ func TestHandleSlashSkillActivateAndClear(t *testing.T) {
 	if got := m.sess.ActiveSkill.Args["severity"]; got != "high" {
 		t.Fatalf("expected skill arg severity=high, got %q", got)
 	}
+}
+
+func TestHandleSlashSkillAuthorCreatesProjectSkill(t *testing.T) {
+	workspace := t.TempDir()
+
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	runner := agent.NewRunner(agent.Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider: config.ProviderConfig{Model: "test-model"},
+		},
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+	})
+
+	m := model{
+		runner:    runner,
+		store:     store,
+		sess:      sess,
+		workspace: workspace,
+		screen:    screenChat,
+		input:     textarea.New(),
+	}
+
+	if err := m.handleSlashCommand("/skill author review-plus review backend changes and report risks"); err != nil {
+		t.Fatalf("expected /skill author to succeed, got %v", err)
+	}
+
+	skillDir := filepath.Join(workspace, ".bytemind", "skills", "review-plus")
+	if _, err := os.Stat(filepath.Join(skillDir, "skill.json")); err != nil {
+		t.Fatalf("expected generated skill.json, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Fatalf("expected generated SKILL.md, got %v", err)
+	}
+
+	if len(m.chatItems) < 2 {
+		t.Fatalf("expected command exchange in chat, got %#v", m.chatItems)
+	}
+	response := m.chatItems[len(m.chatItems)-1].Body
+	if !strings.Contains(response, "Skill `review-plus`") {
+		t.Fatalf("expected response to reference authored skill, got %q", response)
+	}
+	if !strings.Contains(response, "Activate with `/review-plus`") {
+		t.Fatalf("expected response to include activation hint, got %q", response)
+	}
+
+	if err := m.handleSlashCommand("/review-plus"); err != nil {
+		t.Fatalf("expected /review-plus activation to succeed, got %v", err)
+	}
+	if m.sess.ActiveSkill == nil || m.sess.ActiveSkill.Name != "review-plus" {
+		t.Fatalf("expected active skill review-plus, got %#v", m.sess.ActiveSkill)
+	}
+}
+
+func TestHandleSlashSkillDeleteDeletesProjectSkill(t *testing.T) {
+	workspace := t.TempDir()
+	skillDir := filepath.Join(workspace, ".bytemind", "skills", "review-plus")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.json"), []byte(`{"name":"review-plus","description":"review"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# review-plus"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	runner := agent.NewRunner(agent.Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider: config.ProviderConfig{Model: "test-model"},
+		},
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+	})
+
+	m := model{
+		runner:    runner,
+		store:     store,
+		sess:      sess,
+		workspace: workspace,
+		screen:    screenChat,
+		input:     textarea.New(),
+	}
+
+	if _, err := runner.ActivateSkill(sess, "/review-plus", nil); err != nil {
+		t.Fatalf("expected activate before clear, got %v", err)
+	}
+	if err := m.handleSlashCommand("/skill delete review-plus"); err != nil {
+		t.Fatalf("expected /skill delete to succeed, got %v", err)
+	}
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Fatalf("expected skill directory removed, stat err=%v", err)
+	}
+	if m.sess.ActiveSkill != nil {
+		t.Fatalf("expected active skill cleared, got %#v", m.sess.ActiveSkill)
+	}
+	if len(m.chatItems) < 2 || !strings.Contains(m.chatItems[len(m.chatItems)-1].Body, "Deleted project skill") {
+		t.Fatalf("expected clear command response, got %#v", m.chatItems)
+	}
+}
+
+func TestHandleSlashSkillClearOnlyClearsActiveSkill(t *testing.T) {
+	workspace := t.TempDir()
+	skillDir := filepath.Join(workspace, ".bytemind", "skills", "review-plus")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.json"), []byte(`{"name":"review-plus","description":"review"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# review-plus"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	runner := agent.NewRunner(agent.Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider: config.ProviderConfig{Model: "test-model"},
+		},
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+	})
+
+	m := model{
+		runner:    runner,
+		store:     store,
+		sess:      sess,
+		workspace: workspace,
+		screen:    screenChat,
+		input:     textarea.New(),
+	}
+
+	if _, err := runner.ActivateSkill(sess, "/review-plus", nil); err != nil {
+		t.Fatalf("expected activate before clear, got %v", err)
+	}
 	if err := m.handleSlashCommand("/skill clear"); err != nil {
 		t.Fatalf("expected /skill clear to succeed, got %v", err)
 	}
+	if _, err := os.Stat(skillDir); err != nil {
+		t.Fatalf("expected skill directory to remain after clear, got %v", err)
+	}
 	if m.sess.ActiveSkill != nil {
-		t.Fatalf("expected active skill to be cleared, got %#v", m.sess.ActiveSkill)
+		t.Fatalf("expected active skill cleared, got %#v", m.sess.ActiveSkill)
+	}
+	if len(m.chatItems) < 2 || !strings.Contains(m.chatItems[len(m.chatItems)-1].Body, "Cleared active skill") {
+		t.Fatalf("expected clear status response, got %#v", m.chatItems)
+	}
+}
+
+func TestHandleSlashSkillAuthorWithoutNameEntersAuthorMode(t *testing.T) {
+	workspace := t.TempDir()
+
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	runner := agent.NewRunner(agent.Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider: config.ProviderConfig{Model: "test-model"},
+		},
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+	})
+
+	input := textarea.New()
+	m := model{
+		runner:    runner,
+		store:     store,
+		sess:      sess,
+		workspace: workspace,
+		screen:    screenChat,
+		input:     input,
+	}
+
+	if err := m.handleSlashCommand("/skill author"); err != nil {
+		t.Fatalf("expected /skill author to enable mode, got %v", err)
+	}
+	if !m.skillAuthorMode {
+		t.Fatalf("expected skillAuthorMode enabled")
+	}
+	if strings.TrimSpace(m.skillAuthorName) != "" {
+		t.Fatalf("expected no skillAuthorName yet, got %q", m.skillAuthorName)
+	}
+	if !strings.Contains(m.input.Placeholder, "step 1/2") {
+		t.Fatalf("expected author-mode placeholder, got %q", m.input.Placeholder)
+	}
+
+	m.input.SetValue("review-ops")
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+
+	if !updated.skillAuthorMode {
+		t.Fatalf("expected author mode to stay active")
+	}
+	if updated.skillAuthorName != "review-ops" {
+		t.Fatalf("expected target skill name review-ops, got %q", updated.skillAuthorName)
+	}
+	if !strings.Contains(updated.input.Placeholder, "step 2/2") || !strings.Contains(updated.input.Placeholder, "review-ops") {
+		t.Fatalf("expected author-mode placeholder to track skill name, got %q", updated.input.Placeholder)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, ".bytemind", "skills", "review-ops", "skill.json")); err != nil {
+		t.Fatalf("expected generated skill scaffold, got %v", err)
+	}
+
+	updated.input.SetValue("Used for code review, prioritizing regression risk and missing tests.")
+	next, _ := updated.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated2 := next.(model)
+	if !updated2.skillAuthorMode {
+		t.Fatalf("expected author mode to stay active after content update")
+	}
+	if !strings.Contains(updated2.chatItems[len(updated2.chatItems)-1].Body, "Current step: 2/2 (content)") {
+		t.Fatalf("expected stage 2 guidance after content update, got %q", updated2.chatItems[len(updated2.chatItems)-1].Body)
+	}
+
+	if err := updated2.handleSlashCommand("/skill author done"); err != nil {
+		t.Fatalf("expected /skill author done to exit mode, got %v", err)
+	}
+	if updated2.skillAuthorMode {
+		t.Fatalf("expected skillAuthorMode disabled")
+	}
+}
+
+func TestSkillAuthorModeShowsVisibleGuidanceOnInvalidName(t *testing.T) {
+	workspace := t.TempDir()
+
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	runner := agent.NewRunner(agent.Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider: config.ProviderConfig{Model: "test-model"},
+		},
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+	})
+
+	input := textarea.New()
+	m := model{
+		runner:    runner,
+		store:     store,
+		sess:      sess,
+		workspace: workspace,
+		screen:    screenChat,
+		input:     input,
+	}
+
+	if err := m.handleSlashCommand("/skill author"); err != nil {
+		t.Fatalf("expected /skill author to enable mode, got %v", err)
+	}
+
+	m.input.SetValue("review+skill")
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+
+	if !updated.skillAuthorMode {
+		t.Fatalf("expected author mode to remain enabled")
+	}
+	if len(updated.chatItems) < 2 {
+		t.Fatalf("expected visible assistant guidance, got %#v", updated.chatItems)
+	}
+	body := updated.chatItems[len(updated.chatItems)-1].Body
+	if !strings.Contains(body, "invalid skill name") {
+		t.Fatalf("expected invalid-name guidance in chat, got %q", body)
 	}
 }
 
@@ -1866,6 +2357,9 @@ func TestFilteredCommandsIncludeSkillSlashCommands(t *testing.T) {
 	found := false
 	for _, item := range items {
 		if item.Name == "/review" && item.Kind == "skill" {
+			if !strings.Contains(item.Description, "Review code for correctness, regression risk, and missing tests.") {
+				t.Fatalf("expected /review command description localized in command palette, got %+v", item)
+			}
 			found = true
 			break
 		}
@@ -3033,6 +3527,70 @@ func TestBusyEnterQueuesBTWAndCancelsRun(t *testing.T) {
 	}
 }
 
+func TestBusyEnterSuppressedAfterRecentMultilinePaste(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	input.SetValue("Build an enterprise plugin platform\n- dynamic plugin loading\n- plugin permission isolation")
+	input.CursorEnd()
+
+	canceled := false
+	m := model{
+		screen:      screenChat,
+		busy:        true,
+		input:       input,
+		lastPasteAt: time.Now(),
+		sess:        session.New("E:\\bytemind"),
+		workspace:   "E:\\bytemind",
+		runCancel:   func() { canceled = true },
+	}
+
+	got, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+
+	if cmd != nil {
+		t.Fatalf("expected suppressed enter not to schedule a command")
+	}
+	if canceled {
+		t.Fatalf("expected suppressed enter not to cancel current run")
+	}
+	if updated.interrupting || len(updated.pendingBTW) != 0 || len(updated.chatItems) != 0 {
+		t.Fatalf("expected no BTW side effects, got interrupting=%v pending=%#v chat=%#v", updated.interrupting, updated.pendingBTW, updated.chatItems)
+	}
+}
+
+func TestBusyEnterSuppressedForRecentPasteBurstSingleLine(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	input.SetValue("- dynamic plugin loading")
+	input.CursorEnd()
+
+	canceled := false
+	now := time.Now()
+	m := model{
+		screen:      screenChat,
+		busy:        true,
+		input:       input,
+		lastPasteAt: now,
+		lastInputAt: now,
+		sess:        session.New("E:\\bytemind"),
+		workspace:   "E:\\bytemind",
+		runCancel:   func() { canceled = true },
+	}
+
+	got, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+
+	if cmd != nil {
+		t.Fatalf("expected suppressed burst enter not to schedule a command")
+	}
+	if canceled {
+		t.Fatalf("expected suppressed burst enter not to cancel current run")
+	}
+	if updated.interrupting || len(updated.pendingBTW) != 0 || len(updated.chatItems) != 0 {
+		t.Fatalf("expected no BTW side effects, got interrupting=%v pending=%#v chat=%#v", updated.interrupting, updated.pendingBTW, updated.chatItems)
+	}
+}
+
 func TestBusyEnterInToolPhaseDefersBTWCancel(t *testing.T) {
 	input := textarea.New()
 	input.Focus()
@@ -3072,7 +3630,7 @@ func TestRenderChatCardToolUsesVisualSeparator(t *testing.T) {
 		Status: "done",
 	}, 64)
 
-	if !strings.Contains(got, "│") && !strings.Contains(got, "|") {
+	if !strings.Contains(got, "\u2502") && !strings.Contains(got, "|") {
 		t.Fatalf("expected tool card to include a left border separator, got %q", got)
 	}
 	if !strings.Contains(got, "Tool Call | read_file") {
@@ -3579,7 +4137,7 @@ func TestFormatChatBodyRendersCodeBlockWithoutFences(t *testing.T) {
 func TestFormatChatBodyStripsInlineMarkdownTokens(t *testing.T) {
 	item := chatEntry{
 		Kind: "assistant",
-		Body: "我是 **ByteMind** 项目，支持 `go test ./...` 与 [文档](https://example.com/docs)。",
+		Body: "I am **ByteMind** project, supporting `go test ./...` and [docs](https://example.com/docs).",
 	}
 
 	got := formatChatBody(item, 120)
@@ -3594,7 +4152,7 @@ func TestFormatChatBodyStripsInlineMarkdownTokens(t *testing.T) {
 	if !strings.Contains(got, "go test ./...") {
 		t.Fatalf("expected inline code content to remain after normalization, got %q", got)
 	}
-	if !strings.Contains(got, "文档 (https://example.com/docs)") {
+	if !strings.Contains(got, "docs (https://example.com/docs)") {
 		t.Fatalf("expected markdown link to be normalized to plain text, got %q", got)
 	}
 }
@@ -3875,8 +4433,8 @@ func TestRenderTokenBadgeAndScrollbarHelpers(t *testing.T) {
 		t.Fatalf("expected compact badge under width threshold, got %q", compact)
 	}
 	full := m.renderTokenBadge(80)
-	if !strings.Contains(full, "/") {
-		t.Fatalf("expected full badge at width threshold, got %q", full)
+	if !strings.Contains(full, "token: 2,345") {
+		t.Fatalf("expected full badge to show token count, got %q", full)
 	}
 
 	if got := m.renderScrollbar(0, 10, 0); got != "" {
@@ -3909,8 +4467,8 @@ func TestWrapLineSmartBranchCoverage(t *testing.T) {
 		t.Fatalf("expected empty line to remain empty, got %#v", got)
 	}
 
-	wideRune := wrapLineSmart("你a", 1)
-	if len(wideRune) < 2 || wideRune[0] != "你" {
+	wideRune := wrapLineSmart("\uFF38a", 1)
+	if len(wideRune) < 2 || wideRune[0] != "\uFF38" {
 		t.Fatalf("expected wide-rune fallback split, got %#v", wideRune)
 	}
 
@@ -3980,6 +4538,27 @@ func TestThinkingFilters(t *testing.T) {
 	}
 	if !shouldRenderThinkingFromDelta("First, I will inspect the failing branch and then patch tests.") {
 		t.Fatalf("expected structured reasoning marker to trigger thinking rendering")
+	}
+	if isMeaningfulThinking("I will use read_file to inspect context first.", "read_file") {
+		t.Fatalf("expected generic Chinese tool-intent phrase not to be treated as meaningful thinking")
+	}
+	if !shouldRenderThinkingFromDelta("I will first inspect the failing branch, then add tests.") {
+		t.Fatalf("expected Chinese structured reasoning marker to trigger thinking rendering")
+	}
+}
+
+func TestCurrentSkillLabelBranches(t *testing.T) {
+	m := model{}
+	if got := m.currentSkillLabel(); got != "none" {
+		t.Fatalf("expected none for nil session, got %q", got)
+	}
+	m.sess = &session.Session{ActiveSkill: &session.ActiveSkill{}}
+	if got := m.currentSkillLabel(); got != "none" {
+		t.Fatalf("expected none for blank skill name, got %q", got)
+	}
+	m.sess.ActiveSkill.Name = "review"
+	if got := m.currentSkillLabel(); got != "review" {
+		t.Fatalf("expected active skill name, got %q", got)
 	}
 }
 
