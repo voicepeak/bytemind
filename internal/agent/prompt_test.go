@@ -42,6 +42,7 @@ func TestSystemPromptRendersMainModeSystemAndInstruction(t *testing.T) {
 	})
 
 	assertContains(t, prompt, "You are ByteMind")
+	assertContains(t, prompt, "Your capabilities:")
 	assertContains(t, prompt, "[Current Mode]")
 	assertContains(t, prompt, "plan")
 	assertContains(t, prompt, "[Runtime Context]")
@@ -62,6 +63,7 @@ func TestSystemPromptRendersMainModeSystemAndInstruction(t *testing.T) {
 	assertContains(t, prompt, "[Instructions]")
 	assertContains(t, prompt, "Instructions from:")
 	assertContains(t, prompt, "Use rg for search before broad shell scans.")
+	assertNotContains(t, prompt, "Primary objective:")
 	assertNoTemplateMarkers(t, prompt)
 }
 
@@ -228,6 +230,13 @@ func assertContains(t *testing.T, prompt, needle string) {
 	t.Helper()
 	if !strings.Contains(prompt, needle) {
 		t.Fatalf("expected %q in prompt, got %q", needle, prompt)
+	}
+}
+
+func assertNotContains(t *testing.T, prompt, needle string) {
+	t.Helper()
+	if strings.Contains(prompt, needle) {
+		t.Fatalf("did not expect %q in prompt, got %q", needle, prompt)
 	}
 }
 

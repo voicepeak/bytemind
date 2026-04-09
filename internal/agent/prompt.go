@@ -16,7 +16,7 @@ const (
 	maxPromptSkillDescriptionRune = 140
 )
 
-//go:embed prompts/system_prompt.md
+//go:embed prompts/default.md
 var mainPromptSource string
 
 //go:embed prompts/mode/build.md
