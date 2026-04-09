@@ -436,7 +436,7 @@ func TestRunPromptInjectsExplicitWebLookupInstruction(t *testing.T) {
 		Stdout:   io.Discard,
 	})
 
-	if _, err := runner.RunPrompt(context.Background(), sess, "去 GitHub 源码里找这个函数实现", "build", io.Discard); err != nil {
+	if _, err := runner.RunPrompt(context.Background(), sess, "Find this function implementation in the GitHub source", "build", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if len(client.requests) != 1 {
