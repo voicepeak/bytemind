@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	planpkg "bytemind/internal/plan"
 )
@@ -96,7 +97,7 @@ func (e *Executor) ExecuteRequest(ctx context.Context, req ExecuteRequest) (Exec
 		execCtx.Mode = planpkg.NormalizeMode(string(req.Mode))
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, time.Duration(resolved.Spec.DefaultTimeoutS)*time.Second)
+	runCtx, cancel := context.WithTimeout(ctx, executionTimeout(raw, resolved.Spec))
 	defer cancel()
 
 	output, runErr := resolved.Tool.Run(runCtx, raw, execCtx)
@@ -142,6 +143,10 @@ func (strictJSONArgumentDecoder) Decode(rawArgs string, resolved ResolvedTool) (
 		return nil, NewToolExecError(ToolErrorInvalidArgs, "tool arguments must be a JSON object", false, nil)
 	}
 
+	if !schemaRejectsUnknownFields(resolved.Definition.Function.Parameters) {
+		return json.RawMessage(rawArgs), nil
+	}
+
 	allowedFields := schemaPropertyNames(resolved.Definition.Function.Parameters)
 	if len(allowedFields) == 0 {
 		return json.RawMessage(rawArgs), nil
@@ -160,14 +165,18 @@ type maxCharsOutputNormalizer struct{}
 
 func (maxCharsOutputNormalizer) Normalize(output string, resolved ResolvedTool) string {
 	maxChars := resolved.Spec.MaxResultChars
-	if maxChars <= 0 || len(output) <= maxChars {
+	if maxChars <= 0 || utf8.RuneCountInString(output) <= maxChars {
+		return output
+	}
+	if json.Valid([]byte(output)) {
 		return output
 	}
 	const suffix = "\n...[truncated]"
-	if maxChars <= len(suffix) {
-		return output[:maxChars]
+	suffixChars := utf8.RuneCountInString(suffix)
+	if maxChars <= suffixChars {
+		return truncateRunesUnsafe(output, maxChars)
 	}
-	return output[:maxChars-len(suffix)] + suffix
+	return truncateRunesUnsafe(output, maxChars-suffixChars) + suffix
 }
 
 func normalizeToolError(err error) error {
@@ -216,4 +225,60 @@ func schemaPropertyNames(parameters map[string]any) map[string]struct{} {
 		names[name] = struct{}{}
 	}
 	return names
+}
+
+func schemaRejectsUnknownFields(parameters map[string]any) bool {
+	value, ok := parameters["additionalProperties"]
+	if !ok {
+		return false
+	}
+	allowed, ok := value.(bool)
+	return ok && !allowed
+}
+
+func executionTimeout(raw json.RawMessage, spec ToolSpec) time.Duration {
+	timeoutSeconds := spec.DefaultTimeoutS
+	if requested, ok := requestedTimeoutSeconds(raw); ok {
+		timeoutSeconds = requested
+	}
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = spec.DefaultTimeoutS
+	}
+	if spec.MaxTimeoutS > 0 && timeoutSeconds > spec.MaxTimeoutS {
+		timeoutSeconds = spec.MaxTimeoutS
+	}
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 30
+	}
+	return time.Duration(timeoutSeconds) * time.Second
+}
+
+func requestedTimeoutSeconds(raw json.RawMessage) (int, bool) {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return 0, false
+	}
+	value, ok := payload["timeout_seconds"]
+	if !ok {
+		return 0, false
+	}
+	timeout, ok := value.(float64)
+	if !ok {
+		return 0, false
+	}
+	return int(timeout), true
+}
+
+func truncateRunesUnsafe(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	count := 0
+	for index := range value {
+		if count == limit {
+			return value[:index]
+		}
+		count++
+	}
+	return value
 }

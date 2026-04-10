@@ -58,3 +58,29 @@ func TestValidateToolSpecRejectsConflictingFlags(t *testing.T) {
 		t.Fatal("expected spec validation error")
 	}
 }
+
+func TestMergeToolSpecPreservesDefaultsWhenOverrideLeavesFieldsEmpty(t *testing.T) {
+	base := DefaultToolSpec(llm.ToolDefinition{
+		Type: "function",
+		Function: llm.FunctionDefinition{
+			Name: "run_shell",
+		},
+	})
+
+	merged := MergeToolSpec(base, ToolSpec{
+		MaxResultChars: 1024,
+	})
+
+	if merged.Name != "run_shell" {
+		t.Fatalf("expected default name to survive merge, got %q", merged.Name)
+	}
+	if merged.MaxResultChars != 1024 {
+		t.Fatalf("expected override max result chars, got %d", merged.MaxResultChars)
+	}
+	if merged.DefaultTimeoutS != base.DefaultTimeoutS {
+		t.Fatalf("expected default timeout to survive merge, got %d", merged.DefaultTimeoutS)
+	}
+	if !merged.ConcurrencySafe {
+		t.Fatal("expected default concurrency safety to survive merge")
+	}
+}

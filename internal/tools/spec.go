@@ -36,6 +36,37 @@ type ToolSpecProvider interface {
 	Spec() ToolSpec
 }
 
+func MergeToolSpec(base, override ToolSpec) ToolSpec {
+	if strings.TrimSpace(override.Name) != "" {
+		base.Name = override.Name
+	}
+	if override.ReadOnly {
+		base.ReadOnly = true
+	}
+	if override.Destructive {
+		base.Destructive = true
+	}
+	if override.SafetyClass != "" {
+		base.SafetyClass = override.SafetyClass
+	}
+	if strings.TrimSpace(override.SearchHint) != "" {
+		base.SearchHint = override.SearchHint
+	}
+	if len(override.AllowedModes) > 0 {
+		base.AllowedModes = override.AllowedModes
+	}
+	if override.DefaultTimeoutS > 0 {
+		base.DefaultTimeoutS = override.DefaultTimeoutS
+	}
+	if override.MaxTimeoutS > 0 {
+		base.MaxTimeoutS = override.MaxTimeoutS
+	}
+	if override.MaxResultChars > 0 {
+		base.MaxResultChars = override.MaxResultChars
+	}
+	return NormalizeToolSpec(base)
+}
+
 func DefaultToolSpec(def llm.ToolDefinition) ToolSpec {
 	name := strings.TrimSpace(def.Function.Name)
 	spec := ToolSpec{

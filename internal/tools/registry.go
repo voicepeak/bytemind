@@ -62,7 +62,7 @@ func (r *Registry) Add(tool Tool) {
 	definition := tool.Definition()
 	spec := DefaultToolSpec(definition)
 	if provider, ok := tool.(ToolSpecProvider); ok {
-		spec = provider.Spec()
+		spec = MergeToolSpec(spec, provider.Spec())
 	}
 	spec = NormalizeToolSpec(spec)
 	if err := ValidateToolSpec(spec); err != nil {
