@@ -3259,15 +3259,67 @@ func (m *model) runSkillCommand(input string, fields []string) error {
 	if m.runner == nil {
 		return fmt.Errorf("runner is unavailable")
 	}
-	if len(fields) != 2 || fields[1] != "clear" {
+	if len(fields) < 2 {
+		return fmt.Errorf("usage: /skill <clear|delete> ...")
+	}
+	switch strings.ToLower(strings.TrimSpace(fields[1])) {
+	case "clear":
+		return m.runSkillStateClearCommand(input, fields)
+	case "delete":
+		return m.runSkillDeleteCommand(input, fields)
+	default:
+		return fmt.Errorf("usage: /skill <clear|delete> ...")
+	}
+}
+
+func (m *model) runSkillStateClearCommand(input string, fields []string) error {
+	if len(fields) != 2 {
 		return fmt.Errorf("usage: /skill clear")
 	}
 
+	activeName := ""
+	if m.sess != nil && m.sess.ActiveSkill != nil {
+		activeName = strings.TrimSpace(m.sess.ActiveSkill.Name)
+	}
 	if err := m.runner.ClearActiveSkill(m.sess); err != nil {
 		return err
 	}
-	m.appendCommandExchange(input, "Active skill cleared.")
-	m.statusNote = "Skill cleared."
+
+	message := "No active skill in this session; state remains empty."
+	if activeName != "" {
+		message = fmt.Sprintf("Cleared active skill `%s` from this session.", activeName)
+	}
+	m.appendCommandExchange(input, message)
+	m.statusNote = "Skill state cleared"
+	return nil
+}
+
+func (m *model) runSkillDeleteCommand(input string, fields []string) error {
+	if len(fields) < 3 {
+		return fmt.Errorf("usage: /skill delete <name>")
+	}
+	name := strings.TrimSpace(strings.TrimPrefix(fields[2], "/"))
+	if name == "" {
+		return fmt.Errorf("usage: /skill delete <name>")
+	}
+
+	result, err := m.runner.ClearSkill(name)
+	if err != nil {
+		return err
+	}
+
+	lines := []string{
+		fmt.Sprintf("Deleted project skill `%s`.", result.Name),
+		fmt.Sprintf("Dir: %s", result.Dir),
+	}
+
+	if m.sess != nil && m.sess.ActiveSkill != nil && strings.EqualFold(strings.TrimSpace(m.sess.ActiveSkill.Name), strings.TrimSpace(result.Name)) {
+		if clearErr := m.runner.ClearActiveSkill(m.sess); clearErr == nil {
+			lines = append(lines, "Cleared active skill in this session as well.")
+		}
+	}
+	m.appendCommandExchange(input, strings.Join(lines, "\n"))
+	m.statusNote = "Skill deleted"
 	return nil
 }
 
@@ -4781,7 +4833,8 @@ func (m model) helpText() string {
 		"/session: open recent sessions.",
 		"/skills: list discovered skills and diagnostics.",
 		"/<skill-name> [k=v...]: activate a skill for this session.",
-		"/skill clear: clear the active skill.",
+		"/skill clear: clear the active skill in this session.",
+		"/skill delete <name>: delete the specified project skill.",
 		"/new: start a fresh session.",
 		"/compact: summarize long history into a compact continuation context.",
 		"/btw <message>: interject while a run is in progress.",
@@ -4954,7 +5007,17 @@ func (m *model) syncInputStyle() {
 		m.input.Placeholder = "Ask Bytemind to inspect, change, or verify this workspace..."
 	}
 	m.input.Prompt = ""
-	m.input.SetHeight(2)
+	setInputHeightSafe(&m.input, 2)
+}
+
+func setInputHeightSafe(input *textarea.Model, height int) {
+	if input == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	input.SetHeight(height)
 }
 
 func startupGuideInputHint(field string) string {
