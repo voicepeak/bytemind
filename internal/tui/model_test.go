@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -4682,6 +4683,39 @@ func TestThinkingFilters(t *testing.T) {
 	}
 	if !shouldRenderThinkingFromDelta("First, I will inspect the failing branch and then patch tests.") {
 		t.Fatalf("expected structured reasoning marker to trigger thinking rendering")
+	}
+}
+
+func TestHandleKeyPasteCompressesLongTextImmediately(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	longPaste := strings.Join([]string{
+		"func normalize(items []string) []string {",
+		"    out := make([]string, 0, len(items))",
+		"    for _, item := range items {",
+		"        v := strings.TrimSpace(item)",
+		"        if v == \"\" {",
+		"            continue",
+		"        }",
+		"        out = append(out, strings.ToLower(v))",
+		"    }",
+		"    sort.Strings(out)",
+		"    return out",
+		"}",
+	}, "\n")
+
+	msg := tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune(longPaste),
+		Paste: true,
+	}
+	got, _ := m.handleKey(msg)
+	updated := got.(model)
+	if !regexp.MustCompile(`^\[Paste #\d+ ~\d+ lines\]$`).MatchString(updated.input.Value()) {
+		t.Fatalf("expected immediate marker replacement for pasted long text, got %q", updated.input.Value())
+	}
+	if strings.Contains(updated.input.Value(), "normalize(items") {
+		t.Fatalf("expected no raw pasted code to remain in input, got %q", updated.input.Value())
 	}
 }
 

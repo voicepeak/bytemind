@@ -1035,14 +1035,28 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.submitPrompt(value)
 	}
 
+	mutationSource := inputMutationSource(msg)
 	before := m.input.Value()
 	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	after := m.input.Value()
-	mutationSource := inputMutationSource(msg)
-	if after != before {
+	var after string
+	if msg.Paste {
+		preview := m.input
+		preview, cmd = preview.Update(msg)
+		after = preview.Value()
+		// Apply paste pipeline before committing raw pasted text to input,
+		// so long-paste markers appear immediately without visible flicker.
 		m.handleInputMutation(before, after, mutationSource)
+		if m.input.Value() == before && after != before {
+			m.input = preview
+		}
 		after = m.input.Value()
+	} else {
+		m.input, cmd = m.input.Update(msg)
+		after = m.input.Value()
+		if after != before {
+			m.handleInputMutation(before, after, mutationSource)
+			after = m.input.Value()
+		}
 	}
 	triggerClipboardImagePaste := shouldTriggerClipboardImagePaste(before, after, mutationSource)
 	if ctrlVPasteDetected {
@@ -1525,6 +1539,12 @@ func (m *model) handleInputMutation(before, after, source string) {
 	}
 	if strings.TrimSpace(note) == "" {
 		note = pasteNote
+	}
+	if locked, changed := m.protectCompressedMarkerChain(before, updated, source); changed {
+		updated = locked
+		if strings.TrimSpace(note) == "" {
+			note = "Paste marker is locked to prevent accidental edits."
+		}
 	}
 
 	if updated != after {
