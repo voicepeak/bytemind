@@ -329,6 +329,7 @@ type model struct {
 	interruptSafe         bool
 	runSeq                int
 	activeRunID           int
+	runStartedAt          time.Time
 	startupGuide          StartupGuide
 	mouseYOffset          int
 }
@@ -490,6 +491,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.runCancel = nil
 		m.activeRunID = 0
+		m.runStartedAt = time.Time{}
 		m.interruptSafe = false
 		shouldResumeBTW := m.interrupting && len(m.pendingBTW) > 0
 		m.interrupting = false
@@ -1633,6 +1635,7 @@ func (m *model) beginRunWithInput(promptInput agent.RunPromptInput, mode, note s
 	m.phase = "thinking"
 	m.llmConnected = true
 	m.busy = true
+	m.runStartedAt = time.Now()
 	m.chatAutoFollow = true
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()
@@ -3529,6 +3532,44 @@ func shouldRenderThinkingFromDelta(body string) bool {
 
 func (m model) thinkingText() string {
 	return fmt.Sprintf("%s Thinking... request already sent to the LLM, waiting for response.", m.spinner.View())
+}
+
+func runIndicatorPhaseText(phase string) string {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "thinking":
+		return "Thinking..."
+	case "responding":
+		return "Responding..."
+	case "tool":
+		return "Running tool..."
+	case "interrupting":
+		return "Interrupting..."
+	case "approval":
+		return "Waiting for approval..."
+	default:
+		return "Working..."
+	}
+}
+
+func formatElapsedClock(startedAt, now time.Time) string {
+	if startedAt.IsZero() || now.Before(startedAt) {
+		return "00:00"
+	}
+	seconds := int(now.Sub(startedAt).Seconds())
+	if seconds < 0 {
+		seconds = 0
+	}
+	minutes := seconds / 60
+	secs := seconds % 60
+	return fmt.Sprintf("%02d:%02d", minutes, secs)
+}
+
+func (m model) runIndicatorText() string {
+	spin := strings.TrimSpace(m.spinner.View())
+	if spin == "" {
+		spin = "•"
+	}
+	return fmt.Sprintf("%s %s (%s)", spin, runIndicatorPhaseText(m.phase), formatElapsedClock(m.runStartedAt, time.Now()))
 }
 
 func (m *model) syncCommandPalette() {

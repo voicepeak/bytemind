@@ -29,8 +29,19 @@ func (m model) renderFooter() string {
 	if banner := m.renderActiveSkillBanner(); banner != "" {
 		parts = append(parts, banner)
 	}
+	if indicator := m.renderRunIndicator(); indicator != "" {
+		parts = append(parts, indicator)
+	}
 	parts = append(parts, inputBorder, m.renderFooterInfoLine())
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+func (m model) renderRunIndicator() string {
+	if !m.busy {
+		return ""
+	}
+	width := max(24, m.chatPanelInnerWidth())
+	return runIndicatorStyle.Width(width).Render(m.runIndicatorText())
 }
 
 func (m model) renderModeTabs() string {

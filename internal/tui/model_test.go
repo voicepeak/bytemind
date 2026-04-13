@@ -1985,6 +1985,61 @@ func TestRenderFooterInfoLineCombinesModeAndHints(t *testing.T) {
 	}
 }
 
+func TestRenderFooterShowsBusyRunIndicator(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		width:        120,
+		input:        input,
+		busy:         true,
+		phase:        "thinking",
+		runStartedAt: time.Time{},
+	}
+
+	footer := m.renderFooter()
+	if !strings.Contains(footer, "Thinking...") {
+		t.Fatalf("expected busy footer to include thinking indicator, got %q", footer)
+	}
+	if !strings.Contains(footer, "(00:00)") {
+		t.Fatalf("expected busy footer to include elapsed clock, got %q", footer)
+	}
+}
+
+func TestRunIndicatorPhaseText(t *testing.T) {
+	cases := []struct {
+		phase string
+		want  string
+	}{
+		{phase: "thinking", want: "Thinking..."},
+		{phase: "responding", want: "Responding..."},
+		{phase: "tool", want: "Running tool..."},
+		{phase: "interrupting", want: "Interrupting..."},
+		{phase: "approval", want: "Waiting for approval..."},
+		{phase: "idle", want: "Working..."},
+	}
+
+	for _, tc := range cases {
+		if got := runIndicatorPhaseText(tc.phase); got != tc.want {
+			t.Fatalf("unexpected phase indicator for %q: got %q want %q", tc.phase, got, tc.want)
+		}
+	}
+}
+
+func TestFormatElapsedClock(t *testing.T) {
+	start := time.Date(2026, 4, 13, 0, 0, 0, 0, time.UTC)
+	now := start.Add(42 * time.Second)
+	if got := formatElapsedClock(start, now); got != "00:42" {
+		t.Fatalf("expected 42-second elapsed clock, got %q", got)
+	}
+
+	if got := formatElapsedClock(start, start.Add(125*time.Second)); got != "02:05" {
+		t.Fatalf("expected minute-second elapsed clock, got %q", got)
+	}
+
+	if got := formatElapsedClock(time.Time{}, now); got != "00:00" {
+		t.Fatalf("expected zero clock for unset start time, got %q", got)
+	}
+}
+
 func TestRenderStatusBarShowsCurrentRuntimeState(t *testing.T) {
 	m := model{
 		width:          200,
