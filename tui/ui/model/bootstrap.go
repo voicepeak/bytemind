@@ -10,8 +10,8 @@ import (
 	"bytemind/internal/llm"
 	"bytemind/internal/mention"
 	"bytemind/internal/tools"
-	tuiruntime "bytemind/internal/tui/runtime"
-	tuiservices "bytemind/internal/tui/services"
+	tuiruntime "bytemind/tui/runtime"
+	tuiservices "bytemind/tui/services"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"

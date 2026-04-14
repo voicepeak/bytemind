@@ -6,7 +6,7 @@ import (
 
 	"bytemind/internal/llm"
 	"bytemind/internal/session"
-	tuiruntime "bytemind/internal/tui/runtime"
+	tuiruntime "bytemind/tui/runtime"
 )
 
 func (m *model) ensureSessionImageAssets() {

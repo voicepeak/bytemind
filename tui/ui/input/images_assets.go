@@ -5,8 +5,8 @@ import (
 
 	"bytemind/internal/llm"
 	"bytemind/internal/session"
-	tuiruntime "bytemind/internal/tui/runtime"
-	tuiservices "bytemind/internal/tui/services"
+	tuiruntime "bytemind/tui/runtime"
+	tuiservices "bytemind/tui/services"
 )
 
 var imagePlaceholderPattern = regexp.MustCompile(`\[Image #(\d+)\]`)

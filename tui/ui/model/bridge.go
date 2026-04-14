@@ -4,9 +4,9 @@ import (
 	"strings"
 
 	"bytemind/internal/session"
-	tuiapi "bytemind/internal/tui/api"
-	tuiruntime "bytemind/internal/tui/runtime"
-	tuiservices "bytemind/internal/tui/services"
+	tuiapi "bytemind/tui/api"
+	tuiruntime "bytemind/tui/runtime"
+	tuiservices "bytemind/tui/services"
 )
 
 func (m *model) refreshSkillCatalog() error {

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"time"
 
-	tuiapi "bytemind/internal/tui/api"
-	tuiservices "bytemind/internal/tui/services"
+	tuiapi "bytemind/tui/api"
+	tuiservices "bytemind/tui/services"
 )
 
 func (m *model) isLongPastedText(input string) bool {

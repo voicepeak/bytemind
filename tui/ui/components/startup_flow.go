@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	tuiruntime "bytemind/internal/tui/runtime"
+	tuiruntime "bytemind/tui/runtime"
 )
 
 func (m *model) handleStartupGuideSubmission(rawInput string) error {

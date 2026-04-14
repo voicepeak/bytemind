@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	tuiruntime "bytemind/internal/tui/runtime"
+	tuiruntime "bytemind/tui/runtime"
 )
 
 func normalizeNewlines(input string) string {

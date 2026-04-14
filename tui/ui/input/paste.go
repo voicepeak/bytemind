@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"time"
 
-	tuiruntime "bytemind/internal/tui/runtime"
+	tuiruntime "bytemind/tui/runtime"
 )
 
 const (
