@@ -161,17 +161,27 @@ func (r *Runner) RunPromptWithInput(ctx context.Context, sess *session.Session, 
 	if err != nil {
 		return "", err
 	}
+	if events == nil {
+		return "", fmt.Errorf("engine returned nil event stream")
+	}
 
-	for event := range events {
-		switch event.Type {
-		case TurnEventCompleted:
-			return event.Answer, nil
-		case TurnEventFailed:
-			if event.Error != nil {
-				return "", event.Error
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case event, ok := <-events:
+			if !ok {
+				return "", fmt.Errorf("engine ended without terminal event")
 			}
-			return "", fmt.Errorf("agent turn failed")
+			switch event.Type {
+			case TurnEventCompleted:
+				return event.Answer, nil
+			case TurnEventFailed:
+				if event.Error != nil {
+					return "", event.Error
+				}
+				return "", fmt.Errorf("agent turn failed")
+			}
 		}
 	}
-	return "", fmt.Errorf("engine ended without terminal event")
 }
