@@ -174,9 +174,9 @@ func (r *Runner) RunPromptWithInput(ctx context.Context, sess *session.Session, 
 				return "", fmt.Errorf("engine ended without terminal event")
 			}
 			switch event.Type {
-			case TurnEventCompleted:
+			case TurnEventComplete:
 				return event.Answer, nil
-			case TurnEventFailed:
+			case TurnEventError:
 				if event.Error != nil {
 					return "", event.Error
 				}
