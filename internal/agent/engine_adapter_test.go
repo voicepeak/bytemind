@@ -231,3 +231,16 @@ func TestRunPromptWithInputPrefersBufferedTerminalEventOverCanceledContext(t *te
 		t.Fatalf("unexpected answer: %q", answer)
 	}
 }
+
+func TestDrainReadyTurnEventsSkipsNonTerminalEvents(t *testing.T) {
+	events := make(chan TurnEvent, 1)
+	events <- TurnEvent{Type: TurnEventStart}
+
+	answer, done, err := drainReadyTurnEvents(events)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if done {
+		t.Fatalf("expected non-terminal drain to continue, got done with answer %q", answer)
+	}
+}

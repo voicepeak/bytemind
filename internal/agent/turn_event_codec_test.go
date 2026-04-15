@@ -88,6 +88,31 @@ func TestTurnEventStreamOverridesCallerProvidedSequence(t *testing.T) {
 	}
 }
 
+func TestTurnEventStreamCloseWithoutTerminal(t *testing.T) {
+	stream := newTurnEventStream("sess-1", "trace-1")
+	if err := stream.Emit(TurnEvent{Type: TurnEventStart}); err != nil {
+		t.Fatalf("emit start failed: %v", err)
+	}
+
+	stream.CloseWithoutTerminal()
+	// idempotent close should not panic or block
+	stream.CloseWithoutTerminal()
+
+	events := make([]TurnEvent, 0, 2)
+	for event := range stream.Events() {
+		events = append(events, event)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one start event before close, got %d", len(events))
+	}
+	if events[0].Type != TurnEventStart {
+		t.Fatalf("expected start event, got %s", events[0].Type)
+	}
+	if err := stream.Emit(TurnEvent{Type: TurnEventComplete}); err != errTurnEventAfterTerminal {
+		t.Fatalf("expected emit-after-close to fail, got %v", err)
+	}
+}
+
 func TestDefaultEngineHandleTurnEmitsOrderedTerminalEvents(t *testing.T) {
 	workspace := t.TempDir()
 	store, err := session.NewStore(t.TempDir())
