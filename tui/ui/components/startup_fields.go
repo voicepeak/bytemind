@@ -5,7 +5,7 @@ import (
 
 	"bytemind/internal/config"
 	"bytemind/internal/provider"
-	tuiruntime "bytemind/tui/runtime"
+	tuiruntime "bytemind/internal/tui/runtime"
 )
 
 func parseStartupConfigInput(raw string) (field, value string, ok bool) {

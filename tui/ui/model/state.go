@@ -12,9 +12,9 @@ import (
 	"bytemind/internal/mention"
 	planpkg "bytemind/internal/plan"
 	"bytemind/internal/session"
-	tuiapi "bytemind/tui/api"
-	tuiruntime "bytemind/tui/runtime"
-	tuiservices "bytemind/tui/services"
+	tuiapi "bytemind/internal/tui/api"
+	tuiruntime "bytemind/internal/tui/runtime"
+	tuiservices "bytemind/internal/tui/services"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -68,6 +68,8 @@ type model struct {
 	streamingIndex        int
 	bufferedAssistantText string
 	thinkingStartedAt     time.Time
+	runFinishedAt         time.Time
+	traceCollapsed        bool
 	statusNote            string
 	phase                 string
 	llmConnected          bool

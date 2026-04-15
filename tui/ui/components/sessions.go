@@ -7,7 +7,7 @@ import (
 
 	"bytemind/internal/llm"
 	planpkg "bytemind/internal/plan"
-	tuiruntime "bytemind/tui/runtime"
+	tuiruntime "bytemind/internal/tui/runtime"
 
 	"github.com/charmbracelet/lipgloss"
 )

@@ -1,6 +1,10 @@
 package tui
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+	"time"
+)
 
 func (m model) shouldKeepStreamingIndexOnRunFinished() bool {
 	if m.streamingIndex < 0 || m.streamingIndex >= len(m.chatItems) {
@@ -54,6 +58,7 @@ func (m *model) finishAssistantMessage(content string) {
 		m.removeStreamingAssistantPlaceholder()
 		return
 	}
+	completionMeta := m.completionMeta()
 	if m.streamingIndex >= 0 && m.streamingIndex < len(m.chatItems) {
 		current := &m.chatItems[m.streamingIndex]
 		if current.Kind == "assistant" && current.Status == "thinking" {
@@ -64,12 +69,14 @@ func (m *model) finishAssistantMessage(content string) {
 			m.chatItems = append(m.chatItems, chatEntry{
 				Kind:   "assistant",
 				Title:  assistantLabel,
+				Meta:   completionMeta,
 				Body:   content,
 				Status: "final",
 			})
 			return
 		}
 		current.Title = assistantLabel
+		current.Meta = completionMeta
 		current.Body = content
 		current.Status = "final"
 		m.streamingIndex = -1
@@ -85,6 +92,7 @@ func (m *model) finishAssistantMessage(content string) {
 	m.chatItems = append(m.chatItems, chatEntry{
 		Kind:   "assistant",
 		Title:  assistantLabel,
+		Meta:   completionMeta,
 		Body:   content,
 		Status: "final",
 	})
@@ -205,4 +213,18 @@ func (m *model) failLatestAssistant(errText string) {
 		Body:   "Request failed: " + errText,
 		Status: "error",
 	})
+}
+
+func (m model) completionMeta() string {
+	var finished time.Time
+	if !m.runFinishedAt.IsZero() {
+		finished = m.runFinishedAt
+	} else {
+		finished = time.Now()
+	}
+	seconds := int(finished.Sub(m.thinkingStartedAt).Round(time.Second).Seconds())
+	if seconds < 0 {
+		seconds = 0
+	}
+	return "Completed ✓ " + strconv.Itoa(seconds) + "s"
 }

@@ -1,6 +1,18 @@
 package tui
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+var (
+	codeCommentPattern = regexp.MustCompile(`(//.*$|#.*$)`)
+	codeStringPattern  = regexp.MustCompile(`("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|` + "`" + `[^` + "`" + `]*` + "`" + `)`)
+	codeNumberPattern  = regexp.MustCompile(`\b\d+(\.\d+)?\b`)
+	codeKeywordPattern = regexp.MustCompile(`\b(func|package|import|return|if|else|switch|case|for|range|break|continue|go|defer|struct|interface|type|var|const|map|chan|select|true|false|nil|class|public|private|protected|static|new|try|catch|finally|throw|async|await|let|const|function|from|export|default|def|lambda|match|with|yield)\b`)
+)
 
 func tidyAssistantSpacing(text string) string {
 	lines := strings.Split(text, "\n")
@@ -82,7 +94,7 @@ func renderAssistantBody(text string, width int) string {
 				prevBlank = true
 				continue
 			}
-			out = append(out, codeStyle.Render(codeLine))
+			out = append(out, renderHighlightedCodeLine(codeLine))
 			prevBlank = false
 			continue
 		}
@@ -108,4 +120,53 @@ func renderAssistantBody(text string, width int) string {
 	}
 
 	return strings.Join(out, "\n")
+}
+
+func renderHighlightedCodeLine(line string) string {
+	if strings.TrimSpace(line) == "" {
+		return codeStyle.Render("")
+	}
+
+	commentLoc := codeCommentPattern.FindStringIndex(line)
+	commentStart := len(line)
+	if commentLoc != nil {
+		commentStart = commentLoc[0]
+	}
+
+	codePart := line[:commentStart]
+	commentPart := ""
+	if commentStart < len(line) {
+		commentPart = line[commentStart:]
+	}
+
+	renderedCode := applyCodePattern(codePart, codeStringPattern, lipgloss.NewStyle().Foreground(colorCodeString))
+	renderedCode = applyCodePattern(renderedCode, codeNumberPattern, lipgloss.NewStyle().Foreground(colorCodeNumber))
+	renderedCode = applyCodePattern(renderedCode, codeKeywordPattern, lipgloss.NewStyle().Foreground(colorCodeKeyword))
+
+	if commentPart != "" {
+		renderedCode += lipgloss.NewStyle().Foreground(colorCodeComment).Render(commentPart)
+	}
+
+	return codeStyle.Render(renderedCode)
+}
+
+func applyCodePattern(line string, pattern *regexp.Regexp, style lipgloss.Style) string {
+	indexes := pattern.FindAllStringIndex(line, -1)
+	if len(indexes) == 0 {
+		return line
+	}
+
+	var out strings.Builder
+	last := 0
+	for _, loc := range indexes {
+		start, end := loc[0], loc[1]
+		if start < last {
+			continue
+		}
+		out.WriteString(line[last:start])
+		out.WriteString(style.Render(line[start:end]))
+		last = end
+	}
+	out.WriteString(line[last:])
+	return out.String()
 }

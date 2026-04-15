@@ -61,6 +61,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingBTW = nil
 		switch finishReason {
 		case runFinishReasonCompleted:
+			m.runFinishedAt = time.Now()
+			m.traceCollapsed = true
 			if strings.TrimSpace(m.bufferedAssistantText) != "" {
 				m.finishAssistantMessage(m.bufferedAssistantText)
 				m.bufferedAssistantText = ""
@@ -68,7 +70,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.shouldKeepStreamingIndexOnRunFinished() {
 				m.streamingIndex = -1
 			}
-			m.statusNote = "Ready."
+			elapsed := int(m.runFinishedAt.Sub(m.thinkingStartedAt).Round(time.Second).Seconds())
+			if elapsed < 0 {
+				elapsed = 0
+			}
+			m.statusNote = fmt.Sprintf("Completed ✓ (%ds)", elapsed)
 			m.phase = "idle"
 		case runFinishReasonCanceled:
 			m.streamingIndex = -1

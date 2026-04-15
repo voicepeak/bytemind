@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	tuiapi "bytemind/tui/api"
+	tuiapi "bytemind/internal/tui/api"
 )
 
 type InputPolicy struct{}

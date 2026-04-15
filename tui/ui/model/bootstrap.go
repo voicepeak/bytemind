@@ -10,8 +10,8 @@ import (
 	"bytemind/internal/llm"
 	"bytemind/internal/mention"
 	"bytemind/internal/tools"
-	tuiruntime "bytemind/tui/runtime"
-	tuiservices "bytemind/tui/services"
+	tuiruntime "bytemind/internal/tui/runtime"
+	tuiservices "bytemind/internal/tui/services"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -87,6 +87,7 @@ func newModel(opts Options) model {
 		streamingIndex:     -1,
 		statusNote:         "Ready.",
 		phase:              "idle",
+		traceCollapsed:     true,
 		llmConnected:       true,
 		chatAutoFollow:     true,
 		mentionIndex:       mention.NewWorkspaceFileIndex(opts.Workspace),

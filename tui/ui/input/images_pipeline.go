@@ -7,8 +7,8 @@ import (
 
 	"bytemind/internal/agent"
 	"bytemind/internal/llm"
-	tuiapi "bytemind/tui/api"
-	tuiruntime "bytemind/tui/runtime"
+	tuiapi "bytemind/internal/tui/api"
+	tuiruntime "bytemind/internal/tui/runtime"
 )
 
 func (m *model) applyInputImagePipeline(before, after, source string) (string, string) {

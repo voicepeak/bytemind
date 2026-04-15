@@ -1,9 +1,15 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/mattn/go-runewidth"
+)
+
+var (
+	inlineStrongPattern = regexp.MustCompile(`\*\*([^*]+)\*\*|__([^_]+)__`)
+	inlineEmPattern     = regexp.MustCompile(`\*([^*\n]+)\*|_([^_\n]+)_`)
 )
 
 func renderSemanticAssistantLine(line string, width int) string {
@@ -20,7 +26,7 @@ func renderSemanticAssistantLine(line string, width int) string {
 	if isDocumentTitleLine(core) {
 		wrapped := strings.Split(wrapPlainText(core, width), "\n")
 		for i := range wrapped {
-			wrapped[i] = assistantHeading1Style.Render(wrapped[i])
+			wrapped[i] = assistantHeading1Style.Render(renderInlineEmphasis(wrapped[i]))
 		}
 		return joinWithListPrefix(listPrefix, wrapped, isList)
 	}
@@ -28,7 +34,7 @@ func renderSemanticAssistantLine(line string, width int) string {
 	if isStageTitleLine(core) {
 		wrapped := strings.Split(wrapPlainText(core, max(8, width-runewidth.StringWidth(listPrefix))), "\n")
 		for i := range wrapped {
-			wrapped[i] = assistantHeading2Style.Render(wrapped[i])
+			wrapped[i] = assistantHeading2Style.Render(renderInlineEmphasis(wrapped[i]))
 		}
 		wrapped = applyIntentStyleToLines(core, wrapped)
 		return joinWithListPrefix(listPrefix, wrapped, isList)
@@ -37,7 +43,7 @@ func renderSemanticAssistantLine(line string, width int) string {
 	if isSectionTitleLine(core) {
 		wrapped := strings.Split(wrapPlainText(core, max(8, width-runewidth.StringWidth(listPrefix))), "\n")
 		for i := range wrapped {
-			wrapped[i] = accentStyle.Render(wrapped[i])
+			wrapped[i] = accentStyle.Render(renderInlineEmphasis(wrapped[i]))
 		}
 		wrapped = applyIntentStyleToLines(core, wrapped)
 		return joinWithListPrefix(listPrefix, wrapped, isList)
@@ -49,6 +55,7 @@ func renderSemanticAssistantLine(line string, width int) string {
 		wrapped = applyIntentStyleToLines(core, wrapped)
 		return joinWithListPrefix(listPrefix, wrapped, isList)
 	}
+
 	prefix := accentStyle.Render(label)
 	if rest == "" {
 		lines := []string{prefix}
@@ -60,15 +67,11 @@ func renderSemanticAssistantLine(line string, width int) string {
 	contentWidth := max(8, width-prefixWidth)
 	wrapped := strings.Split(wrapPlainText(rest, contentWidth), "\n")
 	lines := make([]string, 0, len(wrapped))
-	separatorGap := " "
 	continuationIndent := strings.Repeat(" ", runewidth.StringWidth(label+" "))
-	if strings.HasSuffix(label, "：") {
-		separatorGap = ""
-		continuationIndent = strings.Repeat(" ", runewidth.StringWidth(label))
-	}
 	for i, part := range wrapped {
+		part = renderInlineEmphasis(part)
 		if i == 0 {
-			lines = append(lines, prefix+separatorGap+part)
+			lines = append(lines, prefix+" "+part)
 			continue
 		}
 		lines = append(lines, continuationIndent+part)
@@ -84,10 +87,10 @@ func isStageTitleLine(line string) bool {
 
 func isSectionTitleLine(line string) bool {
 	line = strings.TrimSpace(line)
-	if !(strings.HasSuffix(line, ":") || strings.HasSuffix(line, "：")) {
+	if !strings.HasSuffix(line, ":") {
 		return false
 	}
-	body := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(line, "："), ":"))
+	body := strings.TrimSpace(strings.TrimSuffix(line, ":"))
 	if body == "" || runewidth.StringWidth(body) > 20 {
 		return false
 	}
@@ -95,39 +98,34 @@ func isSectionTitleLine(line string) bool {
 }
 
 func splitSemanticLabel(line string) (label string, rest string, ok bool) {
-	sep := "："
-	idx := strings.Index(line, sep)
-	if idx < 0 {
-		sep = ":"
-		idx = strings.Index(line, sep)
-	}
+	idx := strings.Index(line, ":")
 	if idx <= 0 {
 		return "", "", false
 	}
 	left := strings.TrimSpace(line[:idx])
-	right := strings.TrimSpace(line[idx+len(sep):])
+	right := strings.TrimSpace(line[idx+1:])
 	if left == "" || runewidth.StringWidth(left) > 10 {
 		return "", "", false
 	}
 	if strings.Contains(left, " ") {
 		return "", "", false
 	}
-	return left + sep, right, true
+	return left + ":", right, true
 }
 
 func applyLineIntentStyle(rawLine, renderedLine string) string {
 	line := strings.TrimSpace(strings.ToLower(rawLine))
 	switch {
-	case hasAnyPrefix(line, "注意", "警告", "warning", "warn", "! "):
+	case hasAnyPrefix(line, "warning", "warn", "! "):
 		return warnStyle.Render(renderedLine)
-	case hasAnyPrefix(line, "错误", "失败", "error", "fatal", "x "):
+	case hasAnyPrefix(line, "error", "fatal", "x "):
 		return errorStyle.Render(renderedLine)
-	case hasAnyPrefix(line, "成功", "完成", "success", "ok "):
+	case hasAnyPrefix(line, "success", "ok "):
 		return doneStyle.Render(renderedLine)
-	case hasAnyPrefix(line, "提示", "说明", "信息", "info", "note", "hint"):
-		return mutedStyle.Copy().Faint(false).Render(renderedLine)
+	case hasAnyPrefix(line, "info", "note", "hint"):
+		return mutedStyle.Render(renderedLine)
 	default:
-		return renderedLine
+		return renderInlineEmphasis(renderedLine)
 	}
 }
 
@@ -178,13 +176,13 @@ func isDocumentTitleLine(line string) bool {
 	if line == "" {
 		return false
 	}
-	if strings.ContainsAny(line, ":：!?！？") {
+	if strings.ContainsAny(line, ":?!") {
 		return false
 	}
 	if runewidth.StringWidth(line) > 24 {
 		return false
 	}
-	for _, suffix := range []string{"总览", "总结", "概览", "计划", "清单", "说明", "Overview", "Summary", "Plan", "Checklist", "Notes"} {
+	for _, suffix := range []string{"Overview", "Summary", "Plan", "Checklist", "Notes"} {
 		if strings.HasSuffix(line, suffix) {
 			return true
 		}
@@ -199,4 +197,24 @@ func hasAnyPrefix(s string, prefixes ...string) bool {
 		}
 	}
 	return false
+}
+
+func renderInlineEmphasis(line string) string {
+	line = inlineStrongPattern.ReplaceAllStringFunc(line, func(match string) string {
+		parts := inlineStrongPattern.FindStringSubmatch(match)
+		text := parts[1]
+		if text == "" {
+			text = parts[2]
+		}
+		return strongStyle.Render(text)
+	})
+	line = inlineEmPattern.ReplaceAllStringFunc(line, func(match string) string {
+		parts := inlineEmPattern.FindStringSubmatch(match)
+		text := parts[1]
+		if text == "" {
+			text = parts[2]
+		}
+		return emStyle.Render(text)
+	})
+	return line
 }

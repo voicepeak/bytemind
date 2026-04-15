@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"bytemind/internal/session"
-	"bytemind/tui/api"
-	tuiruntime "bytemind/tui/runtime"
+	"bytemind/internal/tui/api"
+	tuiruntime "bytemind/internal/tui/runtime"
 )
 
 type SkillManager struct {

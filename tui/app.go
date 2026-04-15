@@ -5,7 +5,7 @@ import (
 	"bytemind/internal/assets"
 	"bytemind/internal/config"
 	"bytemind/internal/session"
-	tuiruntime "bytemind/tui/runtime"
+	tuiruntime "bytemind/internal/tui/runtime"
 	"os"
 	"runtime"
 	"strconv"

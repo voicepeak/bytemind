@@ -31,6 +31,8 @@ func (m *model) beginRunWithInput(promptInput agent.RunPromptInput, mode, note s
 	m.streamingIndex = -1
 	m.bufferedAssistantText = ""
 	m.thinkingStartedAt = time.Now()
+	m.runFinishedAt = time.Time{}
+	m.traceCollapsed = false
 	if strings.TrimSpace(note) == "" {
 		note = "Request sent to LLM. Waiting for response..."
 	}
@@ -208,6 +210,7 @@ func (m *model) handleAgentEvent(event agent.Event) {
 			m.bufferedAssistantText = ""
 		}
 		m.phase = "idle"
+		m.traceCollapsed = true
 	}
 }
 

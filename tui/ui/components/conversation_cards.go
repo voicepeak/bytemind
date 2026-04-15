@@ -18,10 +18,6 @@ func renderChatCopySection(item chatEntry, width int) string {
 			title = ""
 			status = ""
 		}
-	case "user":
-		if strings.TrimSpace(item.Meta) != "" {
-			title = strings.TrimSpace(item.Meta)
-		}
 	}
 
 	if title == "" {
@@ -57,7 +53,9 @@ func renderChatCard(item chatEntry, width int) string {
 	case "system":
 		border = chatSystemStyle
 	default:
-		if item.Status == "thinking" || item.Status == "thinking_done" {
+		if item.Status == "final" {
+			border = chatFinalStyle
+		} else if item.Status == "thinking" || item.Status == "thinking_done" {
 			border = chatThinkingStyle
 		}
 	}
@@ -113,15 +111,22 @@ func renderChatSection(item chatEntry, width int) string {
 			}
 			displayTitle = ""
 			status = ""
+		} else if item.Status == "final" {
+			displayTitle = "FINAL ANSWER"
+			title = cardTitleStyle.Foreground(colorFinalTitle).Bold(true)
 		}
 	}
 	if item.Kind == "assistant" && (item.Status == "thinking" || item.Status == "thinking_done") {
-		return bodyStyle.Width(width).Render(strings.TrimRight(wrapPlainText(item.Body, width), "\n"))
+		body := strings.TrimRight(wrapPlainText(item.Body, width), "\n")
+		if item.Status == "thinking_done" {
+			body = collapseThinkingBody(body)
+		}
+		return bodyStyle.Width(width).Render(body)
+	}
+	if item.Kind == "user" {
+		return bodyStyle.Width(width).Render(formatChatBody(item, width))
 	}
 	headContent := title.Render(displayTitle)
-	if item.Kind == "user" && strings.TrimSpace(item.Meta) != "" {
-		headContent = mutedStyle.Copy().Faint(true).Render(item.Meta)
-	}
 	if status != "" {
 		headContent = lipgloss.JoinHorizontal(lipgloss.Left, headContent, mutedStyle.Render("  "+status))
 	}
@@ -132,5 +137,17 @@ func renderChatSection(item chatEntry, width int) string {
 		return head
 	}
 	body := bodyStyle.Width(width).Render(formatChatBody(item, width))
+	if item.Kind == "assistant" && item.Status == "final" && strings.TrimSpace(item.Meta) != "" {
+		meta := mutedStyle.Render(strings.TrimSpace(item.Meta))
+		return lipgloss.JoinVertical(lipgloss.Left, head, body, meta)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, head, body)
+}
+
+func collapseThinkingBody(body string) string {
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(lines) <= 2 {
+		return strings.Join(lines, "\n")
+	}
+	return strings.Join(lines[:2], "\n") + "\n" + mutedStyle.Render("(trace collapsed)")
 }

@@ -70,6 +70,13 @@ func (m model) renderConversationCopy() string {
 func renderChatRow(item chatEntry, width int) string {
 	bubbleWidth := chatBubbleWidth(item, width)
 	card := renderChatCard(item, bubbleWidth)
+	if item.Kind == "user" {
+		return lipgloss.NewStyle().
+			MarginBottom(1).
+			Width(width).
+			Background(lipgloss.Color("#2A2A2A")).
+			Render(card)
+	}
 	return lipgloss.NewStyle().
 		MarginBottom(1).
 		Render(lipgloss.PlaceHorizontal(width, lipgloss.Left, card))

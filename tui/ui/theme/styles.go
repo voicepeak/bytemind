@@ -5,16 +5,26 @@ import "github.com/charmbracelet/lipgloss"
 var (
 	colorPanel        = lipgloss.Color("#000000")
 	colorBorder       = lipgloss.Color("#314156")
-	colorAccent       = lipgloss.Color("#6CB6FF")
+	colorAccent       = lipgloss.Color("#58A6FF")
 	colorCard         = lipgloss.Color("#171717")
 	colorHotPink      = lipgloss.Color("#F05AA6")
 	colorThinking     = lipgloss.Color("#8FD3FF")
 	colorThinkingDone = lipgloss.Color("#9AA6B2")
 	colorUser         = lipgloss.Color("#F59E0B")
 	colorTool         = lipgloss.Color("#BEA15A")
-	colorMuted        = lipgloss.Color("#93A4B8")
-	colorDanger       = lipgloss.Color("#F7A8A8")
+	colorMuted        = lipgloss.Color("#8B949E")
+	colorDanger       = lipgloss.Color("#F85149")
 	colorSuccess      = lipgloss.Color("#8EE6A0")
+	colorCodeBg       = lipgloss.Color("#1E1E1E")
+	colorCodeFg       = lipgloss.Color("#D4D4D4")
+	colorCodeKeyword  = lipgloss.Color("#569CD6")
+	colorCodeString   = lipgloss.Color("#CE9178")
+	colorCodeComment  = lipgloss.Color("#6A9955")
+	colorCodeNumber   = lipgloss.Color("#B5CEA8")
+	colorErrorBg      = lipgloss.Color("#7F1D1D")
+	colorErrorFg      = lipgloss.Color("#FFFFFF")
+	colorFinalBorder  = lipgloss.Color("#3E5F83")
+	colorFinalTitle   = lipgloss.Color("#7FB2E6")
 )
 
 var (
@@ -98,8 +108,8 @@ var (
 				Bold(true)
 
 	helpCodeStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#F1F5F9")).
-			Background(lipgloss.Color("#101010")).
+			Foreground(colorCodeFg).
+			Background(colorCodeBg).
 			Padding(0, 1)
 
 	inputStyle = lipgloss.NewStyle().
@@ -147,17 +157,22 @@ var (
 			BorderLeft(true).
 			BorderForeground(colorMuted).
 			PaddingLeft(1).
-			Foreground(lipgloss.Color("#D7E3F1"))
+			Foreground(lipgloss.Color("#C9D1D9"))
 
 	tableLineStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#D7E3F1")).
-			Background(lipgloss.Color("#101923"))
+			Foreground(lipgloss.Color("#C9D1D9")).
+			Background(lipgloss.Color("#0D1117"))
 
 	chatAssistantStyle = lipgloss.NewStyle().
 				Padding(1, 1)
 
 	chatThinkingStyle = lipgloss.NewStyle().
 				Padding(1, 1)
+
+	chatFinalStyle = lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(colorFinalBorder).
+			Padding(0, 1)
 
 	thinkingBodyStyle = lipgloss.NewStyle().
 				Foreground(colorThinking)
@@ -248,15 +263,17 @@ var (
 			Foreground(colorAccent)
 
 	codeStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#F8FAFC")).
-			Background(lipgloss.Color("#0B1220")).
+			Foreground(colorCodeFg).
+			Background(colorCodeBg).
 			Padding(0, 1)
 
 	mutedStyle  = lipgloss.NewStyle().Foreground(colorMuted)
 	accentStyle = lipgloss.NewStyle().Foreground(colorAccent)
 	doneStyle   = lipgloss.NewStyle().Foreground(colorSuccess)
 	warnStyle   = lipgloss.NewStyle().Foreground(colorTool)
-	errorStyle  = lipgloss.NewStyle().Foreground(colorDanger)
+	errorStyle  = lipgloss.NewStyle().Foreground(colorErrorFg).Background(colorErrorBg).Padding(0, 1)
+	strongStyle = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	emStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#79C0FF")).Italic(true)
 )
 
 func spacer(width int) string {
