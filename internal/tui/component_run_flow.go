@@ -36,6 +36,7 @@ func (m *model) beginRunWithInput(promptInput agent.RunPromptInput, mode, note s
 	m.phase = "thinking"
 	m.llmConnected = true
 	m.busy = true
+	m.runStartedAt = time.Now()
 	m.chatAutoFollow = true
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()

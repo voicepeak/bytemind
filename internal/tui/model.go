@@ -262,6 +262,7 @@ type model struct {
 	mentionOpen           bool
 	promptSearchOpen      bool
 	busy                  bool
+	runStartedAt          time.Time
 	streamingIndex        int
 	statusNote            string
 	phase                 string

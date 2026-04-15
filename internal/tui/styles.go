@@ -188,6 +188,10 @@ var (
 				Background(lipgloss.Color("#0F1A28")).
 				Padding(0, 1)
 
+	runIndicatorStyle = lipgloss.NewStyle().
+				Foreground(colorMuted).
+				Faint(true)
+
 	statusBarStyle = lipgloss.NewStyle().
 			Foreground(colorMuted).
 			Faint(true)
