@@ -53,7 +53,7 @@ func (r *Runner) executeToolCall(
 		},
 	})
 
-	if decision.Decision != corepkg.DecisionAllow {
+	if decision.Decision == corepkg.DecisionDeny {
 		return r.handleRejectedToolCall(ctx, sess, call, out, decision)
 	}
 

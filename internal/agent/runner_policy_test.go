@@ -136,3 +136,129 @@ func TestRunPromptPolicyGatewayDeniesToolBeforeExecutor(t *testing.T) {
 		t.Fatal("did not expect tool_execute_start audit event for denied tool")
 	}
 }
+
+func TestRunPromptPolicyGatewayAskRequestsApprovalAndExecutesTool(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+
+	executed := false
+	approvalRequested := false
+	askTool := &fakeTool{
+		name: "ask_tool",
+		run: func(raw json.RawMessage, execCtx *tools.ExecutionContext) (string, error) {
+			if execCtx == nil || execCtx.Approval == nil {
+				t.Fatal("expected approval handler in execution context")
+			}
+			approved, approvalErr := execCtx.Approval(tools.ApprovalRequest{
+				Command: "ask_tool",
+				Reason:  "high-risk tool requires approval",
+			})
+			if approvalErr != nil {
+				t.Fatalf("unexpected approval error: %v", approvalErr)
+			}
+			approvalRequested = true
+			if !approved {
+				t.Fatal("expected approval handler to approve execution")
+			}
+			executed = true
+			return `{"ok":true,"status":"executed"}`, nil
+		},
+	}
+	registry := tools.DefaultRegistry()
+	registry.Add(askTool)
+
+	client := &recordingClient{replies: []llm.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-ask",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name:      "ask_tool",
+					Arguments: `{}`,
+				},
+			}},
+		},
+		{
+			Role:    "assistant",
+			Content: "Ask path handled.",
+		},
+	}}
+
+	auditStore := &recordingAuditStore{}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:       config.ProviderConfig{Type: "openai-compatible", Model: "test-model"},
+			MaxIterations:  3,
+			Stream:         false,
+			TokenQuota:     generousTokenQuota,
+			ApprovalPolicy: "on-request",
+		},
+		Client:   client,
+		Store:    store,
+		Registry: registry,
+		PolicyGateway: policyGatewayFunc(func(_ context.Context, in ToolDecisionInput) (ToolDecision, error) {
+			if in.ToolName != "ask_tool" {
+				t.Fatalf("unexpected tool name: %q", in.ToolName)
+			}
+			return ToolDecision{
+				Decision:   corepkg.DecisionAsk,
+				ReasonCode: policyReasonRiskRule,
+				Reason:     "requires explicit approval",
+				RiskLevel:  corepkg.RiskHigh,
+			}, nil
+		}),
+		AuditStore: auditStore,
+		Approval: func(req tools.ApprovalRequest) (bool, error) {
+			if req.Command != "ask_tool" {
+				t.Fatalf("unexpected approval command: %q", req.Command)
+			}
+			return true, nil
+		},
+		Stdin:  strings.NewReader(""),
+		Stdout: io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "run ask tool", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "Ask path handled." {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+	if !approvalRequested {
+		t.Fatal("expected approval to be requested for ask decision path")
+	}
+	if !executed {
+		t.Fatal("expected tool execution after approval for ask decision path")
+	}
+
+	foundPermissionDecisionAsk := false
+	foundExecuteStart := false
+	foundExecuteResult := false
+	for _, event := range auditStore.snapshot() {
+		if event.Action == "permission_decision" && event.Decision == corepkg.DecisionAsk && event.ReasonCode == policyReasonRiskRule {
+			foundPermissionDecisionAsk = true
+		}
+		if event.Action == "tool_execute_start" && event.Metadata["tool_name"] == "ask_tool" {
+			foundExecuteStart = true
+		}
+		if event.Action == "tool_execute_result" && event.Metadata["tool_name"] == "ask_tool" && event.Result == "ok" {
+			foundExecuteResult = true
+		}
+	}
+	if !foundPermissionDecisionAsk {
+		t.Fatal("expected permission_decision audit event for ask tool")
+	}
+	if !foundExecuteStart {
+		t.Fatal("expected tool_execute_start audit event for ask tool")
+	}
+	if !foundExecuteResult {
+		t.Fatal("expected successful tool_execute_result audit event for ask tool")
+	}
+}
