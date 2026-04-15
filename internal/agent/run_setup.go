@@ -45,6 +45,10 @@ func (r *Runner) prepareRunPrompt(sess *session.Session, input RunPromptInput, m
 
 	activeSkill := r.resolveActiveSkill(sess)
 	allowedTools, deniedTools := resolveSkillToolSets(activeSkill)
+	availableTools := []string(nil)
+	if r.registry != nil {
+		availableTools = toolNames(r.registry.DefinitionsForMode(runMode))
+	}
 	return runPromptSetup{
 		Input:                input,
 		UserInput:            userInput,
@@ -56,7 +60,7 @@ func (r *Runner) prepareRunPrompt(sess *session.Session, input RunPromptInput, m
 		AllowedToolNames:     policypkg.SortedToolNames(allowedTools),
 		DeniedToolNames:      policypkg.SortedToolNames(deniedTools),
 		AvailableSkills:      r.promptSkills(),
-		AvailableTools:       toolNames(r.registry.DefinitionsForMode(runMode)),
+		AvailableTools:       availableTools,
 		InstructionText:      loadAGENTSInstruction(r.workspace),
 		WebLookupInstruction: policypkg.ExplicitWebLookupInstruction(userInput),
 		PromptTokens:         contextpkg.EstimateRequestTokens([]llm.Message{input.UserMessage}),
@@ -87,8 +91,10 @@ func (r *Runner) beginRunSession(sess *session.Session, userMessage llm.Message,
 		return err
 	}
 	sess.Messages = append(sess.Messages, userMessage)
-	if err := r.store.Save(sess); err != nil {
-		return err
+	if r.store != nil {
+		if err := r.store.Save(sess); err != nil {
+			return err
+		}
 	}
 	r.appendPromptHistory(corepkg.SessionID(sess.ID), userInput, time.Now().UTC())
 	r.emit(Event{

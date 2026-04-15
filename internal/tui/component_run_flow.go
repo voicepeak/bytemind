@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"bytemind/internal/agent"
 	"bytemind/internal/history"
 	"bytemind/internal/llm"
 	planpkg "bytemind/internal/plan"
@@ -16,13 +15,13 @@ import (
 )
 
 func (m *model) beginRun(prompt, mode, note string) tea.Cmd {
-	return m.beginRunWithInput(agent.RunPromptInput{
+	return m.beginRunWithInput(RunPromptInput{
 		UserMessage: llm.NewUserTextMessage(prompt),
 		DisplayText: prompt,
 	}, mode, note)
 }
 
-func (m *model) beginRunWithInput(promptInput agent.RunPromptInput, mode, note string) tea.Cmd {
+func (m *model) beginRunWithInput(promptInput RunPromptInput, mode, note string) tea.Cmd {
 	runCtx, cancel := context.WithCancel(context.Background())
 	m.runSeq++
 	runID := m.runSeq
@@ -139,19 +138,19 @@ func (m model) submitBTW(value string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) handleAgentEvent(event agent.Event) {
+func (m *model) handleAgentEvent(event Event) {
 	switch event.Type {
-	case agent.EventRunStarted:
+	case EventRunStarted:
 		m.tempEstimatedOutput = 0
-	case agent.EventAssistantDelta:
+	case EventAssistantDelta:
 		m.phase = "responding"
 		m.statusNote = "LLM is responding..."
 		m.llmConnected = true
 		m.appendAssistantDelta(event.Content)
-	case agent.EventAssistantMessage:
+	case EventAssistantMessage:
 		m.llmConnected = true
 		m.finishAssistantMessage(event.Content)
-	case agent.EventToolCallStarted:
+	case EventToolCallStarted:
 		m.phase = "tool"
 		m.llmConnected = true
 		m.finalizeAssistantTurnForTool(event.ToolName)
@@ -167,7 +166,7 @@ func (m *model) handleAgentEvent(event agent.Event) {
 			Status:  "running",
 		})
 		m.statusNote = "Running tool: " + event.ToolName
-	case agent.EventToolCallCompleted:
+	case EventToolCallCompleted:
 		summary, lines, status := summarizeTool(event.ToolName, event.ToolResult)
 		m.finishLatestToolCall(event.ToolName, joinSummary(summary, lines), status)
 		if len(m.toolRuns) > 0 {
@@ -184,16 +183,16 @@ func (m *model) handleAgentEvent(event agent.Event) {
 			m.statusNote = "BTW received. Stopping current run..."
 			m.runCancel()
 		}
-	case agent.EventPlanUpdated:
+	case EventPlanUpdated:
 		m.plan = copyPlanState(event.Plan)
 		m.phase = string(planpkg.NormalizePhase(string(m.plan.Phase)))
 		if m.phase == "none" {
 			m.phase = "plan"
 		}
 		m.statusNote = fmt.Sprintf("Plan updated with %d step(s).", len(m.plan.Steps))
-	case agent.EventUsageUpdated:
+	case EventUsageUpdated:
 		m.applyUsage(event.Usage)
-	case agent.EventRunFinished:
+	case EventRunFinished:
 		if strings.TrimSpace(event.Content) != "" {
 			m.statusNote = "Run finished."
 		}
@@ -201,8 +200,12 @@ func (m *model) handleAgentEvent(event agent.Event) {
 	}
 }
 
-func (m model) startRunCmd(runCtx context.Context, runID int, prompt agent.RunPromptInput, mode string) tea.Cmd {
+func (m model) startRunCmd(runCtx context.Context, runID int, prompt RunPromptInput, mode string) tea.Cmd {
 	return func() tea.Msg {
+		if m.runner == nil {
+			m.async <- runFinishedMsg{RunID: runID, Err: fmt.Errorf("runner is unavailable")}
+			return nil
+		}
 		go func() {
 			_, err := m.runner.RunPromptWithInput(runCtx, m.sess, prompt, mode, io.Discard)
 			m.async <- runFinishedMsg{RunID: runID, Err: err}

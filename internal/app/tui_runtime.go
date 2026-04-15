@@ -108,7 +108,7 @@ func BuildTUIRuntime(req TUIRequest) (TUIRuntime, error) {
 
 	return TUIRuntime{
 		Options: tui.Options{
-			Runner:       runner,
+			Runner:       newTUIRunnerAdapter(runner),
 			Store:        runtimeBundle.Store,
 			Session:      runtimeBundle.Session,
 			ImageStore:   imageStore,

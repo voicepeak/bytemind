@@ -40,8 +40,10 @@ func (r *Runner) persistAssistantReply(sess *session.Session, reply llm.Message)
 		return err
 	}
 	sess.Messages = append(sess.Messages, reply)
-	if err := r.store.Save(sess); err != nil {
-		return err
+	if r.store != nil {
+		if err := r.store.Save(sess); err != nil {
+			return err
+		}
 	}
 	r.emit(Event{
 		Type:      EventAssistantMessage,

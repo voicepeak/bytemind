@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 
@@ -22,6 +23,9 @@ func (r *Runner) executeToolCall(
 	allowedTools map[string]struct{},
 	deniedTools map[string]struct{},
 ) error {
+	if r.executor == nil {
+		return fmt.Errorf("tool executor is unavailable")
+	}
 	r.emit(Event{
 		Type:          EventToolCallStarted,
 		SessionID:     corepkg.SessionID(sess.ID),
@@ -97,8 +101,10 @@ func (r *Runner) executeToolCall(
 		return err
 	}
 	sess.Messages = append(sess.Messages, toolMessage)
-	if err := r.store.Save(sess); err != nil {
-		return err
+	if r.store != nil {
+		if err := r.store.Save(sess); err != nil {
+			return err
+		}
 	}
 	if call.Function.Name == "update_plan" {
 		r.emit(Event{

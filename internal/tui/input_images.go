@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"bytemind/internal/agent"
 	"bytemind/internal/assets"
 	corepkg "bytemind/internal/core"
 	"bytemind/internal/llm"
@@ -594,22 +593,22 @@ func (m *model) syncInputImageRefs(text string) {
 	}
 }
 
-func (m *model) buildPromptInput(raw string) (agent.RunPromptInput, string, error) {
+func (m *model) buildPromptInput(raw string) (RunPromptInput, string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return agent.RunPromptInput{}, "", fmt.Errorf("prompt is empty")
+		return RunPromptInput{}, "", fmt.Errorf("prompt is empty")
 	}
 	m.syncInputImageRefs(raw)
 	resolvedRaw, err := m.resolvePastedLineReference(raw)
 	if err != nil {
-		return agent.RunPromptInput{}, "", err
+		return RunPromptInput{}, "", err
 	}
 
 	placeholderMatches := imagePlaceholderPattern.FindAllStringSubmatchIndex(resolvedRaw, -1)
 	mentionMatches := extractMentionImageSpans(resolvedRaw, m.inputImageMentions)
 	if len(placeholderMatches) == 0 && len(mentionMatches) == 0 {
 		assets := m.hydrateHistoricalRequestAssets(nil)
-		return agent.RunPromptInput{
+		return RunPromptInput{
 			UserMessage: llm.NewUserTextMessage(resolvedRaw),
 			Assets:      assets,
 			DisplayText: raw,
@@ -707,11 +706,11 @@ func (m *model) buildPromptInput(raw string) (agent.RunPromptInput, string, erro
 	userMessage := llm.Message{Role: llm.RoleUser, Parts: parts}
 	userMessage.Normalize()
 	if err := llm.ValidateMessage(userMessage); err != nil {
-		return agent.RunPromptInput{}, "", err
+		return RunPromptInput{}, "", err
 	}
 	assetPayloads = m.hydrateHistoricalRequestAssets(assetPayloads)
 
-	return agent.RunPromptInput{
+	return RunPromptInput{
 		UserMessage: userMessage,
 		Assets:      assetPayloads,
 		DisplayText: raw,

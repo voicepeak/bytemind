@@ -31,6 +31,9 @@ type turnProcessParams struct {
 }
 
 func (r *Runner) processTurn(ctx context.Context, p turnProcessParams) (string, bool, error) {
+	if r.registry == nil {
+		return "", false, fmt.Errorf("tool registry is unavailable")
+	}
 	filteredTools := r.registry.DefinitionsForModeWithFilters(p.RunMode, p.AllowedToolNames, p.DeniedToolNames)
 	request := contextpkg.BuildChatRequest(contextpkg.ChatRequestInput{
 		Model:       r.config.Provider.Model,
@@ -74,8 +77,10 @@ func (r *Runner) processTurn(ctx context.Context, p turnProcessParams) (string, 
 	}
 
 	p.Session.Messages = append(p.Session.Messages, reply)
-	if err := r.store.Save(p.Session); err != nil {
-		return "", false, err
+	if r.store != nil {
+		if err := r.store.Save(p.Session); err != nil {
+			return "", false, err
+		}
 	}
 
 	if streamedText && p.Out != nil {

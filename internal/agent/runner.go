@@ -38,9 +38,9 @@ type Options struct {
 	Workspace    string
 	Config       config.Config
 	Client       llm.Client
-	Store        *session.Store
-	Registry     *tools.Registry
-	Executor     *tools.Executor
+	Store        SessionStore
+	Registry     ToolRegistry
+	Executor     ToolExecutor
 	TaskManager  runtimepkg.TaskManager
 	Extensions   extensionspkg.Manager
 	SkillManager *skills.Manager
@@ -63,9 +63,9 @@ type Runner struct {
 	workspace    string
 	config       config.Config
 	client       llm.Client
-	store        *session.Store
-	registry     *tools.Registry
-	executor     *tools.Executor
+	store        SessionStore
+	registry     ToolRegistry
+	executor     ToolExecutor
 	taskManager  runtimepkg.TaskManager
 	extensions   extensionspkg.Manager
 	skillManager *skills.Manager
@@ -83,9 +83,15 @@ func NewRunner(opts Options) *Runner {
 	if manager == nil {
 		manager = skills.NewManager(opts.Workspace)
 	}
+	registry := opts.Registry
+	if registry == nil {
+		registry = tools.DefaultRegistry()
+	}
 	executor := opts.Executor
-	if executor == nil && opts.Registry != nil {
-		executor = tools.NewExecutor(opts.Registry)
+	if executor == nil {
+		if concrete, ok := registry.(*tools.Registry); ok {
+			executor = tools.NewExecutor(concrete)
+		}
 	}
 	auditStore := opts.AuditStore
 	if auditStore == nil {
@@ -108,7 +114,7 @@ func NewRunner(opts Options) *Runner {
 		config:       opts.Config,
 		client:       opts.Client,
 		store:        opts.Store,
-		registry:     opts.Registry,
+		registry:     registry,
 		executor:     executor,
 		taskManager:  taskManager,
 		extensions:   extensions,

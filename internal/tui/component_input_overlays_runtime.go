@@ -263,8 +263,7 @@ func (m *model) openCommandPalette() {
 	m.syncInputOverlays()
 }
 
-func (m *model) openPromptSearch(mode promptSearchMode) {
-	m.ensurePromptHistoryLoaded()
+func (m *model) openPromptSearch(mode promptSearchMode) tea.Cmd {
 	m.promptSearchMode = mode
 	m.promptSearchBaseInput = m.input.Value()
 	m.promptSearchQuery = ""
@@ -272,20 +271,38 @@ func (m *model) openPromptSearch(mode promptSearchMode) {
 	m.promptSearchOpen = true
 	m.commandOpen = false
 	m.closeMentionPalette()
+
+	loadCmd := tea.Cmd(nil)
+	if !m.promptHistoryLoaded && !m.promptHistoryLoading {
+		m.promptHistoryLoading = true
+		m.promptHistoryLoadErr = ""
+		loadCmd = m.loadPromptHistoryCmd()
+	}
 	m.refreshPromptSearchMatches()
-	if len(m.promptSearchMatches) == 0 {
+
+	switch {
+	case m.promptHistoryLoading:
+		if mode == promptSearchModePanel {
+			m.statusNote = "History panel loading..."
+		} else {
+			m.statusNote = "Prompt history loading..."
+		}
+	case strings.TrimSpace(m.promptHistoryLoadErr) != "":
+		m.statusNote = "Prompt history unavailable: " + compact(m.promptHistoryLoadErr, 72)
+	case len(m.promptSearchMatches) == 0:
 		if mode == promptSearchModePanel {
 			m.statusNote = "History panel opened. No matching prompts."
 		} else {
 			m.statusNote = "No matching prompts."
 		}
-	} else {
+	default:
 		if mode == promptSearchModePanel {
 			m.statusNote = fmt.Sprintf("History panel ready (%d matches).", len(m.promptSearchMatches))
 		} else {
 			m.statusNote = fmt.Sprintf("Prompt history ready (%d matches).", len(m.promptSearchMatches))
 		}
 	}
+	return loadCmd
 }
 
 func (m *model) closePromptSearch(restoreInput bool) {
@@ -301,19 +318,11 @@ func (m *model) closePromptSearch(restoreInput bool) {
 	m.syncInputOverlays()
 }
 
-func (m *model) ensurePromptHistoryLoaded() {
-	if m.promptHistoryLoaded {
-		return
+func (m model) loadPromptHistoryCmd() tea.Cmd {
+	return func() tea.Msg {
+		entries, err := history.LoadRecentPrompts(promptSearchLoadLimit)
+		return promptHistoryLoadedMsg{Entries: entries, Err: err}
 	}
-	entries, err := history.LoadRecentPrompts(promptSearchLoadLimit)
-	if err != nil {
-		m.promptHistoryEntries = nil
-		m.promptHistoryLoaded = true
-		m.statusNote = "Prompt history unavailable: " + compact(err.Error(), 72)
-		return
-	}
-	m.promptHistoryEntries = entries
-	m.promptHistoryLoaded = true
 }
 
 func (m *model) refreshPromptSearchMatches() {

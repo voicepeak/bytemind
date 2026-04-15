@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"bytemind/internal/agent"
 	"bytemind/internal/assets"
 	"bytemind/internal/config"
 	"bytemind/internal/history"
@@ -19,7 +18,6 @@ import (
 	"bytemind/internal/mention"
 	planpkg "bytemind/internal/plan"
 	"bytemind/internal/session"
-	"bytemind/internal/tools"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -170,7 +168,7 @@ type approvalDecision struct {
 }
 
 type agentEventMsg struct {
-	Event agent.Event
+	Event Event
 }
 
 type runFinishedMsg struct {
@@ -188,8 +186,13 @@ const (
 )
 
 type approvalRequestMsg struct {
-	Request tools.ApprovalRequest
+	Request ApprovalRequest
 	Reply   chan approvalDecision
+}
+
+type promptHistoryLoadedMsg struct {
+	Entries []history.PromptEntry
+	Err     error
 }
 
 type sessionsLoadedMsg struct {
@@ -226,8 +229,8 @@ var commandItems = []commandItem{
 }
 
 type model struct {
-	runner     *agent.Runner
-	store      *session.Store
+	runner     Runner
+	store      SessionStore
 	sess       *session.Session
 	imageStore assets.ImageStore
 	cfg        config.Config
@@ -303,6 +306,8 @@ type model struct {
 	tempEstimatedOutput   int
 	tokenEstimator        *realtimeTokenEstimator
 	promptHistoryLoaded   bool
+	promptHistoryLoading  bool
+	promptHistoryLoadErr  string
 	promptHistoryEntries  []history.PromptEntry
 	promptSearchMode      promptSearchMode
 	promptSearchQuery     string
@@ -362,15 +367,17 @@ func newModel(opts Options) model {
 
 	chatItems, toolRuns := rebuildSessionTimeline(opts.Session)
 
-	opts.Runner.SetObserver(agent.ObserverFunc(func(event agent.Event) {
-		async <- agentEventMsg{Event: event}
-	}))
-	opts.Runner.SetApprovalHandler(func(req tools.ApprovalRequest) (bool, error) {
-		reply := make(chan approvalDecision, 1)
-		async <- approvalRequestMsg{Request: req, Reply: reply}
-		decision := <-reply
-		return decision.Approved, decision.Err
-	})
+	if opts.Runner != nil {
+		opts.Runner.SetObserver(func(event Event) {
+			async <- agentEventMsg{Event: event}
+		})
+		opts.Runner.SetApprovalHandler(func(req ApprovalRequest) (bool, error) {
+			reply := make(chan approvalDecision, 1)
+			async <- approvalRequestMsg{Request: req, Reply: reply}
+			decision := <-reply
+			return decision.Approved, decision.Err
+		})
+	}
 
 	m := model{
 		runner:             opts.Runner,
@@ -547,6 +554,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sessions = msg.Summaries
 			if m.sessionCursor >= len(m.sessions) && len(m.sessions) > 0 {
 				m.sessionCursor = len(m.sessions) - 1
+			}
+		}
+		return m, nil
+	case promptHistoryLoadedMsg:
+		m.promptHistoryLoading = false
+		m.promptHistoryLoaded = true
+		if msg.Err != nil {
+			m.promptHistoryEntries = nil
+			m.promptHistoryLoadErr = msg.Err.Error()
+			m.refreshPromptSearchMatches()
+			if m.promptSearchOpen {
+				m.statusNote = "Prompt history unavailable: " + compact(msg.Err.Error(), 72)
+			}
+			return m, nil
+		}
+		m.promptHistoryEntries = msg.Entries
+		m.promptHistoryLoadErr = ""
+		m.refreshPromptSearchMatches()
+		if m.promptSearchOpen {
+			if len(m.promptSearchMatches) == 0 {
+				if m.promptSearchMode == promptSearchModePanel {
+					m.statusNote = "History panel opened. No matching prompts."
+				} else {
+					m.statusNote = "No matching prompts."
+				}
+			} else {
+				if m.promptSearchMode == promptSearchModePanel {
+					m.statusNote = fmt.Sprintf("History panel ready (%d matches).", len(m.promptSearchMatches))
+				} else {
+					m.statusNote = fmt.Sprintf("Prompt history ready (%d matches).", len(m.promptSearchMatches))
+				}
 			}
 		}
 		return m, nil
@@ -784,8 +822,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.skillsOpen || m.commandOpen || m.mentionOpen {
 			return m, nil
 		}
-		m.openPromptSearch(promptSearchModeQuick)
-		return m, nil
+		return m, m.openPromptSearch(promptSearchModeQuick)
 	case "ctrl+k":
 		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.commandOpen || m.mentionOpen || m.busy {
 			return m, nil
