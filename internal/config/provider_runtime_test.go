@@ -11,7 +11,9 @@ func TestLegacyProviderRuntimeConfigNormalizesProviderIDs(t *testing.T) {
 		{name: "openai compatible", typeValue: "openai-compatible", want: "openai"},
 		{name: "openai alias", typeValue: "openai", want: "openai"},
 		{name: "empty defaults openai", typeValue: "", want: "openai"},
-		{name: "whitespace defaults openai", typeValue: "   ", want: "openai"},
+		{name: "openai uppercase", typeValue: "OPENAI", want: "openai"},
+		{name: "openai compatible padded", typeValue: " OpenAI-Compatible ", want: "openai"},
+		{name: "anthropic uppercase", typeValue: "ANTHROPIC", want: "anthropic"},
 		{name: "anthropic", typeValue: "anthropic", want: "anthropic"},
 	}
 	for _, tt := range tests {

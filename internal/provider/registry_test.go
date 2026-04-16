@@ -93,6 +93,18 @@ func TestListModelsReturnsRegistryError(t *testing.T) {
 	}
 }
 
+func TestListModelsReturnsContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reg, err := NewRegistry(config.ProviderRuntimeConfig{})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if _, _, err := ListModels(ctx, reg); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+}
+
 func TestRegistryCoversLookupAndNormalizationBranches(t *testing.T) {
 	reg, err := NewRegistry(config.ProviderRuntimeConfig{})
 	if err != nil {

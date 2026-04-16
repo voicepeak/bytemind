@@ -32,6 +32,9 @@ func ListModels(ctx context.Context, reg Registry) ([]ModelInfo, []Warning, erro
 			}
 			defer func() { <-sem }()
 			client, ok := reg.Get(ctx, id)
+			if ctx.Err() != nil {
+				return
+			}
 			if !ok {
 				mu.Lock()
 				warnings = append(warnings, Warning{ProviderID: id, Reason: string(ErrCodeProviderNotFound)})
@@ -39,6 +42,9 @@ func ListModels(ctx context.Context, reg Registry) ([]ModelInfo, []Warning, erro
 				return
 			}
 			providerModels, err := client.ListModels(ctx)
+			if ctx.Err() != nil {
+				return
+			}
 			if err != nil {
 				mu.Lock()
 				warnings = append(warnings, Warning{ProviderID: id, Reason: listModelsWarningReason})
@@ -63,6 +69,9 @@ func ListModels(ctx context.Context, reg Registry) ([]ModelInfo, []Warning, erro
 		}()
 	}
 	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	sort.Slice(models, func(i, j int) bool {
 		if models[i].ProviderID == models[j].ProviderID {
 			return models[i].ModelID < models[j].ModelID

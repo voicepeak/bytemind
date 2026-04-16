@@ -9,7 +9,7 @@ type ProviderRuntimeConfig struct {
 }
 
 func LegacyProviderRuntimeConfig(cfg ProviderConfig) ProviderRuntimeConfig {
-	providerID := strings.TrimSpace(cfg.Type)
+	providerID := strings.ToLower(strings.TrimSpace(cfg.Type))
 	switch providerID {
 	case "", "openai", "openai-compatible":
 		providerID = "openai"
