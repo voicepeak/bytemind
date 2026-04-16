@@ -477,7 +477,7 @@ func (m *model) viewportPointFromMouse(x, y int) (viewportSelectionPoint, bool) 
 		}
 		// Keep zone-first behavior robust for terminals that occasionally
 		// report mouse rows with small absolute drift near viewport edges.
-		if x >= z.StartX-1 && x <= z.EndX+1 {
+		if x >= z.StartX-mouseZoneAutoProbeMaxDelta && x <= z.EndX+mouseZoneAutoProbeMaxDelta {
 			for delta := 1; delta <= mouseZoneAutoProbeMaxDelta; delta++ {
 				if point, ok := m.viewportPointFromZone(z, x, y-delta); ok {
 					return point, true
@@ -496,8 +496,14 @@ func (m *model) viewportPointFromMouse(x, y int) (viewportSelectionPoint, bool) 
 	if renderedTop, found := m.conversationViewportTopFromRenderedView(left, top); found {
 		top = renderedTop
 		bottom = top + m.viewport.Height - 1
+	} else if z := zone.Get(conversationViewportZoneID); z != nil && y < top {
+		top = min(top, z.StartY)
+		bottom = top + m.viewport.Height - 1
 	}
 	// Keep drag-select usable for terminals that report 0-based or 1-based mouse coords.
+	if y < top-1 && y >= top-mouseZoneAutoProbeMaxDelta {
+		y = top
+	}
 	if x < left-1 || x > right+1 || y < top-1 || y > bottom+1 {
 		return viewportSelectionPoint{}, false
 	}
