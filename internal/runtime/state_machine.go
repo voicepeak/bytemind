@@ -5,6 +5,7 @@ import corepkg "bytemind/internal/core"
 var baseAllowedTransitions = map[corepkg.TaskStatus]map[corepkg.TaskStatus]struct{}{
 	corepkg.TaskPending: {
 		corepkg.TaskRunning: {},
+		corepkg.TaskFailed:  {},
 		corepkg.TaskKilled:  {},
 	},
 	corepkg.TaskRunning: {

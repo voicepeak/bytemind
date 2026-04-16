@@ -146,6 +146,33 @@ func TestDefaultRuntimeGatewayRunSyncCancelsTaskWhenParentContextCancelled(t *te
 	}
 }
 
+func TestDefaultRuntimeGatewayRunSyncFailsWithoutTaskExecutionRegistry(t *testing.T) {
+	manager := &taskManagerWithoutRegistry{
+		TaskManager: runtimepkg.NewInMemoryTaskManager(),
+	}
+	gateway := newDefaultRuntimeGateway(manager)
+
+	_, err := gateway.RunSync(context.Background(), RuntimeTaskRequest{
+		SessionID: "sess-1",
+		TraceID:   "trace-no-registry",
+		Name:      "tool_missing_registry",
+		Kind:      "tool",
+		Execute: func(_ context.Context) ([]byte, error) {
+			return []byte("ok"), nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error when task manager does not support execution registry")
+	}
+	if err.Error() != "runtime task manager does not support task execution registry" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+type taskManagerWithoutRegistry struct {
+	runtimepkg.TaskManager
+}
+
 func containsTaskStatus(states []corepkg.TaskStatus, expected corepkg.TaskStatus) bool {
 	for _, status := range states {
 		if status == expected {

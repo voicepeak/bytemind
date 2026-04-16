@@ -394,7 +394,25 @@ func (m *InMemoryTaskManager) runTaskAttempt(parentCtx context.Context, id corep
 	}
 	executor := m.resolveExecutionLocked(task)
 	if executor == nil {
+		if task.Status != corepkg.TaskPending {
+			m.mu.Unlock()
+			return
+		}
+		if err := ValidateTaskTransition(task.Status, corepkg.TaskFailed, TransitionOptions{}); err != nil {
+			m.mu.Unlock()
+			return
+		}
+		finished := time.Now().UTC()
+		task.Status = corepkg.TaskFailed
+		task.ErrorCode = ErrorCodeNotImplemented
+		task.FinishedAt = &finished
+		m.tasks[id] = task
+		m.detachParentChildLinkLocked(id)
+		result := taskToResult(task)
+		waiters := m.waiters[id]
+		delete(m.waiters, id)
 		m.mu.Unlock()
+		notifyTaskWaiters(waiters, result)
 		return
 	}
 	if task.Status != corepkg.TaskPending {
@@ -463,13 +481,7 @@ func (m *InMemoryTaskManager) runTaskAttempt(parentCtx context.Context, id corep
 	delete(m.waiters, id)
 	m.mu.Unlock()
 
-	for _, waiter := range waiters {
-		select {
-		case waiter <- result:
-		default:
-		}
-		close(waiter)
-	}
+	notifyTaskWaiters(waiters, result)
 }
 
 func mapExecutionResult(execErr error) (corepkg.TaskStatus, string) {
@@ -486,6 +498,16 @@ func mapExecutionResult(execErr error) (corepkg.TaskStatus, string) {
 		return corepkg.TaskFailed, code
 	}
 	return corepkg.TaskFailed, ErrorCodeTaskExecutionFailed
+}
+
+func notifyTaskWaiters(waiters []chan TaskResult, result TaskResult) {
+	for _, waiter := range waiters {
+		select {
+		case waiter <- result:
+		default:
+		}
+		close(waiter)
+	}
 }
 
 func (m *InMemoryTaskManager) registerParentChildLocked(childID, parentID corepkg.TaskID) {

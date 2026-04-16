@@ -24,6 +24,11 @@ func TestValidateTaskTransitionAllowsKnownTransitions(t *testing.T) {
 			to:   corepkg.TaskKilled,
 		},
 		{
+			name: "pending to failed",
+			from: corepkg.TaskPending,
+			to:   corepkg.TaskFailed,
+		},
+		{
 			name: "running to completed",
 			from: corepkg.TaskRunning,
 			to:   corepkg.TaskCompleted,

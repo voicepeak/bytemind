@@ -35,7 +35,10 @@ func TestInMemoryTaskManagerSubmitAndCancel(t *testing.T) {
 }
 
 func TestInMemoryTaskManagerWaitReturnsTerminalResult(t *testing.T) {
-	mgr := NewInMemoryTaskManager()
+	mgr := NewInMemoryTaskManager(WithTaskExecutor(func(ctx context.Context, _ Task) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}))
 	id, err := mgr.Submit(context.Background(), TaskSpec{Name: "demo"})
 	if err != nil {
 		t.Fatalf("Submit failed: %v", err)
@@ -76,7 +79,16 @@ func TestInMemoryTaskManagerWaitReturnsTerminalResult(t *testing.T) {
 }
 
 func TestInMemoryTaskManagerWaitRespectsContextCancellation(t *testing.T) {
-	mgr := NewInMemoryTaskManager()
+	blocker := make(chan struct{})
+	defer close(blocker)
+	mgr := NewInMemoryTaskManager(WithTaskExecutor(func(ctx context.Context, _ Task) ([]byte, error) {
+		select {
+		case <-blocker:
+			return []byte("done"), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}))
 	id, err := mgr.Submit(context.Background(), TaskSpec{Name: "demo"})
 	if err != nil {
 		t.Fatalf("Submit failed: %v", err)
@@ -88,6 +100,9 @@ func TestInMemoryTaskManagerWaitRespectsContextCancellation(t *testing.T) {
 	_, err = mgr.Wait(ctx, id)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected context deadline exceeded, got %v", err)
+	}
+	if err := mgr.Cancel(context.Background(), id, "cleanup"); err != nil {
+		t.Fatalf("cleanup cancel failed: %v", err)
 	}
 }
 
@@ -562,5 +577,27 @@ func TestInMemoryTaskManagerTokenExecutionOverridesDefaultExecutor(t *testing.T)
 	}
 	if got := string(result.Output); got != "dynamic" {
 		t.Fatalf("expected dynamic executor output %q, got %q", "dynamic", got)
+	}
+}
+
+func TestInMemoryTaskManagerNoExecutorFailsTaskAndWakesWaiters(t *testing.T) {
+	mgr := NewInMemoryTaskManager()
+
+	id, err := mgr.Submit(context.Background(), TaskSpec{Name: "missing-executor"})
+	if err != nil {
+		t.Fatalf("Submit failed: %v", err)
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result, err := mgr.Wait(waitCtx, id)
+	if err != nil {
+		t.Fatalf("Wait failed: %v", err)
+	}
+	if result.Status != corepkg.TaskFailed {
+		t.Fatalf("expected failed status, got %s", result.Status)
+	}
+	if result.ErrorCode != ErrorCodeNotImplemented {
+		t.Fatalf("expected error code %q, got %q", ErrorCodeNotImplemented, result.ErrorCode)
 	}
 }
