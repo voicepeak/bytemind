@@ -714,10 +714,11 @@ func TestResolveSessionIDSinglePrefixAndSameWorkspaceBranches(t *testing.T) {
 		t.Fatalf("expected single prefix match, got id=%q err=%v", id, err)
 	}
 
-	if !sameWorkspace(".", ".\\") {
+	equivalentLocal := "." + string(os.PathSeparator)
+	if !sameWorkspace(".", equivalentLocal) {
 		t.Fatal("expected equivalent local workspace paths to match")
 	}
-	if sameWorkspace("E:\\repo-a", "E:\\repo-b") {
+	if sameWorkspace(t.TempDir(), t.TempDir()) {
 		t.Fatal("expected different workspace paths not to match")
 	}
 
