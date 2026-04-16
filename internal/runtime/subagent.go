@@ -60,7 +60,9 @@ func (c *InMemorySubAgentCoordinator) Wait(ctx context.Context, id corepkg.TaskI
 		return TaskResult{}, ErrTaskNotImplemented
 	}
 	result, err := c.taskManager.Wait(ctx, id)
-	c.releaseQuota(id)
+	if err == nil && IsTerminalTaskStatus(result.Status) {
+		c.releaseQuota(id)
+	}
 	return result, err
 }
 

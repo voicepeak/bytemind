@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -241,6 +242,71 @@ func TestInMemorySubAgentCoordinatorQuotaContentionConverges(t *testing.T) {
 	}
 	if nextResult.Status != corepkg.TaskCompleted {
 		t.Fatalf("expected post-release completed status, got %s", nextResult.Status)
+	}
+}
+
+func TestInMemorySubAgentCoordinatorWaitContextTimeoutDoesNotPrematurelyReleaseQuota(t *testing.T) {
+	blocker := make(chan struct{})
+	manager := NewInMemoryTaskManager(
+		WithTaskExecutor(func(ctx context.Context, _ Task) ([]byte, error) {
+			select {
+			case <-blocker:
+				return []byte("done"), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}),
+	)
+	quota := NewInMemoryQuotaManager(1, map[string]int{"shared": 1})
+	coordinator := NewInMemorySubAgentCoordinator(manager, quota)
+
+	firstID, err := coordinator.Spawn(context.Background(), TaskSpec{
+		Name: "first",
+		Metadata: map[string]string{
+			"quota_key": "shared",
+		},
+	})
+	if err != nil {
+		t.Fatalf("first Spawn failed: %v", err)
+	}
+	waitUntilTaskStatus(t, manager, firstID, corepkg.TaskRunning, 2*time.Second)
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = coordinator.Wait(waitCtx, firstID)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected wait timeout, got %v", err)
+	}
+
+	_, err = coordinator.Spawn(context.Background(), TaskSpec{
+		Name: "second",
+		Metadata: map[string]string{
+			"quota_key": "shared",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected quota exceeded while first task is still running")
+	}
+	if !hasErrorCode(err, ErrorCodeQuotaExceeded) {
+		t.Fatalf("expected error code %q, got %q", ErrorCodeQuotaExceeded, errorCode(err))
+	}
+
+	close(blocker)
+	if _, err := coordinator.Wait(context.Background(), firstID); err != nil {
+		t.Fatalf("Wait first task after release failed: %v", err)
+	}
+
+	thirdID, err := coordinator.Spawn(context.Background(), TaskSpec{
+		Name: "third",
+		Metadata: map[string]string{
+			"quota_key": "shared",
+		},
+	})
+	if err != nil {
+		t.Fatalf("third Spawn failed after first task completion: %v", err)
+	}
+	if _, err := coordinator.Wait(context.Background(), thirdID); err != nil {
+		t.Fatalf("Wait third task failed: %v", err)
 	}
 }
 

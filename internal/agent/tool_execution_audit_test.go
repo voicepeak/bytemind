@@ -16,19 +16,19 @@ import (
 	"bytemind/internal/tools"
 )
 
-type recordingAuditStore struct {
+type toolExecutionAuditStore struct {
 	mu     sync.Mutex
 	events []storagepkg.AuditEvent
 }
 
-func (s *recordingAuditStore) Append(_ context.Context, event storagepkg.AuditEvent) error {
+func (s *toolExecutionAuditStore) Append(_ context.Context, event storagepkg.AuditEvent) error {
 	s.mu.Lock()
 	s.events = append(s.events, event)
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *recordingAuditStore) snapshot() []storagepkg.AuditEvent {
+func (s *toolExecutionAuditStore) snapshot() []storagepkg.AuditEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	copied := make([]storagepkg.AuditEvent, len(s.events))
@@ -43,7 +43,7 @@ func TestRunPromptRecordsTaskStateChangedAuditWithSessionTaskTrace(t *testing.T)
 		t.Fatal(err)
 	}
 	sess := session.New(workspace)
-	auditStore := &recordingAuditStore{}
+	auditStore := &toolExecutionAuditStore{}
 
 	client := &fakeClient{replies: []llm.Message{
 		{

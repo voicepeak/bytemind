@@ -32,6 +32,9 @@ func (q *InMemoryQuotaManager) Acquire(ctx context.Context, key string) error {
 	if q == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if key == "" {
 		key = "global"
 	}
