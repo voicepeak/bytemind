@@ -36,23 +36,24 @@ const (
 )
 
 type Options struct {
-	Workspace    string
-	Config       config.Config
-	Client       llm.Client
-	Store        SessionStore
-	Registry     ToolRegistry
-	Executor     ToolExecutor
-	Engine       Engine
-	TaskManager  runtimepkg.TaskManager
-	Extensions   extensionspkg.Manager
-	SkillManager *skills.Manager
-	TokenManager *tokenusage.TokenUsageManager
-	AuditStore   storagepkg.AuditStore
-	PromptStore  storagepkg.PromptHistoryWriter
-	Observer     Observer
-	Approval     tools.ApprovalHandler
-	Stdin        io.Reader
-	Stdout       io.Writer
+	Workspace     string
+	Config        config.Config
+	Client        llm.Client
+	Store         SessionStore
+	Registry      ToolRegistry
+	Executor      ToolExecutor
+	PolicyGateway PolicyGateway
+	Engine        Engine
+	TaskManager   runtimepkg.TaskManager
+	Extensions    extensionspkg.Manager
+	SkillManager  *skills.Manager
+	TokenManager  *tokenusage.TokenUsageManager
+	AuditStore    storagepkg.AuditStore
+	PromptStore   storagepkg.PromptHistoryWriter
+	Observer      Observer
+	Approval      tools.ApprovalHandler
+	Stdin         io.Reader
+	Stdout        io.Writer
 }
 
 type RunPromptInput struct {
@@ -62,23 +63,24 @@ type RunPromptInput struct {
 }
 
 type Runner struct {
-	workspace    string
-	config       config.Config
-	client       llm.Client
-	store        SessionStore
-	registry     ToolRegistry
-	executor     ToolExecutor
-	engine       Engine
-	taskManager  runtimepkg.TaskManager
-	extensions   extensionspkg.Manager
-	skillManager *skills.Manager
-	tokenManager *tokenusage.TokenUsageManager
-	auditStore   storagepkg.AuditStore
-	promptStore  storagepkg.PromptHistoryWriter
-	observer     Observer
-	approval     tools.ApprovalHandler
-	stdin        io.Reader
-	stdout       io.Writer
+	workspace     string
+	config        config.Config
+	client        llm.Client
+	store         SessionStore
+	registry      ToolRegistry
+	executor      ToolExecutor
+	policyGateway PolicyGateway
+	engine        Engine
+	taskManager   runtimepkg.TaskManager
+	extensions    extensionspkg.Manager
+	skillManager  *skills.Manager
+	tokenManager  *tokenusage.TokenUsageManager
+	auditStore    storagepkg.AuditStore
+	promptStore   storagepkg.PromptHistoryWriter
+	observer      Observer
+	approval      tools.ApprovalHandler
+	stdin         io.Reader
+	stdout        io.Writer
 }
 
 func NewRunner(opts Options) *Runner {
@@ -95,6 +97,10 @@ func NewRunner(opts Options) *Runner {
 		if concrete, ok := registry.(*tools.Registry); ok {
 			executor = tools.NewExecutor(concrete)
 		}
+	}
+	policyGateway := opts.PolicyGateway
+	if policyGateway == nil {
+		policyGateway = NewDefaultPolicyGateway()
 	}
 	auditStore := opts.AuditStore
 	if auditStore == nil {
@@ -113,22 +119,23 @@ func NewRunner(opts Options) *Runner {
 		extensions = extensionspkg.NopManager{}
 	}
 	runner := &Runner{
-		workspace:    opts.Workspace,
-		config:       opts.Config,
-		client:       opts.Client,
-		store:        opts.Store,
-		registry:     registry,
-		executor:     executor,
-		taskManager:  taskManager,
-		extensions:   extensions,
-		skillManager: manager,
-		tokenManager: opts.TokenManager,
-		auditStore:   auditStore,
-		promptStore:  promptStore,
-		observer:     opts.Observer,
-		approval:     opts.Approval,
-		stdin:        opts.Stdin,
-		stdout:       opts.Stdout,
+		workspace:     opts.Workspace,
+		config:        opts.Config,
+		client:        opts.Client,
+		store:         opts.Store,
+		registry:      registry,
+		executor:      executor,
+		policyGateway: policyGateway,
+		taskManager:   taskManager,
+		extensions:    extensions,
+		skillManager:  manager,
+		tokenManager:  opts.TokenManager,
+		auditStore:    auditStore,
+		promptStore:   promptStore,
+		observer:      opts.Observer,
+		approval:      opts.Approval,
+		stdin:         opts.Stdin,
+		stdout:        opts.Stdout,
 	}
 
 	engine := opts.Engine
