@@ -14,6 +14,17 @@ type clientAdapter struct {
 	client       llm.Client
 }
 
+type RoutedClient struct {
+	router Router
+}
+
+func NewRoutedClient(router Router) llm.Client {
+	if router == nil {
+		return nil
+	}
+	return &RoutedClient{router: router}
+}
+
 func WrapClient(providerID ProviderID, defaultModel ModelID, client llm.Client) Client {
 	if client == nil {
 		return nil
@@ -27,6 +38,94 @@ func WrapClient(providerID ProviderID, defaultModel ModelID, client llm.Client) 
 		defaultModel: ModelID(strings.TrimSpace(string(defaultModel))),
 		client:       client,
 	}
+}
+
+func (c *RoutedClient) CreateMessage(ctx context.Context, req llm.ChatRequest) (llm.Message, error) {
+	return c.execute(ctx, req, false, nil)
+}
+
+func (c *RoutedClient) StreamMessage(ctx context.Context, req llm.ChatRequest, onDelta func(string)) (llm.Message, error) {
+	return c.execute(ctx, req, true, onDelta)
+}
+
+func (c *RoutedClient) execute(ctx context.Context, req llm.ChatRequest, stream bool, onDelta func(string)) (llm.Message, error) {
+	if c == nil || c.router == nil {
+		return llm.Message{}, unavailableRouteError("no provider candidates available")
+	}
+	result, err := c.router.Route(ctx, ModelID(strings.TrimSpace(req.Model)), RouteContext{AllowFallback: true})
+	if err != nil {
+		return llm.Message{}, err
+	}
+	targets := make([]RouteTarget, 0, 1+len(result.Fallbacks))
+	targets = append(targets, result.Primary)
+	targets = append(targets, result.Fallbacks...)
+	var lastErr error
+	for _, target := range targets {
+		if target.Client == nil {
+			continue
+		}
+		callReq := Request{ChatRequest: req}
+		callReq.Model = string(target.ModelID)
+		msg, err := executeTarget(ctx, target, callReq, stream, onDelta)
+		if err == nil {
+			return msg, nil
+		}
+		lastErr = err
+		var providerErr *Error
+		if errors.As(err, &providerErr) {
+			if !providerErr.Retryable {
+				return llm.Message{}, providerErr
+			}
+			continue
+		}
+		mapped := mapCompatError(target.ProviderID, err)
+		if !mapped.Retryable {
+			return llm.Message{}, mapped
+		}
+		lastErr = mapped
+	}
+	if lastErr != nil {
+		var providerErr *Error
+		if errors.As(lastErr, &providerErr) {
+			return llm.Message{}, providerErr
+		}
+		return llm.Message{}, mapCompatError("", lastErr)
+	}
+	return llm.Message{}, unavailableRouteError("no provider candidates available")
+}
+
+func executeTarget(ctx context.Context, target RouteTarget, req Request, stream bool, onDelta func(string)) (llm.Message, error) {
+	streamCh, err := target.Client.Stream(ctx, req)
+	if err != nil {
+		return llm.Message{}, err
+	}
+	var result llm.Message
+	for event := range streamCh {
+		switch event.Type {
+		case EventDelta:
+			if stream && onDelta != nil && event.Delta != "" {
+				onDelta(event.Delta)
+			}
+		case EventToolCall:
+			if event.ToolCall != nil {
+				result.ToolCalls = append(result.ToolCalls, *event.ToolCall)
+			}
+		case EventUsage:
+			if event.Usage != nil {
+				result.Usage = &llm.Usage{InputTokens: int(event.Usage.InputTokens), OutputTokens: int(event.Usage.OutputTokens), TotalTokens: int(event.Usage.TotalTokens)}
+			}
+		case EventResult:
+			if event.Result != nil {
+				return *event.Result, nil
+			}
+		case EventError:
+			if event.Error != nil {
+				return llm.Message{}, event.Error
+			}
+		}
+	}
+	result.Normalize()
+	return result, nil
 }
 
 func (a *clientAdapter) ProviderID() ProviderID {

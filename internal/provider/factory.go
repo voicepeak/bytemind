@@ -57,3 +57,14 @@ func NewDomainClientWithID(providerID ProviderID, cfg config.ProviderConfig) (Cl
 	}
 	return WrapClient(id, ModelID(strings.TrimSpace(cfg.Model)), baseClient), nil
 }
+
+func NewRouterClient(cfg config.ProviderRuntimeConfig, health HealthChecker) (llm.Client, error) {
+	reg, err := NewRegistry(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return NewRoutedClient(NewRouter(reg, health, RouterConfig{
+		DefaultProvider: ProviderID(cfg.DefaultProvider),
+		DefaultModel:    ModelID(cfg.DefaultModel),
+	})), nil
+}
