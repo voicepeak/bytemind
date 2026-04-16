@@ -708,14 +708,11 @@ func (s *Store) lockSession(sessionID string) (func() error, error) {
 	}
 
 	unlock, err := s.locker.LockSession(ctx, corepkg.SessionID(sessionID))
+	cancel()
 	if err != nil {
-		cancel()
 		return nil, err
 	}
-	return func() error {
-		defer cancel()
-		return unlock()
-	}, nil
+	return unlock, nil
 }
 
 func (s *Store) eventWindow(sessionID, eventsPath string) (*eventIDWindow, error) {

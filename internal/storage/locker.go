@@ -17,8 +17,14 @@ const (
 type UnlockFunc func() error
 
 type Locker interface {
-	LockSession(ctx context.Context, sessionID corepkg.SessionID) (UnlockFunc, error)
-	LockTask(ctx context.Context, taskID corepkg.TaskID) (UnlockFunc, error)
+	// LockSession acquires the session-scoped lock.
+	// acquireCtx is only for acquisition waiting/cancellation.
+	// Implementations must not bind lock lifetime to acquireCtx after acquisition.
+	LockSession(acquireCtx context.Context, sessionID corepkg.SessionID) (UnlockFunc, error)
+	// LockTask acquires the task-scoped lock.
+	// acquireCtx is only for acquisition waiting/cancellation.
+	// Implementations must not bind lock lifetime to acquireCtx after acquisition.
+	LockTask(acquireCtx context.Context, taskID corepkg.TaskID) (UnlockFunc, error)
 }
 
 type lockerError struct {
