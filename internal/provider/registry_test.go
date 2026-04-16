@@ -45,6 +45,41 @@ func TestNewRegistryFromProviderConfigSupportsLegacyMode(t *testing.T) {
 	}
 }
 
+func TestNewRegistrySupportsMultipleProvidersWithSameType(t *testing.T) {
+	reg, err := NewRegistry(config.ProviderRuntimeConfig{
+		DefaultProvider: "openai-primary",
+		Providers: map[string]config.ProviderConfig{
+			"openai-primary":   {Type: "openai-compatible", BaseURL: "https://api.openai.com/v1", APIKey: "key-1", Model: "gpt-5.4"},
+			"openai-secondary": {Type: "openai-compatible", BaseURL: "https://example.com/v1", APIKey: "key-2", Model: "gpt-4.1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	ids, err := reg.List(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "openai-primary" || ids[1] != "openai-secondary" {
+		t.Fatalf("unexpected ids %#v", ids)
+	}
+	primary, ok := reg.Get(context.Background(), "openai-primary")
+	if !ok || primary.ProviderID() != "openai-primary" {
+		t.Fatalf("unexpected primary provider %#v ok=%v", primary, ok)
+	}
+	secondary, ok := reg.Get(context.Background(), "openai-secondary")
+	if !ok || secondary.ProviderID() != "openai-secondary" {
+		t.Fatalf("unexpected secondary provider %#v ok=%v", secondary, ok)
+	}
+	models, warnings, err := ListModels(context.Background(), reg)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(models) != 2 || len(warnings) != 0 {
+		t.Fatalf("unexpected models=%#v warnings=%#v", models, warnings)
+	}
+}
+
 func TestRegistryRejectsDuplicateProvider(t *testing.T) {
 	reg, err := NewRegistry(config.ProviderRuntimeConfig{})
 	if err != nil {
@@ -110,18 +145,18 @@ func TestRegistryCoversLookupAndNormalizationBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if err := reg.Register(context.Background(), stubRegistryClient{providerID: "openai-compatible"}); err != nil {
+	if err := reg.Register(context.Background(), stubRegistryClient{providerID: "openai-primary"}); err != nil {
 		t.Fatalf("unexpected register error %v", err)
 	}
-	client, ok := reg.Get(context.Background(), "openai")
-	if !ok || client.ProviderID() != "openai-compatible" {
+	client, ok := reg.Get(context.Background(), "openai-primary")
+	if !ok || client.ProviderID() != "openai-primary" {
 		t.Fatalf("unexpected client lookup result ok=%v client=%#v", ok, client)
 	}
 	if _, ok := reg.Get(context.Background(), "missing"); ok {
 		t.Fatal("expected missing provider lookup to fail")
 	}
 	ids, err := reg.List(context.Background())
-	if err != nil || len(ids) != 1 || ids[0] != ProviderOpenAI {
+	if err != nil || len(ids) != 1 || ids[0] != "openai-primary" {
 		t.Fatalf("unexpected ids %#v err=%v", ids, err)
 	}
 }
@@ -141,6 +176,9 @@ func TestRegistryHandlesProviderNotFoundAndConfigErrors(t *testing.T) {
 		if !errors.As(err, &providerErr) || providerErr.Code != ErrCodeProviderNotFound {
 			t.Fatalf("unexpected error %#v", err)
 		}
+	}
+	if _, err := NewRegistry(config.ProviderRuntimeConfig{DefaultProvider: "missing", Providers: map[string]config.ProviderConfig{"openai-primary": {Type: "openai-compatible", BaseURL: "https://example.com", APIKey: "key", Model: "m"}}}); err == nil {
+		t.Fatal("expected missing default provider error")
 	}
 	if _, err := NewRegistry(config.ProviderRuntimeConfig{Providers: map[string]config.ProviderConfig{"broken": {BaseURL: "https://example.com", APIKey: "key", Model: "m"}}}); err == nil {
 		t.Fatal("expected invalid provider type error")

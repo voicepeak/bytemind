@@ -16,6 +16,12 @@ type providerRegistry struct {
 
 func NewRegistry(cfg config.ProviderRuntimeConfig) (Registry, error) {
 	reg := &providerRegistry{clients: make(map[ProviderID]Client)}
+	if cfg.DefaultProvider != "" {
+		defaultProvider := ProviderID(strings.ToLower(strings.TrimSpace(cfg.DefaultProvider)))
+		if _, exists := cfg.Providers[string(defaultProvider)]; !exists {
+			return nil, &Error{Code: ErrCodeProviderNotFound, Provider: defaultProvider, Message: string(ErrCodeProviderNotFound), Retryable: false, Err: ErrProviderNotFound}
+		}
+	}
 	ids := make([]string, 0, len(cfg.Providers))
 	for id := range cfg.Providers {
 		ids = append(ids, id)
@@ -23,10 +29,7 @@ func NewRegistry(cfg config.ProviderRuntimeConfig) (Registry, error) {
 	sort.Strings(ids)
 	for _, id := range ids {
 		providerCfg := cfg.Providers[id]
-		if strings.TrimSpace(providerCfg.Type) == "" {
-			providerCfg.Type = id
-		}
-		client, err := NewDomainClient(providerCfg)
+		client, err := NewDomainClientWithID(ProviderID(id), providerCfg)
 		if err != nil {
 			return nil, err
 		}
@@ -45,7 +48,7 @@ func (r *providerRegistry) Register(_ context.Context, client Client) error {
 	if client == nil {
 		return nil
 	}
-	id := normalizeProviderID(client.ProviderID())
+	id := ProviderID(strings.ToLower(strings.TrimSpace(string(client.ProviderID()))))
 	if id == "" {
 		return &Error{Code: ErrCodeProviderNotFound, Provider: id, Message: string(ErrCodeProviderNotFound), Retryable: false, Err: ErrProviderNotFound}
 	}
@@ -61,7 +64,7 @@ func (r *providerRegistry) Register(_ context.Context, client Client) error {
 func (r *providerRegistry) Get(_ context.Context, id ProviderID) (Client, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	client, ok := r.clients[normalizeProviderID(id)]
+	client, ok := r.clients[ProviderID(strings.ToLower(strings.TrimSpace(string(id))))]
 	return client, ok
 }
 
