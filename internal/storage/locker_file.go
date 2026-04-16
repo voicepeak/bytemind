@@ -15,18 +15,39 @@ import (
 	corepkg "bytemind/internal/core"
 )
 
-const defaultFileLockPollInterval = 20 * time.Millisecond
+const (
+	defaultFileLockPollInterval = 20 * time.Millisecond
+	defaultFileLockStaleAfter   = 2 * time.Minute
+	defaultFileLockHeartbeat    = 10 * time.Second
+)
 
 type FileLocker struct {
-	dir          string
-	pollInterval time.Duration
+	dir               string
+	pollInterval      time.Duration
+	staleAfter        time.Duration
+	heartbeatInterval time.Duration
+	now               func() time.Time
 }
 
 func NewFileLocker(dir string) (*FileLocker, error) {
-	return NewFileLockerWithPollInterval(dir, defaultFileLockPollInterval)
+	return NewFileLockerWithConfig(
+		dir,
+		defaultFileLockPollInterval,
+		defaultFileLockStaleAfter,
+		defaultFileLockHeartbeat,
+	)
 }
 
 func NewFileLockerWithPollInterval(dir string, pollInterval time.Duration) (*FileLocker, error) {
+	return NewFileLockerWithConfig(
+		dir,
+		pollInterval,
+		defaultFileLockStaleAfter,
+		defaultFileLockHeartbeat,
+	)
+}
+
+func NewFileLockerWithConfig(dir string, pollInterval, staleAfter, heartbeatInterval time.Duration) (*FileLocker, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return nil, errors.New("file locker dir is required")
@@ -34,12 +55,23 @@ func NewFileLockerWithPollInterval(dir string, pollInterval time.Duration) (*Fil
 	if pollInterval <= 0 {
 		pollInterval = defaultFileLockPollInterval
 	}
+	if staleAfter <= 0 {
+		staleAfter = defaultFileLockStaleAfter
+	}
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = defaultFileLockHeartbeat
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 	return &FileLocker{
-		dir:          dir,
-		pollInterval: pollInterval,
+		dir:               dir,
+		pollInterval:      pollInterval,
+		staleAfter:        staleAfter,
+		heartbeatInterval: heartbeatInterval,
+		now: func() time.Time {
+			return time.Now().UTC()
+		},
 	}, nil
 }
 
@@ -71,7 +103,8 @@ func (l *FileLocker) lock(acquireCtx context.Context, key string) (UnlockFunc, e
 	for {
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err == nil {
-			if _, writeErr := fmt.Fprintf(file, "pid=%d\nts=%s\nkey=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano), key); writeErr != nil {
+			now := l.now().UTC()
+			if _, writeErr := fmt.Fprintf(file, "pid=%d\nts=%s\nkey=%s\n", os.Getpid(), now.Format(time.RFC3339Nano), key); writeErr != nil {
 				_ = file.Close()
 				_ = os.Remove(path)
 				return nil, writeErr
@@ -80,12 +113,19 @@ func (l *FileLocker) lock(acquireCtx context.Context, key string) (UnlockFunc, e
 				_ = os.Remove(path)
 				return nil, closeErr
 			}
+			_ = os.Chtimes(path, now, now)
+
+			stopHeartbeat := make(chan struct{})
+			heartbeatDone := make(chan struct{})
+			go l.heartbeat(path, stopHeartbeat, heartbeatDone)
 
 			var released atomic.Bool
 			return func() error {
 				if !released.CompareAndSwap(false, true) {
 					return nil
 				}
+				close(stopHeartbeat)
+				<-heartbeatDone
 				if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 					return err
 				}
@@ -94,6 +134,13 @@ func (l *FileLocker) lock(acquireCtx context.Context, key string) (UnlockFunc, e
 		}
 		if !errors.Is(err, os.ErrExist) {
 			return nil, err
+		}
+		reclaimed, reclaimErr := l.tryReclaimStaleLock(path)
+		if reclaimErr != nil {
+			return nil, reclaimErr
+		}
+		if reclaimed {
+			continue
 		}
 
 		select {
@@ -110,6 +157,49 @@ func (l *FileLocker) lock(acquireCtx context.Context, key string) (UnlockFunc, e
 		case <-time.After(l.pollInterval):
 		}
 	}
+}
+
+func (l *FileLocker) heartbeat(path string, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(l.heartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			now := l.now().UTC()
+			_ = os.Chtimes(path, now, now)
+		}
+	}
+}
+
+func (l *FileLocker) tryReclaimStaleLock(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return true, nil
+		}
+		return false, err
+	}
+	if !l.isStaleLock(info) {
+		return false, nil
+	}
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return true, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (l *FileLocker) isStaleLock(info os.FileInfo) bool {
+	if l.staleAfter > 0 && l.now().Sub(info.ModTime()) >= l.staleAfter {
+		return true
+	}
+	return false
 }
 
 func (l *FileLocker) lockPath(key string) string {

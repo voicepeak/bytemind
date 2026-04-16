@@ -257,12 +257,6 @@ func (s *FileTaskStore) ReadLogFrom(ctx context.Context, taskID corepkg.TaskID, 
 			}
 			return records, next, readErr
 		}
-		if next >= fileSize {
-			break
-		}
-	}
-	if next > fileSize {
-		next = fileSize
 	}
 	return records, next, nil
 }

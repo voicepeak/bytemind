@@ -40,3 +40,18 @@ func TestCompositeLockerUsesFileLayerAcrossInstances(t *testing.T) {
 		t.Fatalf("expected lock timeout error code, got %v", err)
 	}
 }
+
+func TestNewCompositeLockerHandlesNilSides(t *testing.T) {
+	primary := NewInMemoryLocker()
+	secondary := NewInMemoryLocker()
+
+	if got := NewCompositeLocker(nil, secondary); got != secondary {
+		t.Fatal("expected secondary when primary is nil")
+	}
+	if got := NewCompositeLocker(primary, nil); got != primary {
+		t.Fatal("expected primary when secondary is nil")
+	}
+	if got := NewCompositeLocker(primary, secondary); got == nil {
+		t.Fatal("expected composite locker when both are set")
+	}
+}

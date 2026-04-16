@@ -677,12 +677,6 @@ func readEventsFromOffset(path string, offset int64, limit int) ([]SessionEvent,
 			}
 			return events, nextOffset, readErr
 		}
-		if nextOffset >= fileSize {
-			break
-		}
-	}
-	if nextOffset > fileSize {
-		nextOffset = fileSize
 	}
 	return events, nextOffset, nil
 }
