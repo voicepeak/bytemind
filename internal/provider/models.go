@@ -7,6 +7,7 @@ import (
 )
 
 const listModelsWarningReason = "provider_list_models_failed"
+const providerNotFoundWarningReason = string(ErrCodeProviderNotFound)
 const listModelsConcurrency = 4
 
 func ListModels(ctx context.Context, reg Registry) ([]ModelInfo, []Warning, error) {
@@ -37,7 +38,7 @@ func ListModels(ctx context.Context, reg Registry) ([]ModelInfo, []Warning, erro
 			}
 			if !ok {
 				mu.Lock()
-				warnings = append(warnings, Warning{ProviderID: id, Reason: string(ErrCodeProviderNotFound)})
+				warnings = append(warnings, Warning{ProviderID: id, Reason: providerNotFoundWarningReason})
 				mu.Unlock()
 				return
 			}

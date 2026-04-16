@@ -200,6 +200,9 @@ func TestRegistryHandlesProviderNotFoundAndConfigErrors(t *testing.T) {
 			t.Fatalf("unexpected error %#v", err)
 		}
 	}
+	if normalizeRegistryProviderID(" OpenAI-Primary ") != "openai-primary" {
+		t.Fatal("expected registry provider id normalization to trim and lowercase")
+	}
 	if _, err := NewRegistry(config.ProviderRuntimeConfig{DefaultProvider: "missing", Providers: map[string]config.ProviderConfig{"openai-primary": {Type: "openai-compatible", BaseURL: "https://example.com", APIKey: "key", Model: "m"}}}); err == nil {
 		t.Fatal("expected missing default provider error")
 	}
