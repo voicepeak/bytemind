@@ -14,7 +14,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const sessionPageSize = 8
+const (
+	sessionPageSize = 8
+	sessionPageMax  = 10
+)
+
+func sessionListFetchLimit() int {
+	return sessionPageSize * sessionPageMax
+}
 
 func (m model) renderSessionsModal() string {
 	total := len(m.sessions)
@@ -233,7 +240,7 @@ func (m *model) reloadSessions() error {
 		m.sessionCursor = 0
 		return nil
 	}
-	summaries, _, err := m.store.List(0)
+	summaries, _, err := m.store.List(sessionListFetchLimit())
 	if err != nil {
 		return err
 	}

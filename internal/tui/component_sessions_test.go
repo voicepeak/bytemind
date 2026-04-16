@@ -14,6 +14,45 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+type listLimitSpyStore struct {
+	summaries []session.Summary
+	listErr   error
+	listLimit int
+	listCalls int
+}
+
+func (s *listLimitSpyStore) Save(*session.Session) error {
+	return nil
+}
+
+func (s *listLimitSpyStore) Load(string) (*session.Session, error) {
+	return nil, os.ErrNotExist
+}
+
+func (s *listLimitSpyStore) List(limit int) ([]session.Summary, []string, error) {
+	s.listLimit = limit
+	s.listCalls++
+	if s.listErr != nil {
+		return nil, nil, s.listErr
+	}
+	if limit > 0 && len(s.summaries) > limit {
+		out := make([]session.Summary, limit)
+		copy(out, s.summaries[:limit])
+		return out, nil, nil
+	}
+	out := make([]session.Summary, len(s.summaries))
+	copy(out, s.summaries)
+	return out, nil, nil
+}
+
+func (s *listLimitSpyStore) DeleteInWorkspace(string, string) error {
+	return nil
+}
+
+func (s *listLimitSpyStore) CleanupZeroMessageSessions(string, string) (session.CleanupResult, error) {
+	return session.CleanupResult{}, nil
+}
+
 func TestSessionsModalPaginationAndNavigationBoundaries(t *testing.T) {
 	summaries := make([]session.Summary, 0, 17)
 	for i := 0; i < 17; i++ {
@@ -519,6 +558,68 @@ func TestLoadSessionsCmdBranches(t *testing.T) {
 			t.Fatalf("expected at least one summary on success, got %+v", msg)
 		}
 	})
+}
+
+func TestReloadSessionsUsesFetchLimit(t *testing.T) {
+	spy := &listLimitSpyStore{
+		summaries: []session.Summary{
+			{ID: "a"}, {ID: "b"}, {ID: "c"},
+		},
+	}
+	m := model{
+		store:         spy,
+		sessionCursor: 2,
+	}
+	if err := m.reloadSessions(); err != nil {
+		t.Fatalf("expected reloadSessions success, got %v", err)
+	}
+	if spy.listCalls != 1 {
+		t.Fatalf("expected one List call, got %d", spy.listCalls)
+	}
+	if spy.listLimit != sessionListFetchLimit() {
+		t.Fatalf("expected List limit %d, got %d", sessionListFetchLimit(), spy.listLimit)
+	}
+}
+
+func TestLoadSessionsCmdUsesFetchLimit(t *testing.T) {
+	spy := &listLimitSpyStore{
+		summaries: []session.Summary{{ID: "one"}},
+	}
+	m := model{store: spy}
+	msg := m.loadSessionsCmd()().(sessionsLoadedMsg)
+	if msg.Err != nil {
+		t.Fatalf("expected loadSessionsCmd success, got err=%v", msg.Err)
+	}
+	if spy.listCalls != 1 {
+		t.Fatalf("expected one List call, got %d", spy.listCalls)
+	}
+	if spy.listLimit != sessionListFetchLimit() {
+		t.Fatalf("expected List limit %d, got %d", sessionListFetchLimit(), spy.listLimit)
+	}
+}
+
+func TestReloadSessionsCapsToTenPages(t *testing.T) {
+	spy := &listLimitSpyStore{
+		summaries: make([]session.Summary, 0, sessionListFetchLimit()+7),
+	}
+	for i := 0; i < sessionListFetchLimit()+7; i++ {
+		spy.summaries = append(spy.summaries, session.Summary{
+			ID:        fmt.Sprintf("session-%03d", i),
+			Workspace: "E:\\repo",
+			UpdatedAt: time.Now().UTC(),
+		})
+	}
+
+	m := model{store: spy}
+	if err := m.reloadSessions(); err != nil {
+		t.Fatalf("expected reloadSessions success, got %v", err)
+	}
+	if len(m.sessions) != sessionListFetchLimit() {
+		t.Fatalf("expected sessions capped at %d, got %d", sessionListFetchLimit(), len(m.sessions))
+	}
+	if m.sessionPageCount() != sessionPageMax {
+		t.Fatalf("expected max %d pages, got %d", sessionPageMax, m.sessionPageCount())
+	}
 }
 
 func TestRenderSessionsModalEmptyAndFallbackTitles(t *testing.T) {
