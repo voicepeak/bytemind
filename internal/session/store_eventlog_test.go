@@ -90,6 +90,159 @@ func TestStoreLoadReplaysSnapshotPlusIncrementalEvents(t *testing.T) {
 	}
 }
 
+func TestStoreReadFromOffsetBoundariesAndLimit(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sess := New(t.TempDir())
+	sess.ID = "offset-boundary"
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	sess.Messages = append(sess.Messages, llm.NewUserTextMessage("offset event"))
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := store.pathForSession(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(paths.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileSize := info.Size()
+
+	if _, _, err := store.ReadFrom(sess.ID, -1, 1); err == nil {
+		t.Fatal("expected negative offset to return error")
+	}
+
+	events, next, err := store.ReadFrom(sess.ID, fileSize, 1)
+	if err != nil {
+		t.Fatalf("ReadFrom at file size failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected empty result at file size, got %d", len(events))
+	}
+	if next != fileSize {
+		t.Fatalf("expected next offset %d, got %d", fileSize, next)
+	}
+
+	events, next, err = store.ReadFrom(sess.ID, fileSize+128, 1)
+	if err != nil {
+		t.Fatalf("ReadFrom past file size failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected empty result past file size, got %d", len(events))
+	}
+	if next != fileSize {
+		t.Fatalf("expected next offset clamped to %d, got %d", fileSize, next)
+	}
+
+	firstBatch, firstNext, err := store.ReadFrom(sess.ID, 0, 1)
+	if err != nil {
+		t.Fatalf("ReadFrom first batch failed: %v", err)
+	}
+	if len(firstBatch) != 1 {
+		t.Fatalf("expected limit=1 to return one event, got %d", len(firstBatch))
+	}
+	if firstNext <= 0 {
+		t.Fatalf("expected next offset to advance, got %d", firstNext)
+	}
+
+	secondBatch, secondNext, err := store.ReadFrom(sess.ID, firstNext, 1)
+	if err != nil {
+		t.Fatalf("ReadFrom second batch failed: %v", err)
+	}
+	if len(secondBatch) > 1 {
+		t.Fatalf("expected second batch size <= 1, got %d", len(secondBatch))
+	}
+	if secondNext < firstNext {
+		t.Fatalf("expected next offset to be monotonic, first=%d second=%d", firstNext, secondNext)
+	}
+
+	defaultLimitBatch, _, err := store.ReadFrom(sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("ReadFrom with default limit failed: %v", err)
+	}
+	if len(defaultLimitBatch) == 0 {
+		t.Fatal("expected default limit path to return events")
+	}
+}
+
+func TestStoreReadFromSkipsCorruptedLines(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workspace := t.TempDir()
+	paths, err := store.pathForWorkspaceSession(workspace, "offset-corrupted")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := New(workspace)
+	base.ID = "offset-corrupted"
+	basePayload, _ := json.Marshal(fullSessionPayload{Session: *base})
+	appendPayload, _ := json.Marshal(turnAppendedPayload{
+		Messages: []llm.Message{llm.NewUserTextMessage("ok")},
+	})
+
+	events := []SessionEvent{
+		{
+			EventID:       "r-1",
+			SessionID:     "offset-corrupted",
+			Seq:           1,
+			Type:          eventTypeSessionCreated,
+			TS:            time.Now().UTC(),
+			SchemaVersion: eventSchemaVersion,
+			Payload:       basePayload,
+		},
+		{
+			EventID:       "r-2",
+			SessionID:     "offset-corrupted",
+			Seq:           2,
+			Type:          eventTypeTurnAppended,
+			TS:            time.Now().UTC(),
+			SchemaVersion: eventSchemaVersion,
+			Payload:       appendPayload,
+		},
+	}
+	if err := appendEventLine(store.files, paths.Events, events[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.files.AppendLine(paths.Events, []byte(`{bad-json`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendEventLine(store.files, paths.Events, events[1]); err != nil {
+		t.Fatal(err)
+	}
+
+	read, next, err := store.ReadFrom("offset-corrupted", 0, 10)
+	if err != nil {
+		t.Fatalf("ReadFrom failed: %v", err)
+	}
+	if len(read) != 2 {
+		t.Fatalf("expected corrupted line to be skipped, got %d events", len(read))
+	}
+	if read[0].EventID != "r-1" || read[1].EventID != "r-2" {
+		t.Fatalf("unexpected event order: %#v", read)
+	}
+	info, err := os.Stat(paths.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != info.Size() {
+		t.Fatalf("expected next offset %d, got %d", info.Size(), next)
+	}
+}
+
 func TestReplaySkipsDuplicateEventID(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewStore(dir)

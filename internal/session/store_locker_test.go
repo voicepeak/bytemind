@@ -11,6 +11,7 @@ import (
 
 type storeLockerStub struct {
 	lockErr          error
+	unlockErr        error
 	lockSessionCalls int
 	unlockCalls      int
 }
@@ -22,7 +23,7 @@ func (s *storeLockerStub) LockSession(_ context.Context, _ corepkg.SessionID) (s
 	}
 	return func() error {
 		s.unlockCalls++
-		return nil
+		return s.unlockErr
 	}, nil
 }
 
@@ -69,5 +70,25 @@ func TestStoreSaveReturnsLockerError(t *testing.T) {
 	}
 	if !errors.Is(err, lockErr) {
 		t.Fatalf("expected Save to return locker error, got %v", err)
+	}
+}
+
+func TestStoreSaveReturnsUnlockError(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unlockErr := errors.New("unlock failed")
+	store.locker = &storeLockerStub{unlockErr: unlockErr}
+
+	sess := New(t.TempDir())
+	sess.ID = "locker-unlock-error"
+	err = store.Save(sess)
+	if err == nil {
+		t.Fatal("expected Save to fail when unlock fails")
+	}
+	if !errors.Is(err, unlockErr) {
+		t.Fatalf("expected Save to include unlock error, got %v", err)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -28,6 +30,7 @@ const (
 	eventTypeSnapshotCompacted = "snapshot_compacted"
 
 	recentEventIDWindowSize = 256
+	defaultReadFromLimit    = 128
 	defaultSnapshotEveryN   = int64(20)
 	defaultSnapshotEveryT   = 30 * time.Second
 )
@@ -137,7 +140,22 @@ func (s *Store) ReadEvents(sessionID string, afterSeq int64) ([]SessionEvent, er
 	return readEventsFromFile(source.paths.Events, afterSeq)
 }
 
-func (s *Store) Snapshot(sessionID string) error {
+func (s *Store) ReadFrom(sessionID string, offset int64, limit int) ([]SessionEvent, int64, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, 0, errors.New("session id is required")
+	}
+	source, err := s.findSessionSource(sessionID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if source.kind != sourceKindEvents {
+		return nil, 0, os.ErrNotExist
+	}
+	return readEventsFromOffset(source.paths.Events, offset, limit)
+}
+
+func (s *Store) Snapshot(sessionID string) (err error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return errors.New("session id is required")
@@ -147,7 +165,7 @@ func (s *Store) Snapshot(sessionID string) error {
 		return err
 	}
 	defer func() {
-		_ = unlock()
+		err = combineUnlockError(err, unlock, sessionID)
 	}()
 
 	source, err := s.findSessionSource(sessionID)
@@ -182,7 +200,7 @@ func (s *Store) load(sessionID string) (*Session, error) {
 	}
 }
 
-func (s *Store) save(session *Session) error {
+func (s *Store) save(session *Session) (err error) {
 	paths, err := s.pathForSession(session)
 	if err != nil {
 		return err
@@ -192,7 +210,7 @@ func (s *Store) save(session *Session) error {
 		return err
 	}
 	defer func() {
-		_ = unlock()
+		err = combineUnlockError(err, unlock, paths.SessionID)
 	}()
 
 	window, err := s.eventWindow(paths.SessionID, paths.Events)
@@ -601,6 +619,68 @@ func readEventsFromFile(path string, afterSeq int64) ([]SessionEvent, error) {
 	return events, nil
 }
 
+func readEventsFromOffset(path string, offset int64, limit int) ([]SessionEvent, int64, error) {
+	if offset < 0 {
+		return nil, 0, errors.New("offset must be >= 0")
+	}
+	if limit <= 0 {
+		limit = defaultReadFromLimit
+	}
+
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	fileSize := fileInfo.Size()
+	if offset >= fileSize {
+		return []SessionEvent{}, fileSize, nil
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer file.Close()
+
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return nil, 0, err
+	}
+
+	events := make([]SessionEvent, 0, minInt(limit, 32))
+	nextOffset := offset
+	reader := bufio.NewReader(file)
+	for len(events) < limit {
+		lineStart := nextOffset
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			nextOffset += int64(len(line))
+			payload := bytes.TrimSpace(line)
+			if len(payload) > 0 {
+				var event SessionEvent
+				if err := json.Unmarshal(payload, &event); err != nil {
+					log.Printf("session: skipped corrupted event line at offset %d in %s: %v", lineStart, path, err)
+				} else {
+					events = append(events, event)
+				}
+			}
+		}
+
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return events, nextOffset, readErr
+		}
+		if nextOffset >= fileSize {
+			break
+		}
+	}
+	if nextOffset > fileSize {
+		nextOffset = fileSize
+	}
+	return events, nextOffset, nil
+}
+
 func readSnapshotFile(path string) (*sessionSnapshot, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -626,9 +706,16 @@ func (s *Store) lockSession(sessionID string) (func() error, error) {
 	if s.lockTimeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, s.lockTimeout)
 	}
-	defer cancel()
 
-	return s.locker.LockSession(ctx, corepkg.SessionID(sessionID))
+	unlock, err := s.locker.LockSession(ctx, corepkg.SessionID(sessionID))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return func() error {
+		defer cancel()
+		return unlock()
+	}, nil
 }
 
 func (s *Store) eventWindow(sessionID, eventsPath string) (*eventIDWindow, error) {
@@ -685,4 +772,25 @@ func tailEventIDs(path string, limit int) ([]string, error) {
 		ids[left], ids[right] = ids[right], ids[left]
 	}
 	return ids, nil
+}
+
+func combineUnlockError(baseErr error, unlock func() error, sessionID string) error {
+	if unlock == nil {
+		return baseErr
+	}
+	unlockErr := unlock()
+	if unlockErr == nil {
+		return baseErr
+	}
+	if baseErr == nil {
+		return fmt.Errorf("unlock session %q failed: %w", sessionID, unlockErr)
+	}
+	return errors.Join(baseErr, fmt.Errorf("unlock session %q failed: %w", sessionID, unlockErr))
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
