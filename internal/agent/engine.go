@@ -3,12 +3,14 @@ package agent
 import (
 	"context"
 	"errors"
+
+	corepkg "bytemind/internal/core"
 )
 
 // Engine executes one turn and emits turn-scoped events.
 //
 // Contract:
-//   - Implementations should emit exactly one terminal event (TurnEventCompleted or TurnEventFailed).
+//   - Implementations should emit exactly one terminal event (TurnEventComplete or TurnEventError).
 //   - Implementations should close the channel after the terminal event.
 type Engine interface {
 	HandleTurn(ctx context.Context, req TurnRequest) (<-chan TurnEvent, error)
@@ -28,42 +30,52 @@ func (e *defaultEngine) HandleTurn(ctx context.Context, req TurnRequest) (<-chan
 		return nil, errors.New("agent engine is unavailable")
 	}
 
-	events := make(chan TurnEvent, 2)
-	go func() {
-		defer close(events)
+	sessionID := corepkg.SessionID("")
+	if req.Session != nil {
+		sessionID = corepkg.SessionID(req.Session.ID)
+	}
+	stream := newTurnEventStream(sessionID, req.TraceID)
+	events := stream.Events()
 
-		events <- TurnEvent{Type: TurnEventStarted}
+	go func() {
+		if err := stream.Emit(TurnEvent{Type: TurnEventStart}); err != nil {
+			stream.CloseWithoutTerminal()
+			return
+		}
 
 		if req.Session == nil {
-			events <- TurnEvent{
-				Type:  TurnEventFailed,
-				Error: errors.New("session is required"),
-			}
+			_ = stream.Emit(TurnEvent{
+				Type:      TurnEventError,
+				Error:     errors.New("session is required"),
+				ErrorCode: "invalid_session",
+			})
 			return
 		}
 
 		setup, err := e.runner.prepareRunPrompt(req.Session, req.Input, req.Mode)
 		if err != nil {
-			events <- TurnEvent{
-				Type:  TurnEventFailed,
-				Error: err,
-			}
+			_ = stream.Emit(TurnEvent{
+				Type:      TurnEventError,
+				Error:     err,
+				ErrorCode: "prepare_failed",
+			})
 			return
 		}
 
 		answer, err := e.runner.runPromptTurns(ctx, req.Session, setup, req.Out)
 		if err != nil {
-			events <- TurnEvent{
-				Type:  TurnEventFailed,
-				Error: err,
-			}
+			_ = stream.Emit(TurnEvent{
+				Type:      TurnEventError,
+				Error:     err,
+				ErrorCode: "run_failed",
+			})
 			return
 		}
 
-		events <- TurnEvent{
-			Type:   TurnEventCompleted,
+		_ = stream.Emit(TurnEvent{
+			Type:   TurnEventComplete,
 			Answer: answer,
-		}
+		})
 	}()
 
 	return events, nil
