@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ type Task struct {
 	Spec       TaskSpec
 	Status     corepkg.TaskStatus
 	Attempt    int
+	Output     []byte
 	CreatedAt  time.Time
 	StartedAt  *time.Time
 	FinishedAt *time.Time
@@ -118,9 +120,17 @@ func (NopTaskEventStore) AppendTaskLog(context.Context, corepkg.TaskID, TaskLogE
 
 type InMemoryTaskManagerOption func(*InMemoryTaskManager)
 
+type TaskExecutorFunc func(ctx context.Context, task Task) ([]byte, error)
+
 func WithTaskEventStore(store TaskEventStore) InMemoryTaskManagerOption {
 	return func(m *InMemoryTaskManager) {
 		m.eventStore = store
+	}
+}
+
+func WithTaskExecutor(executor TaskExecutorFunc) InMemoryTaskManagerOption {
+	return func(m *InMemoryTaskManager) {
+		m.executor = executor
 	}
 }
 
@@ -134,6 +144,8 @@ type InMemoryTaskManager struct {
 	mu                sync.RWMutex
 	tasks             map[corepkg.TaskID]Task
 	waiters           map[corepkg.TaskID][]chan TaskResult
+	runCancels        map[corepkg.TaskID]context.CancelFunc
+	executor          TaskExecutorFunc
 	events            map[corepkg.TaskID][]TaskEvent
 	logs              map[corepkg.TaskID][]TaskLogEntry
 	streamSubscribers map[corepkg.TaskID]map[uint64]chan TaskEvent
@@ -145,6 +157,7 @@ func NewInMemoryTaskManager(opts ...InMemoryTaskManagerOption) *InMemoryTaskMana
 	manager := &InMemoryTaskManager{
 		tasks:             make(map[corepkg.TaskID]Task),
 		waiters:           make(map[corepkg.TaskID][]chan TaskResult),
+		runCancels:        make(map[corepkg.TaskID]context.CancelFunc),
 		events:            make(map[corepkg.TaskID][]TaskEvent),
 		logs:              make(map[corepkg.TaskID][]TaskLogEntry),
 		streamSubscribers: make(map[corepkg.TaskID]map[uint64]chan TaskEvent),
@@ -161,7 +174,7 @@ func NewInMemoryTaskManager(opts ...InMemoryTaskManagerOption) *InMemoryTaskMana
 	return manager
 }
 
-func (m *InMemoryTaskManager) Submit(_ context.Context, spec TaskSpec) (corepkg.TaskID, error) {
+func (m *InMemoryTaskManager) Submit(ctx context.Context, spec TaskSpec) (corepkg.TaskID, error) {
 	if m == nil {
 		return "", ErrTaskNotImplemented
 	}
@@ -169,7 +182,7 @@ func (m *InMemoryTaskManager) Submit(_ context.Context, spec TaskSpec) (corepkg.
 	now := time.Now().UTC()
 	task := Task{
 		ID:        id,
-		Spec:      spec,
+		Spec:      cloneTaskSpec(spec),
 		Status:    corepkg.TaskPending,
 		Attempt:   0,
 		CreatedAt: now,
@@ -188,6 +201,7 @@ func (m *InMemoryTaskManager) Submit(_ context.Context, spec TaskSpec) (corepkg.
 	m.publishTaskEvent(event, subscribers)
 	m.persistTaskEvent(event)
 	m.persistTaskLog(task.ID, logEntry)
+	m.enqueueTask(detachContext(ctx), id)
 	return id, nil
 }
 
@@ -204,9 +218,12 @@ func (m *InMemoryTaskManager) Get(_ context.Context, id corepkg.TaskID) (Task, e
 	return task, nil
 }
 
-func (m *InMemoryTaskManager) Cancel(_ context.Context, id corepkg.TaskID, _ string) error {
+func (m *InMemoryTaskManager) Cancel(ctx context.Context, id corepkg.TaskID, _ string) error {
 	if m == nil {
 		return ErrTaskNotImplemented
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	now := time.Now().UTC()
@@ -225,6 +242,18 @@ func (m *InMemoryTaskManager) Cancel(_ context.Context, id corepkg.TaskID, _ str
 		m.mu.Unlock()
 		return taskNotFoundError(id)
 	}
+	if task.Status == corepkg.TaskRunning {
+		cancel := m.runCancels[id]
+		m.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		_, waitErr := m.Wait(ctx, id)
+		if waitErr != nil {
+			return waitErr
+		}
+		return nil
+	}
 	if task.Status == corepkg.TaskKilled {
 		m.mu.Unlock()
 		return nil
@@ -238,6 +267,7 @@ func (m *InMemoryTaskManager) Cancel(_ context.Context, id corepkg.TaskID, _ str
 	task.ErrorCode = ErrorCodeTaskCancelled
 	task.FinishedAt = &now
 	m.tasks[id] = task
+	delete(m.runCancels, id)
 	event, subscribers = m.appendTaskEventLocked(task, TaskEventStatus, nil, task.ErrorCode, now)
 	logEntry = m.appendTaskLogLocked(task.ID, []byte(fmt.Sprintf("status=%s", task.Status)), now)
 	result = taskToResult(task)
@@ -263,9 +293,12 @@ func (m *InMemoryTaskManager) Cancel(_ context.Context, id corepkg.TaskID, _ str
 	return nil
 }
 
-func (m *InMemoryTaskManager) Retry(_ context.Context, id corepkg.TaskID) (corepkg.TaskID, error) {
+func (m *InMemoryTaskManager) Retry(ctx context.Context, id corepkg.TaskID) (corepkg.TaskID, error) {
 	if m == nil {
 		return "", ErrTaskNotImplemented
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	var (
@@ -306,6 +339,7 @@ func (m *InMemoryTaskManager) Retry(_ context.Context, id corepkg.TaskID) (corep
 	m.publishTaskEvent(event, subscribers)
 	m.persistTaskEvent(event)
 	m.persistTaskLog(task.ID, logEntry)
+	m.enqueueTask(detachContext(ctx), id)
 
 	return id, nil
 }
@@ -531,6 +565,145 @@ func (m *InMemoryTaskManager) removeStreamSubscriber(taskID corepkg.TaskID, subs
 	m.streamSubscribers[taskID] = subs
 }
 
+func (m *InMemoryTaskManager) enqueueTask(parentCtx context.Context, id corepkg.TaskID) {
+	if m == nil || m.executor == nil {
+		return
+	}
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	go m.runTaskAttempt(parentCtx, id)
+}
+
+func (m *InMemoryTaskManager) runTaskAttempt(parentCtx context.Context, id corepkg.TaskID) {
+	if m == nil || m.executor == nil {
+		return
+	}
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+
+	now := time.Now().UTC()
+	var (
+		startEvent       TaskEvent
+		startLog         TaskLogEntry
+		startSubscribers []chan TaskEvent
+	)
+
+	m.mu.Lock()
+	task, ok := m.tasks[id]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	if task.Status != corepkg.TaskPending {
+		m.mu.Unlock()
+		return
+	}
+	if err := ValidateTaskTransition(task.Status, corepkg.TaskRunning, TransitionOptions{}); err != nil {
+		m.mu.Unlock()
+		return
+	}
+	task.Status = corepkg.TaskRunning
+	task.ErrorCode = ""
+	task.StartedAt = &now
+	task.FinishedAt = nil
+	m.tasks[id] = task
+	startEvent, startSubscribers = m.appendTaskEventLocked(task, TaskEventStatus, nil, task.ErrorCode, now)
+	startLog = m.appendTaskLogLocked(task.ID, []byte(fmt.Sprintf("status=%s", task.Status)), now)
+
+	runCtx, runCancel := context.WithCancel(parentCtx)
+	m.runCancels[id] = runCancel
+	m.mu.Unlock()
+
+	m.publishTaskEvent(startEvent, startSubscribers)
+	m.persistTaskEvent(startEvent)
+	m.persistTaskLog(task.ID, startLog)
+
+	execCtx := runCtx
+	timeoutCancel := func() {}
+	if task.Spec.Timeout > 0 {
+		execCtx, timeoutCancel = context.WithTimeout(runCtx, task.Spec.Timeout)
+	}
+	output, execErr := m.executor(execCtx, task)
+	timeoutCancel()
+	runCancel()
+
+	status, errorCodeValue := mapExecutionResult(execErr)
+	finished := time.Now().UTC()
+
+	var (
+		result             TaskResult
+		waiters            []chan TaskResult
+		finishEvent        TaskEvent
+		finishLog          TaskLogEntry
+		finishSubscribers  []chan TaskEvent
+		finishedTaskIDCopy corepkg.TaskID
+	)
+
+	m.mu.Lock()
+	current, ok := m.tasks[id]
+	if !ok {
+		delete(m.runCancels, id)
+		m.mu.Unlock()
+		return
+	}
+	if current.Status != corepkg.TaskRunning {
+		delete(m.runCancels, id)
+		m.mu.Unlock()
+		return
+	}
+	if err := ValidateTaskTransition(current.Status, status, TransitionOptions{}); err != nil {
+		delete(m.runCancels, id)
+		m.mu.Unlock()
+		return
+	}
+
+	current.Status = status
+	current.ErrorCode = errorCodeValue
+	current.Output = append([]byte(nil), output...)
+	current.FinishedAt = &finished
+	m.tasks[id] = current
+	delete(m.runCancels, id)
+
+	finishEvent, finishSubscribers = m.appendTaskEventLocked(current, TaskEventStatus, nil, current.ErrorCode, finished)
+	finishLog = m.appendTaskLogLocked(current.ID, []byte(fmt.Sprintf("status=%s", current.Status)), finished)
+	finishedTaskIDCopy = current.ID
+
+	result = taskToResult(current)
+	waiters = m.waiters[id]
+	delete(m.waiters, id)
+	m.mu.Unlock()
+
+	m.publishTaskEvent(finishEvent, finishSubscribers)
+	m.persistTaskEvent(finishEvent)
+	m.persistTaskLog(finishedTaskIDCopy, finishLog)
+
+	for _, waiter := range waiters {
+		select {
+		case waiter <- result:
+		default:
+		}
+		close(waiter)
+	}
+}
+
+func mapExecutionResult(execErr error) (corepkg.TaskStatus, string) {
+	if execErr == nil {
+		return corepkg.TaskCompleted, ""
+	}
+	if errors.Is(execErr, context.DeadlineExceeded) {
+		return corepkg.TaskFailed, ErrorCodeTaskTimeout
+	}
+	if errors.Is(execErr, context.Canceled) {
+		return corepkg.TaskKilled, ErrorCodeTaskCancelled
+	}
+	if code := errorCode(execErr); code != "" {
+		return corepkg.TaskFailed, code
+	}
+	return corepkg.TaskFailed, ErrorCodeTaskExecutionFailed
+}
+
 func (m *InMemoryTaskManager) removeWaiter(id corepkg.TaskID, waiter chan TaskResult) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -564,6 +737,7 @@ func taskToResult(task Task) TaskResult {
 	return TaskResult{
 		TaskID:     task.ID,
 		Status:     task.Status,
+		Output:     append([]byte(nil), task.Output...),
 		ErrorCode:  task.ErrorCode,
 		FinishedAt: finishedAt,
 	}
@@ -606,4 +780,24 @@ func cloneTaskLogEntry(entry TaskLogEntry) TaskLogEntry {
 		cloned.Payload = append([]byte(nil), entry.Payload...)
 	}
 	return cloned
+}
+
+func cloneTaskSpec(spec TaskSpec) TaskSpec {
+	cloned := spec
+	if len(spec.Input) > 0 {
+		cloned.Input = append([]byte(nil), spec.Input...)
+	}
+	if len(spec.Metadata) > 0 {
+		cloned.Metadata = make(map[string]string, len(spec.Metadata))
+		for k, v := range spec.Metadata {
+			cloned.Metadata[k] = v
+		}
+	}
+	return cloned
+}
+
+func detachContext(ctx context.Context) context.Context {
+	// Keep execution lifecycle independent from request-scoped cancellation.
+	// Task timeout and explicit Cancel(...) remain the runtime controls.
+	return context.Background()
 }
