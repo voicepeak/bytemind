@@ -101,10 +101,10 @@ func Bootstrap(req BootstrapRequest) (Runtime, error) {
 		promptStore = storagepkg.NopPromptHistoryStore{}
 	}
 
-	var taskEventStore runtimepkg.TaskEventStore
-	taskEventStore, err = storagepkg.NewDefaultRuntimeTaskStore()
-	if err != nil {
-		taskEventStore = runtimepkg.NopTaskEventStore{}
+	taskEventStore := runtimepkg.TaskEventStore(runtimepkg.NopTaskEventStore{})
+	taskStore, taskStoreErr := storagepkg.NewDefaultTaskStore(nil)
+	if taskStoreErr == nil {
+		taskEventStore = storagepkg.NewRuntimeTaskEventAdapter(taskStore)
 	}
 
 	taskManager := runtimepkg.NewInMemoryTaskManager(

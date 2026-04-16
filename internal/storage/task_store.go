@@ -24,6 +24,12 @@ const (
 	taskLogSchemaVersion = 1
 	defaultTaskReadLimit = 128
 	taskLogFileExt       = ".log"
+
+	TaskRecordTypeTaskEventStatus = "task_event.status"
+	TaskRecordTypeTaskEventResult = "task_event.result"
+	TaskRecordTypeTaskEventError  = "task_event.error"
+	TaskRecordTypeTaskEventLog    = "task_event.log"
+	TaskRecordTypeTaskLog         = "task_log"
 )
 
 type TaskLogRecord struct {
