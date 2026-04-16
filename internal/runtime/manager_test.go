@@ -638,6 +638,20 @@ func TestInMemoryTaskManagerSubmitSnapshotsMutableTaskSpec(t *testing.T) {
 	}
 }
 
+func TestNewTaskIDWithSameTimestampUsesSequenceSuffix(t *testing.T) {
+	ts := time.Date(2026, time.January, 1, 10, 11, 12, 123456789, time.UTC)
+
+	id1 := newTaskID(ts, 1)
+	id2 := newTaskID(ts, 2)
+
+	if id1 == "" || id2 == "" {
+		t.Fatal("expected non-empty task ids")
+	}
+	if id1 == id2 {
+		t.Fatalf("expected unique task ids for different sequence, got %q", id1)
+	}
+}
+
 type captureTaskEventStore struct {
 	mu     sync.Mutex
 	events []TaskEvent
