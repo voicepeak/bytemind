@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -65,5 +66,42 @@ func TestNewClientRejectsUnsupportedProviderType(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported provider type") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewDomainClientWrapsBaseClient(t *testing.T) {
+	client, err := NewDomainClient(config.ProviderConfig{
+		Type:    "openai-compatible",
+		BaseURL: "https://api.openai.com/v1",
+		APIKey:  "test-key",
+		Model:   "gpt-5.4",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if client.ProviderID() != ProviderOpenAI {
+		t.Fatalf("expected provider id %q, got %q", ProviderOpenAI, client.ProviderID())
+	}
+	models, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error listing models, got %v", err)
+	}
+	if len(models) != 1 || models[0].ModelID != ModelID("gpt-5.4") {
+		t.Fatalf("unexpected models: %#v", models)
+	}
+}
+
+func TestNewDomainClientRejectsEmptyType(t *testing.T) {
+	client, err := NewDomainClient(config.ProviderConfig{
+		Type:    "",
+		BaseURL: "https://example.com",
+		APIKey:  "test-key",
+		Model:   "test-model",
+	})
+	if err == nil {
+		t.Fatal("expected unsupported provider type error")
+	}
+	if client != nil {
+		t.Fatalf("expected nil client, got %v", client)
 	}
 }
