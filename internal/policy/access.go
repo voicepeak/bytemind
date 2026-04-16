@@ -20,9 +20,10 @@ type ToolAccessDecision struct {
 // DecideToolAccess evaluates whether a tool can run under active allow/deny constraints.
 func DecideToolAccess(in ToolAccessInput) ToolAccessDecision {
 	eval := Evaluate(EvaluateInput{
-		ToolName: strings.TrimSpace(in.ToolName),
-		Allowed:  in.Allowed,
-		Denied:   in.Denied,
+		ToolName:          strings.TrimSpace(in.ToolName),
+		Allowed:           in.Allowed,
+		Denied:            in.Denied,
+		SkipRuntimeChecks: true,
 	})
 	if eval.MainDecision == MainDecisionAllow {
 		return ToolAccessDecision{Decision: corepkg.DecisionAllow, Reason: eval.MainReason}
