@@ -96,6 +96,62 @@ func TestDeleteInWorkspaceIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestDeleteByIDRemovesExistingAndIgnoresMissing(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	sess := New(workspace)
+	sess.ID = "delete-by-id"
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Delete(sess.ID); err != nil {
+		t.Fatalf("expected delete by id to succeed, got %v", err)
+	}
+	if err := store.Delete(sess.ID); err != nil {
+		t.Fatalf("expected repeated delete by id to be idempotent, got %v", err)
+	}
+	if _, err := store.Load(sess.ID); !os.IsNotExist(err) {
+		t.Fatalf("expected deleted session to be missing, got %v", err)
+	}
+}
+
+func TestDeleteInWorkspaceWithEmptyWorkspaceUsesFallbackDelete(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	sess := New(workspace)
+	sess.ID = "workspace-fallback"
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteInWorkspace("", sess.ID); err != nil {
+		t.Fatalf("expected empty-workspace delete to fallback to Delete, got %v", err)
+	}
+	if _, err := store.Load(sess.ID); !os.IsNotExist(err) {
+		t.Fatalf("expected session removed via fallback delete, got %v", err)
+	}
+}
+
+func TestDeleteAndDeleteInWorkspaceRejectEmptyID(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete("   "); err == nil {
+		t.Fatal("expected Delete to reject empty session id")
+	}
+	if err := store.DeleteInWorkspace(t.TempDir(), ""); err == nil {
+		t.Fatal("expected DeleteInWorkspace to reject empty session id")
+	}
+}
+
 func TestStoreListIncludesTitlePreviewAndCounters(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

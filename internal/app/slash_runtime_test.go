@@ -149,3 +149,145 @@ func TestExecuteSlashCommandCleansZeroSessionsBeforeResume(t *testing.T) {
 		t.Fatalf("expected active session to be preserved during cleanup, got %v", err)
 	}
 }
+
+func TestExecuteSlashCommandReturnsCleanupErrorForNew(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	current := session.New(workspace)
+	current.ID = "current"
+	if err := store.Save(current); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ExecuteSlashCommand(store, current, "/new", DefaultSlashCommands()); err == nil {
+		t.Fatal("expected /new to fail when cleanup cannot list sessions")
+	}
+}
+
+func TestExecuteSlashCommandReturnsCleanupErrorForResume(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	current := session.New(workspace)
+	current.ID = "current"
+	if err := store.Save(current); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ExecuteSlashCommand(store, current, "/resume any", DefaultSlashCommands()); err == nil {
+		t.Fatal("expected /resume to fail when cleanup cannot list sessions")
+	}
+}
+
+func TestExecuteSlashCommandHandlesEmptyInputAndBasicCommands(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := session.New(t.TempDir())
+	current.ID = "current"
+
+	out, err := ExecuteSlashCommand(store, current, "   ", DefaultSlashCommands())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Handled {
+		t.Fatalf("expected empty input to be ignored, got %#v", out)
+	}
+	if out.NextSession != current {
+		t.Fatalf("expected current session to remain unchanged, got %#v", out.NextSession)
+	}
+
+	quitOut, err := ExecuteSlashCommand(store, current, "/quit", DefaultSlashCommands())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !quitOut.Handled || !quitOut.ShouldExit || quitOut.Command != "quit" {
+		t.Fatalf("expected /quit to request exit, got %#v", quitOut)
+	}
+
+	helpOut, err := ExecuteSlashCommand(store, current, "/help", DefaultSlashCommands())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !helpOut.Handled || helpOut.Command != "help" {
+		t.Fatalf("expected /help branch, got %#v", helpOut)
+	}
+
+	sessionOut, err := ExecuteSlashCommand(store, current, "/session", DefaultSlashCommands())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sessionOut.Handled || sessionOut.Command != "session" || sessionOut.SessionToDisplay != current {
+		t.Fatalf("expected /session to return current session display payload, got %#v", sessionOut)
+	}
+}
+
+func TestExecuteSlashCommandHandlesResumeUsageAndSessionsLimit(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	current := session.New(workspace)
+	current.ID = "current"
+	if err := store.Save(current); err != nil {
+		t.Fatal(err)
+	}
+	other := session.New(workspace)
+	other.ID = "other"
+	other.Messages = []llm.Message{llm.NewUserTextMessage("hello")}
+	if err := store.Save(other); err != nil {
+		t.Fatal(err)
+	}
+
+	usageOut, err := ExecuteSlashCommand(store, current, "/resume", DefaultSlashCommands())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usageOut.Command != "resume" || usageOut.UsageHint == "" {
+		t.Fatalf("expected /resume usage hint branch, got %#v", usageOut)
+	}
+
+	sessionsOut, err := ExecuteSlashCommand(store, current, "/sessions 1", DefaultSlashCommands())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionsOut.Command != "sessions" || len(sessionsOut.Summaries) != 1 {
+		t.Fatalf("expected /sessions with explicit limit to return one summary, got %#v", sessionsOut)
+	}
+
+	if _, err := ExecuteSlashCommand(store, current, "/sessions not-a-number", DefaultSlashCommands()); err == nil {
+		t.Fatal("expected invalid /sessions limit to return parse error")
+	}
+}
+
+func TestExecuteSlashCommandReturnsListErrorForSessions(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := session.New(t.TempDir())
+	current.ID = "current"
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ExecuteSlashCommand(store, current, "/sessions", DefaultSlashCommands()); err == nil {
+		t.Fatal("expected /sessions to return list error when store root is missing")
+	}
+}

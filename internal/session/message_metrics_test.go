@@ -99,3 +99,46 @@ func TestCountMessageMetricsClassifiesNoReplySession(t *testing.T) {
 		t.Fatalf("expected no-reply classification, got %+v", metrics)
 	}
 }
+
+func TestCountMessageMetricsIgnoresNonTextAndNonAssistantRoles(t *testing.T) {
+	messages := []llm.Message{
+		{
+			Role: llm.RoleUser,
+			Parts: []llm.Part{{
+				Type:  llm.PartImageRef,
+				Image: &llm.ImagePartRef{AssetID: "asset-1"},
+			}},
+		},
+		{
+			Role: llm.RoleSystem,
+			Parts: []llm.Part{{
+				Type: llm.PartText,
+				Text: &llm.TextPart{Value: "ignored system text"},
+			}},
+		},
+		{
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type: llm.PartText,
+				Text: &llm.TextPart{Value: "   "},
+			}},
+		},
+	}
+
+	metrics := CountMessageMetrics(messages)
+	if metrics.UserEffectiveInputCount != 0 {
+		t.Fatalf("expected non-text user input to be ignored, got %+v", metrics)
+	}
+	if metrics.AssistantEffectiveOutputCount != 0 {
+		t.Fatalf("expected empty assistant text to be ignored, got %+v", metrics)
+	}
+}
+
+func TestMessageMetricHelpersRejectWrongRoles(t *testing.T) {
+	if isUserEffectiveInputMessage(llm.NewAssistantTextMessage("assistant")) {
+		t.Fatal("expected non-user message to be rejected by user-effective-input helper")
+	}
+	if isAssistantEffectiveOutputMessage(llm.NewUserTextMessage("user")) {
+		t.Fatal("expected non-assistant message to be rejected by assistant-effective-output helper")
+	}
+}
