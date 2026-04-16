@@ -150,24 +150,29 @@ func TestRouterReturnsUnavailableWithoutCandidates(t *testing.T) {
 }
 
 func TestRoutedClientFallsBackOnRetryableProviderError(t *testing.T) {
-	primary := &stubRouterClient{providerID: "openai", models: []ModelInfo{{ProviderID: "openai", ModelID: "gpt-5.4"}}, streams: []stubRouterStreamResult{{err: &Error{Code: ErrCodeRateLimited, Provider: "openai", Message: "rate limited", Retryable: true}, deltas: []string{"bad"}}}}
+	primary := &stubRouterClient{providerID: "openai", models: []ModelInfo{{ProviderID: "openai", ModelID: "gpt-5.4"}}, streams: []stubRouterStreamResult{{message: llm.Message{Role: llm.RoleAssistant, Content: "ok"}}, {err: &Error{Code: ErrCodeRateLimited, Provider: "openai", Message: "rate limited", Retryable: true}, deltas: []string{"bad"}}}}
 	fallback := &stubRouterClient{providerID: "backup", models: []ModelInfo{{ProviderID: "backup", ModelID: "gpt-5.4"}}, streams: []stubRouterStreamResult{{message: llm.Message{Role: llm.RoleAssistant, Content: "ok"}, deltas: []string{"o", "k"}}}}
 	reg, _ := NewRegistry(config.ProviderRuntimeConfig{})
 	_ = reg.Register(context.Background(), primary)
 	_ = reg.Register(context.Background(), fallback)
 	client := NewRoutedClientWithPolicy(NewRouter(reg, nil, RouterConfig{DefaultProvider: "openai"}), true)
-	var streamed []string
-	msg, err := client.StreamMessage(context.Background(), llm.ChatRequest{Model: "gpt-5.4"}, func(delta string) { streamed = append(streamed, delta) })
+	msg, err := client.CreateMessage(context.Background(), llm.ChatRequest{Model: "gpt-5.4"})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 	if msg.Content != "ok" {
 		t.Fatalf("unexpected message %#v", msg)
 	}
-	if strings.Join(streamed, "") != "badok" {
-		t.Fatalf("expected realtime primary+fallback deltas, got %#v", streamed)
+	var streamed []string
+	_, err = client.StreamMessage(context.Background(), llm.ChatRequest{Model: "gpt-5.4"}, func(delta string) { streamed = append(streamed, delta) })
+	var providerErr *Error
+	if !errors.As(err, &providerErr) || providerErr.Code != ErrCodeRateLimited || !providerErr.Retryable {
+		t.Fatalf("expected streamed attempt to stop on retryable primary error after delta, got %#v", err)
 	}
-	if len(primary.streamReqs) != 1 || len(fallback.streamReqs) != 1 {
+	if strings.Join(streamed, "") != "bad" {
+		t.Fatalf("expected only primary streamed delta before stopping, got %#v", streamed)
+	}
+	if len(primary.streamReqs) != 2 || len(fallback.streamReqs) != 0 {
 		t.Fatalf("unexpected request counts primary=%d fallback=%d", len(primary.streamReqs), len(fallback.streamReqs))
 	}
 }
@@ -413,6 +418,11 @@ func TestExecuteTargetCoversBranches(t *testing.T) {
 	_, err = executeTarget(context.Background(), RouteTarget{ProviderID: "openai", ModelID: "gpt-5.4", Client: client}, Request{ChatRequest: llm.ChatRequest{Model: "gpt-5.4"}}, false, nil)
 	if !errors.As(err, &providerErr) || providerErr.Code != ErrCodeBadRequest || providerErr.Retryable || providerErr.Provider != "openai" || providerErr.Detail != "raw" {
 		t.Fatalf("expected normalized event error, got %#v", err)
+	}
+	client = &stubRouterClient{providerID: "openai", streams: []stubRouterStreamResult{{events: []Event{{Type: EventError, Error: &Error{Err: context.Canceled}}}}}}
+	_, err = executeTarget(context.Background(), RouteTarget{ProviderID: "openai", ModelID: "gpt-5.4", Client: client}, Request{ChatRequest: llm.ChatRequest{Model: "gpt-5.4"}}, false, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected event error cancellation, got %v", err)
 	}
 	client = &stubRouterClient{providerID: "openai", streams: []stubRouterStreamResult{{events: []Event{{Type: EventError}}}}}
 	_, err = executeTarget(context.Background(), RouteTarget{ProviderID: "openai", ModelID: "gpt-5.4", Client: client}, Request{ChatRequest: llm.ChatRequest{Model: "gpt-5.4"}}, false, nil)

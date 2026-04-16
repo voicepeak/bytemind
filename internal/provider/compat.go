@@ -65,6 +65,14 @@ func (c *RoutedClient) execute(ctx context.Context, req llm.ChatRequest, stream 
 	targets = append(targets, result.Primary)
 	targets = append(targets, result.Fallbacks...)
 	var lastErr error
+	hasStreamedDelta := false
+	forwardDelta := onDelta
+	if stream && onDelta != nil {
+		forwardDelta = func(delta string) {
+			hasStreamedDelta = true
+			onDelta(delta)
+		}
+	}
 	for _, target := range targets {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return llm.Message{}, ctxErr
@@ -74,7 +82,7 @@ func (c *RoutedClient) execute(ctx context.Context, req llm.ChatRequest, stream 
 		}
 		callReq := Request{ChatRequest: req}
 		callReq.Model = string(target.ModelID)
-		msg, err := executeTarget(ctx, target, callReq, stream, onDelta)
+		msg, err := executeTarget(ctx, target, callReq, stream, forwardDelta)
 		if err == nil {
 			return msg, nil
 		}
@@ -86,7 +94,7 @@ func (c *RoutedClient) execute(ctx context.Context, req llm.ChatRequest, stream 
 			return llm.Message{}, err
 		}
 		lastErr = mapped
-		if !mapped.Retryable {
+		if !mapped.Retryable || hasStreamedDelta {
 			return llm.Message{}, mapped
 		}
 	}
@@ -144,7 +152,14 @@ func executeTarget(ctx context.Context, target RouteTarget, req Request, stream 
 		case EventError:
 			hasTerminal = true
 			if event.Error != nil {
-				return llm.Message{}, mapCompatError(target.ProviderID, event.Error)
+				mapped := mapCompatError(target.ProviderID, event.Error)
+				if mapped == nil && errors.Is(event.Error, context.Canceled) {
+					return llm.Message{}, context.Canceled
+				}
+				if mapped == nil {
+					return llm.Message{}, unavailableRouteError("provider stream emitted invalid error payload")
+				}
+				return llm.Message{}, mapped
 			}
 			return llm.Message{}, unavailableRouteError("provider stream emitted error event without error payload")
 		}
