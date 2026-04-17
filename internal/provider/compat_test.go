@@ -29,6 +29,56 @@ func (s stubCompatClient) StreamMessage(ctx context.Context, _ llm.ChatRequest, 
 	return s.message, nil
 }
 
+type asyncDeltaCompatClient struct {
+	message llm.Message
+	release chan struct{}
+	done    chan struct{}
+}
+
+func (s asyncDeltaCompatClient) CreateMessage(context.Context, llm.ChatRequest) (llm.Message, error) {
+	return s.message, nil
+}
+
+func (s asyncDeltaCompatClient) StreamMessage(_ context.Context, _ llm.ChatRequest, onDelta func(string)) (llm.Message, error) {
+	if onDelta == nil {
+		return s.message, nil
+	}
+	onDelta("hello")
+	go func() {
+		<-s.release
+		onDelta(" late")
+		close(s.done)
+	}()
+	return s.message, nil
+}
+
+func TestWrapClientStreamIgnoresAsyncDeltaAfterTerminal(t *testing.T) {
+	release := make(chan struct{})
+	done := make(chan struct{})
+	adapter := WrapClient(ProviderOpenAI, ModelID("gpt-5.4"), asyncDeltaCompatClient{message: llm.Message{Role: llm.RoleAssistant, Content: "hello"}, release: release, done: done})
+	stream, err := adapter.Stream(context.Background(), Request{ChatRequest: llm.ChatRequest{Model: "gpt-5.4"}, TraceID: "trace-async"})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	var events []Event
+	for event := range stream {
+		events = append(events, event)
+		if event.Type == EventResult {
+			close(release)
+			<-done
+		}
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected start, delta, result only, got %#v", events)
+	}
+	if events[0].Type != EventStart || events[1].Type != EventDelta || events[2].Type != EventResult {
+		t.Fatalf("unexpected event order %#v", events)
+	}
+	if events[1].Delta != "hello" {
+		t.Fatalf("unexpected delta %#v", events[1])
+	}
+}
+
 func TestWrapClientStreamEmitsNormalizedEvents(t *testing.T) {
 	adapter := WrapClient(ProviderOpenAI, ModelID("gpt-5.4"), stubCompatClient{message: llm.Message{
 		Role:    llm.RoleAssistant,
@@ -56,6 +106,17 @@ func TestWrapClientStreamEmitsNormalizedEvents(t *testing.T) {
 	}
 	if events[0].Type != EventStart || events[0].TraceID != "trace-1" {
 		t.Fatalf("unexpected start event %#v", events[0])
+	}
+	for i, event := range events {
+		if event.ID == "" {
+			t.Fatalf("expected event %d to have id, got %#v", i, event)
+		}
+		if event.ProviderID != ProviderOpenAI {
+			t.Fatalf("expected provider normalization on event %d, got %#v", i, event)
+		}
+		if event.ModelID != "gpt-5.4" {
+			t.Fatalf("expected model normalization on event %d, got %#v", i, event)
+		}
 	}
 	if events[1].Type != EventDelta || events[1].Delta != "hello" {
 		t.Fatalf("unexpected first delta %#v", events[1])
@@ -193,6 +254,49 @@ func TestWrapClientStreamDoesNotEmitNilErrorOnContextCanceled(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Type != EventStart {
 		t.Fatalf("expected only start event before cancel shutdown, got %#v", events)
+	}
+}
+
+func TestNormalizeEventRejectsMissingStart(t *testing.T) {
+	ctx := context.Background()
+	ch := make(chan Event, 1)
+	normalizer := newStreamNormalizer("trace-x", ProviderOpenAI, ModelID("gpt-5.4"))
+	if !normalizeEvent(ctx, normalizer, ch, Event{Type: EventDelta, Delta: "oops"}) {
+		t.Fatal("expected normalized error event to be emitted")
+	}
+	close(ch)
+	events := make([]Event, 0, len(ch))
+	for event := range ch {
+		events = append(events, event)
+	}
+	if len(events) != 1 || events[0].Type != EventError || events[0].Error == nil {
+		t.Fatalf("expected single error event, got %#v", events)
+	}
+	if events[0].Error.Code != ErrCodeUnavailable {
+		t.Fatalf("expected unavailable normalization error, got %#v", events[0])
+	}
+}
+
+func TestNormalizeEventRejectsEventsAfterTerminal(t *testing.T) {
+	ctx := context.Background()
+	ch := make(chan Event, 3)
+	normalizer := newStreamNormalizer("trace-y", ProviderOpenAI, ModelID("gpt-5.4"))
+	if !normalizeEvent(ctx, normalizer, ch, Event{Type: EventStart}) {
+		t.Fatal("expected start event")
+	}
+	if !normalizeEvent(ctx, normalizer, ch, Event{Type: EventResult, Result: &llm.Message{Role: llm.RoleAssistant}}) {
+		t.Fatal("expected result event")
+	}
+	if normalizeEvent(ctx, normalizer, ch, Event{Type: EventDelta, Delta: "late"}) {
+		t.Fatal("expected event after terminal to be rejected")
+	}
+	close(ch)
+	var events []Event
+	for event := range ch {
+		events = append(events, event)
+	}
+	if len(events) != 2 || events[0].Type != EventStart || events[1].Type != EventResult {
+		t.Fatalf("unexpected normalized events %#v", events)
 	}
 }
 

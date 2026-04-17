@@ -199,7 +199,8 @@ func (a *clientAdapter) Stream(ctx context.Context, req Request) (<-chan Event, 
 		if modelID == "" {
 			modelID = a.defaultModel
 		}
-		if !emit(ctx, stream, Event{
+		normalizer := newStreamNormalizer(req.TraceID, a.providerID, modelID)
+		if !normalizeEvent(ctx, normalizer, stream, Event{
 			Type:       EventStart,
 			TraceID:    req.TraceID,
 			ProviderID: a.providerID,
@@ -207,18 +208,64 @@ func (a *clientAdapter) Stream(ctx context.Context, req Request) (<-chan Event, 
 		}) {
 			return
 		}
-		message, err := a.client.StreamMessage(ctx, req.ChatRequest, func(delta string) {
-			if strings.TrimSpace(delta) == "" {
-				return
+
+		deltas := make(chan string, 16)
+		deltaDone := make(chan struct{})
+		deltaInputClosed := make(chan struct{})
+		go func() {
+			defer close(deltaDone)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-deltaInputClosed:
+					for {
+						select {
+						case delta := <-deltas:
+							if strings.TrimSpace(delta) == "" {
+								continue
+							}
+							if !normalizeEvent(ctx, normalizer, stream, Event{
+								Type:       EventDelta,
+								TraceID:    req.TraceID,
+								ProviderID: a.providerID,
+								ModelID:    modelID,
+								Delta:      delta,
+							}) {
+								return
+							}
+						default:
+							return
+						}
+					}
+				case delta := <-deltas:
+					if strings.TrimSpace(delta) == "" {
+						continue
+					}
+					if !normalizeEvent(ctx, normalizer, stream, Event{
+						Type:       EventDelta,
+						TraceID:    req.TraceID,
+						ProviderID: a.providerID,
+						ModelID:    modelID,
+						Delta:      delta,
+					}) {
+						return
+					}
+				}
 			}
-			_ = emit(ctx, stream, Event{
-				Type:       EventDelta,
-				TraceID:    req.TraceID,
-				ProviderID: a.providerID,
-				ModelID:    modelID,
-				Delta:      delta,
-			})
+		}()
+
+		message, err := a.client.StreamMessage(ctx, req.ChatRequest, func(delta string) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-deltaInputClosed:
+				return
+			case deltas <- delta:
+			}
 		})
+		close(deltaInputClosed)
+		<-deltaDone
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 				return
@@ -227,7 +274,7 @@ func (a *clientAdapter) Stream(ctx context.Context, req Request) (<-chan Event, 
 			if mapped == nil {
 				return
 			}
-			_ = emit(ctx, stream, Event{
+			_ = normalizeEvent(ctx, normalizer, stream, Event{
 				Type:       EventError,
 				TraceID:    req.TraceID,
 				ProviderID: a.providerID,
@@ -237,7 +284,7 @@ func (a *clientAdapter) Stream(ctx context.Context, req Request) (<-chan Event, 
 			return
 		}
 		if message.Usage != nil {
-			if !emit(ctx, stream, Event{
+			if !normalizeEvent(ctx, normalizer, stream, Event{
 				Type:       EventUsage,
 				TraceID:    req.TraceID,
 				ProviderID: a.providerID,
@@ -254,7 +301,7 @@ func (a *clientAdapter) Stream(ctx context.Context, req Request) (<-chan Event, 
 		message.Normalize()
 		for _, toolCall := range message.ToolCalls {
 			call := toolCall
-			if !emit(ctx, stream, Event{
+			if !normalizeEvent(ctx, normalizer, stream, Event{
 				Type:       EventToolCall,
 				TraceID:    req.TraceID,
 				ProviderID: a.providerID,
@@ -264,7 +311,7 @@ func (a *clientAdapter) Stream(ctx context.Context, req Request) (<-chan Event, 
 				return
 			}
 		}
-		_ = emit(ctx, stream, Event{
+		_ = normalizeEvent(ctx, normalizer, stream, Event{
 			Type:       EventResult,
 			TraceID:    req.TraceID,
 			ProviderID: a.providerID,
