@@ -86,7 +86,7 @@ func TestHealthCheckerCheckUsesProbeAndRecordsResults(t *testing.T) {
 	}
 }
 
-func TestHealthSchedulerTick(t *testing.T) {
+func TestExternalHealthTickerTick(t *testing.T) {
 	var checked []ProviderID
 	checker := NewHealthChecker(HealthConfig{FailThreshold: 1, RecoverProbeSec: 1, RecoverSuccessThreshold: 1}, func(_ context.Context, id ProviderID) error {
 		checked = append(checked, id)
@@ -98,10 +98,10 @@ func TestHealthSchedulerTick(t *testing.T) {
 	checker.RecordFailure(context.Background(), "anthropic", &Error{Code: ErrCodeUnavailable, Retryable: true})
 	checker.providers["openai"].nextProbeAt = now
 	checker.providers["anthropic"].nextProbeAt = now
-	scheduler := NewHealthScheduler(checker, func(context.Context) ([]ProviderID, error) {
+	ticker := NewExternalHealthTicker(checker, func(context.Context) ([]ProviderID, error) {
 		return []ProviderID{"openai", "anthropic"}, nil
 	})
-	if err := scheduler.Tick(context.Background()); err != nil {
+	if err := ticker.Tick(context.Background()); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 	if len(checked) != 2 {
