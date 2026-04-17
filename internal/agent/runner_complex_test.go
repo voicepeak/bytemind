@@ -159,8 +159,12 @@ func TestRunPromptExecutesMultipleToolCallsInOrder(t *testing.T) {
 	}
 
 	registry := tools.DefaultRegistry()
-	registry.Add(firstTool)
-	registry.Add(secondTool)
+	if err := registry.Add(firstTool); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Add(secondTool); err != nil {
+		t.Fatal(err)
+	}
 
 	client := &recordingClient{replies: []llm.Message{
 		{

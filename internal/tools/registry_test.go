@@ -1,10 +1,15 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
+	"bytemind/internal/llm"
 	planpkg "bytemind/internal/plan"
 )
 
@@ -73,4 +78,122 @@ func TestDefaultRegistryDefinitionsForPlanModeIncludeWebTools(t *testing.T) {
 	if slices.Contains(names, "write_file") {
 		t.Fatalf("did not expect write_file in plan mode definitions: %v", names)
 	}
+}
+
+func TestRegistryRegisterRejectsDuplicateName(t *testing.T) {
+	registry := &Registry{}
+	if err := registry.Register(testTool{name: "dup_tool"}, RegisterOptions{Source: RegistrationSourceBuiltin}); err != nil {
+		t.Fatalf("first register failed: %v", err)
+	}
+	err := registry.Register(testTool{name: "dup_tool"}, RegisterOptions{Source: RegistrationSourceExtension, ExtensionID: "skill.demo"})
+	if err == nil {
+		t.Fatal("expected duplicate error")
+	}
+	regErr, ok := err.(*RegistryError)
+	if !ok {
+		t.Fatalf("unexpected error type: %T", err)
+	}
+	if regErr.Code != RegistryErrorDuplicateName {
+		t.Fatalf("unexpected code: %s", regErr.Code)
+	}
+	if regErr.ConflictWith.Source != RegistrationSourceBuiltin {
+		t.Fatalf("unexpected conflict source: %+v", regErr.ConflictWith)
+	}
+}
+
+func TestRegistryGetReturnsClonedDefinition(t *testing.T) {
+	registry := &Registry{}
+	tool := testTool{
+		name: "clone_tool",
+		parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string"},
+			},
+		},
+	}
+	if err := registry.Register(tool, RegisterOptions{Source: RegistrationSourceBuiltin}); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+	resolved, ok := registry.Get("clone_tool")
+	if !ok {
+		t.Fatal("expected tool")
+	}
+	resolved.Definition.Function.Parameters["type"] = "array"
+	props := resolved.Definition.Function.Parameters["properties"].(map[string]any)
+	props["extra"] = map[string]any{"type": "number"}
+	resolvedAgain, ok := registry.Get("clone_tool")
+	if !ok {
+		t.Fatal("expected tool on second get")
+	}
+	if resolvedAgain.Definition.Function.Parameters["type"] != "object" {
+		t.Fatalf("registry definition mutated: %#v", resolvedAgain.Definition.Function.Parameters)
+	}
+	propsAgain := resolvedAgain.Definition.Function.Parameters["properties"].(map[string]any)
+	if _, exists := propsAgain["extra"]; exists {
+		t.Fatalf("registry nested parameters mutated: %#v", propsAgain)
+	}
+}
+
+func TestRegistryConcurrentAccess(t *testing.T) {
+	registry := &Registry{}
+	const count = 32
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			name := testToolName(i)
+			if err := registry.Register(testTool{name: name}, RegisterOptions{Source: RegistrationSourceExtension, ExtensionID: "skill.concurrent"}); err != nil {
+				t.Errorf("register %s: %v", name, err)
+				return
+			}
+			registry.Get(name)
+			registry.List()
+			if err := registry.Unregister(name); err != nil {
+				t.Errorf("unregister %s: %v", name, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if got := registry.List(); len(got) != 0 {
+		t.Fatalf("expected empty registry, got %d tools", len(got))
+	}
+}
+
+type testTool struct {
+	name       string
+	parameters map[string]any
+}
+
+type invalidSpecTool struct {
+	testTool
+	spec ToolSpec
+}
+
+func (t invalidSpecTool) Spec() ToolSpec {
+	return t.spec
+}
+
+func (t testTool) Definition() llm.ToolDefinition {
+	parameters := t.parameters
+	if parameters == nil {
+		parameters = map[string]any{"type": "object"}
+	}
+	return llm.ToolDefinition{
+		Type: "function",
+		Function: llm.FunctionDefinition{
+			Name:        t.name,
+			Description: "test tool",
+			Parameters:  parameters,
+		},
+	}
+}
+
+func (testTool) Run(context.Context, json.RawMessage, *ExecutionContext) (string, error) {
+	return "ok", nil
+}
+
+func testToolName(i int) string {
+	return fmt.Sprintf("tool_concurrent_%d", i)
 }

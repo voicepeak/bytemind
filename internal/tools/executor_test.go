@@ -43,7 +43,9 @@ func (t executorTestTool) Run(ctx context.Context, raw json.RawMessage, execCtx 
 
 func TestExecutorRejectsUnknownArgumentsByDefault(t *testing.T) {
 	registry := &Registry{}
-	registry.Add(executorTestTool{name: "strict_tool", result: `{"ok":true}`})
+	if err := registry.Add(executorTestTool{name: "strict_tool", result: `{"ok":true}`}); err != nil {
+		t.Fatal(err)
+	}
 	executor := NewExecutor(registry)
 
 	_, err := executor.Execute(context.Background(), "strict_tool", `{"path":"a.txt","extra":true}`, &ExecutionContext{})
@@ -190,7 +192,9 @@ func TestExecutorAllowsUnknownArgumentsWhenSchemaAllowsAdditionalProperties(t *t
 
 func TestExecutorMapsPolicyFailuresToPermissionDenied(t *testing.T) {
 	registry := &Registry{}
-	registry.Add(executorTestTool{name: "strict_tool", result: `{"ok":true}`})
+	if err := registry.Add(executorTestTool{name: "strict_tool", result: `{"ok":true}`}); err != nil {
+		t.Fatal(err)
+	}
 	executor := NewExecutor(registry)
 
 	_, err := executor.Execute(context.Background(), "strict_tool", `{"path":"a.txt"}`, &ExecutionContext{
