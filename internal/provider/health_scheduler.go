@@ -7,7 +7,7 @@ type HealthScheduler struct {
 	ids    func(context.Context) ([]ProviderID, error)
 }
 
-func NewHealthScheduler(health HealthChecker, ids func(context.Context) ([]ProviderID, error), _ HealthConfig) *HealthScheduler {
+func NewHealthScheduler(health HealthChecker, ids func(context.Context) ([]ProviderID, error)) *HealthScheduler {
 	return &HealthScheduler{health: health, ids: ids}
 }
 

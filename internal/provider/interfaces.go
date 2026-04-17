@@ -61,7 +61,6 @@ type RouteTarget struct {
 }
 
 type HealthConfig struct {
-	CheckIntervalSec        int
 	FailThreshold           int
 	RecoverProbeSec         int
 	RecoverSuccessThreshold int
