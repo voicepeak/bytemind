@@ -3,7 +3,6 @@ package extensions
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +21,7 @@ type extensionManager struct {
 	projectDir string
 
 	catalog  map[string]ExtensionInfo
+	manual   map[string]ExtensionInfo
 	disabled map[string]struct{}
 }
 
@@ -45,6 +45,7 @@ func NewManagerWithDirs(workspace, builtinDir, userDir, projectDir string) Manag
 		userDir:    userDir,
 		projectDir: projectDir,
 		catalog:    map[string]ExtensionInfo{},
+		manual:     map[string]ExtensionInfo{},
 		disabled:   map[string]struct{}{},
 	}
 }
@@ -56,6 +57,7 @@ func (m *extensionManager) Load(_ context.Context, source string) (ExtensionInfo
 	}
 	m.mu.Lock()
 	m.catalog[loaded.ID] = loaded
+	m.manual[loaded.ID] = loaded
 	delete(m.disabled, loaded.ID)
 	m.mu.Unlock()
 	return loaded, nil
@@ -66,18 +68,15 @@ func (m *extensionManager) Unload(_ context.Context, extensionID string) error {
 	if id == "" {
 		return wrapError(ErrCodeInvalidExtension, "extension id is required", nil)
 	}
-	if err := m.reload(); err != nil {
-		var extErr *ExtensionError
-		if !errors.As(err, &extErr) || extErr.Code != ErrCodeNotFound {
-			return err
-		}
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.catalog[id]; !ok {
-		return wrapError(ErrCodeNotFound, "extension not found", nil)
+		if _, ok := m.manual[id]; !ok {
+			return wrapError(ErrCodeNotFound, "extension not found", nil)
+		}
 	}
 	delete(m.catalog, id)
+	delete(m.manual, id)
 	m.disabled[id] = struct{}{}
 	return nil
 }
@@ -140,6 +139,9 @@ func (m *extensionManager) reload() error {
 		}
 	}
 	m.mu.Lock()
+	for id, entry := range m.manual {
+		loaded[id] = entry
+	}
 	m.catalog = loaded
 	m.mu.Unlock()
 	return nil

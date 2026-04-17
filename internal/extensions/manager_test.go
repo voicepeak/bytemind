@@ -37,6 +37,40 @@ func TestManagerLoadDiscoversExtensionFromSource(t *testing.T) {
 	}
 }
 
+func TestManagerLoadRemainsVisibleAfterReload(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(t.TempDir(), "review")
+	if err := os.MkdirAll(external, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(external, "skill.json"), []byte(`{"name":"review","description":"remote"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(external, "SKILL.md"), []byte("# /review"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(root)
+	loaded, err := mgr.Load(context.Background(), external)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	got, err := mgr.Get(context.Background(), loaded.ID)
+	if err != nil {
+		t.Fatalf("Get failed after Load: %v", err)
+	}
+	if got.Source.Ref != external {
+		t.Fatalf("expected loaded source ref %q, got %q", external, got.Source.Ref)
+	}
+	items, err := mgr.List(context.Background())
+	if err != nil {
+		t.Fatalf("List failed after Load: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != loaded.ID {
+		t.Fatalf("expected loaded extension to remain visible, got %#v", items)
+	}
+}
+
 func TestManagerLoadMarksUnknownRootAsRemote(t *testing.T) {
 	root := t.TempDir()
 	external := filepath.Join(t.TempDir(), "review")
@@ -60,6 +94,35 @@ func TestManagerLoadMarksUnknownRootAsRemote(t *testing.T) {
 	}
 }
 
+func TestManagerUnloadIgnoresUnrelatedBrokenManifest(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, ".bytemind", "skills")
+	good := filepath.Join(project, "review")
+	bad := filepath.Join(project, "broken")
+	if err := os.MkdirAll(good, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(good, "skill.json"), []byte(`{"name":"review"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(good, "SKILL.md"), []byte("# /review"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "skill.json"), []byte(`{"name":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(root)
+	if _, err := mgr.Load(context.Background(), good); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if err := mgr.Unload(context.Background(), "skill.review"); err != nil {
+		t.Fatalf("Unload should ignore unrelated broken manifest: %v", err)
+	}
+}
 func TestManagerListDiscoversAcrossScopesWithPriority(t *testing.T) {
 	root := t.TempDir()
 	builtin := filepath.Join(root, "builtin")
