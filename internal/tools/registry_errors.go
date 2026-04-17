@@ -160,7 +160,11 @@ func cloneAnySlice(input []any) []any {
 }
 
 func cloneAny(value any) any {
-	return cloneReflectValue(reflect.ValueOf(value)).Interface()
+	cloned := cloneReflectValue(reflect.ValueOf(value))
+	if !cloned.IsValid() {
+		return nil
+	}
+	return cloned.Interface()
 }
 
 func cloneReflectValue(value reflect.Value) reflect.Value {
@@ -210,13 +214,7 @@ func cloneReflectValue(value reflect.Value) reflect.Value {
 		}
 		return cloned
 	case reflect.Struct:
-		cloned := reflect.New(value.Type()).Elem()
-		for i := 0; i < value.NumField(); i++ {
-			if cloned.Field(i).CanSet() {
-				cloned.Field(i).Set(cloneReflectValue(value.Field(i)))
-			}
-		}
-		return cloned
+		return value
 	default:
 		return value
 	}

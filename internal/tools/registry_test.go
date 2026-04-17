@@ -330,6 +330,9 @@ func TestRegistryErrorHelpersAndCloneCoverage(t *testing.T) {
 	if cloneAnyMap(nil) != nil {
 		t.Fatal("expected nil any map clone to stay nil")
 	}
+	if cloneAny(nil) != nil {
+		t.Fatal("expected nil cloneAny input to stay nil")
+	}
 	if cloneAny([]string{"a"}).([]string)[0] != "a" {
 		t.Fatal("expected []string clone to preserve values")
 	}
