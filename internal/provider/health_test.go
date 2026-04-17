@@ -35,12 +35,12 @@ func TestHealthCheckerStateMachineTransitions(t *testing.T) {
 	}
 	checker.RecordSuccess(context.Background(), "openai")
 	snapshot = checker.Status(context.Background(), "openai")
-	if snapshot.Status != HealthStatusHalfOpen || snapshot.SuccessCount != 1 {
+	if snapshot.Status != HealthStatusHealthy || snapshot.SuccessCount != 2 {
 		t.Fatalf("unexpected half-open recovery snapshot %#v", snapshot)
 	}
 	checker.RecordSuccess(context.Background(), "openai")
 	snapshot = checker.Status(context.Background(), "openai")
-	if snapshot.Status != HealthStatusHealthy || snapshot.SuccessCount != 2 {
+	if snapshot.Status != HealthStatusHealthy || snapshot.SuccessCount != 3 {
 		t.Fatalf("unexpected healthy snapshot %#v", snapshot)
 	}
 }
@@ -213,6 +213,37 @@ func TestHealthCheckerCancelledProbeReleasesGate(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("expected probe to retry after cancel, got %d calls", calls)
+	}
+}
+
+func TestHealthCheckerProbeCompletionCommitsBeforeGateRelease(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	calls := 0
+	checker := NewHealthChecker(HealthConfig{FailThreshold: 1, RecoverProbeSec: 1, RecoverSuccessThreshold: 1}, func(_ context.Context, _ ProviderID) error {
+		calls++
+		started <- struct{}{}
+		<-release
+		return &Error{Code: ErrCodeUnavailable, Retryable: true}
+	}).(*healthChecker)
+	now := time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC)
+	checker.clock = func() time.Time { return now }
+	checker.RecordFailure(context.Background(), "openai", &Error{Code: ErrCodeUnavailable, Retryable: true})
+	checker.providers["openai"].nextProbeAt = now
+	errCh := make(chan error, 2)
+	go func() { errCh <- checker.Check(context.Background(), "openai") }()
+	<-started
+	close(release)
+	firstErr := <-errCh
+	if firstErr == nil {
+		t.Fatal("expected first probe to fail")
+	}
+	secondErr := checker.Check(context.Background(), "openai")
+	if secondErr == nil {
+		t.Fatal("expected second check to observe unavailable state")
+	}
+	if calls != 1 {
+		t.Fatalf("expected exactly one real probe call, got %d", calls)
 	}
 }
 

@@ -112,22 +112,16 @@ func (h *healthChecker) Check(ctx context.Context, id ProviderID) error {
 	state.lastCheckAt = now
 	h.mu.Unlock()
 	if h.checker == nil {
-		h.finishProbe(id, false)
+		h.completeProbe(ctx, id, nil)
 		return nil
 	}
 	err := h.checker(ctx, id)
 	if errors.Is(err, context.Canceled) {
-		h.finishProbe(id, false)
+		h.completeProbe(ctx, id, err)
 		return err
 	}
-	if err != nil {
-		h.finishProbe(id, false)
-		h.RecordFailure(ctx, id, err)
-		return err
-	}
-	h.finishProbe(id, false)
-	h.RecordSuccess(ctx, id)
-	return nil
+	h.completeProbe(ctx, id, err)
+	return err
 }
 
 func (h *healthChecker) Status(_ context.Context, id ProviderID) HealthSnapshot {
@@ -225,10 +219,15 @@ func (h *healthChecker) now() time.Time {
 	return time.Now()
 }
 
-func (h *healthChecker) finishProbe(id ProviderID, _ bool) {
+func (h *healthChecker) completeProbe(_ context.Context, id ProviderID, err error) {
 	if h == nil {
 		return
 	}
+	id = normalizeRouteProviderID(id)
+	if id == "" {
+		return
+	}
+	now := h.now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	state, ok := h.providers[id]
@@ -236,6 +235,58 @@ func (h *healthChecker) finishProbe(id ProviderID, _ bool) {
 		return
 	}
 	state.probeInFlight = false
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	if err != nil {
+		if !countsTowardAvailability(err) {
+			return
+		}
+		state.lastFailureAt = now
+		state.lastError = strings.TrimSpace(errorMessage(err))
+		state.outcomes = appendOutcome(state.outcomes, false, h.cfg.WindowSize)
+		failures := trailingFailures(state.outcomes)
+		switch state.status {
+		case HealthStatusHalfOpen:
+			state.status = HealthStatusUnavailable
+			state.nextProbeAt = now.Add(time.Duration(h.cfg.RecoverProbeSec) * time.Second)
+		case HealthStatusUnavailable:
+			state.nextProbeAt = now.Add(time.Duration(h.cfg.RecoverProbeSec) * time.Second)
+		default:
+			if failures >= h.cfg.FailThreshold {
+				state.status = HealthStatusUnavailable
+				state.nextProbeAt = now.Add(time.Duration(h.cfg.RecoverProbeSec) * time.Second)
+			} else {
+				state.status = HealthStatusDegraded
+			}
+		}
+		return
+	}
+	state.lastSuccessAt = now
+	state.lastError = ""
+	state.outcomes = appendOutcome(state.outcomes, true, h.cfg.WindowSize)
+	successes := trailingSuccesses(state.outcomes)
+	failures := trailingFailures(state.outcomes)
+	switch state.status {
+	case HealthStatusHalfOpen:
+		if successes >= h.cfg.RecoverSuccessThreshold {
+			state.status = HealthStatusHealthy
+			state.nextProbeAt = time.Time{}
+		} else {
+			state.status = HealthStatusHalfOpen
+		}
+	case HealthStatusUnavailable:
+		if successes >= h.cfg.RecoverSuccessThreshold {
+			state.status = HealthStatusHealthy
+			state.nextProbeAt = time.Time{}
+		}
+	default:
+		if failures > 0 {
+			state.status = HealthStatusDegraded
+		} else {
+			state.status = HealthStatusHealthy
+		}
+	}
 }
 
 func (h *healthChecker) ensureStateLocked(id ProviderID) *healthState {
