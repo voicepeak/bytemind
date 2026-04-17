@@ -37,6 +37,21 @@ func (t contractInvalidSpecTool) Spec() ToolSpec {
 	return t.spec
 }
 
+func TestRegistryContractAddRejectsNilTool(t *testing.T) {
+	registry := &Registry{}
+	err := registry.Add(nil)
+	if err == nil {
+		t.Fatal("expected invalid tool error")
+	}
+	var regErr *RegistryError
+	if !errors.As(err, &regErr) {
+		t.Fatalf("expected RegistryError, got %T", err)
+	}
+	if regErr.Code != RegistryErrorInvalidTool {
+		t.Fatalf("unexpected code: %s", regErr.Code)
+	}
+}
+
 func TestRegistryContractInvalidTool(t *testing.T) {
 	registry := &Registry{}
 	err := registry.Register(nil, RegisterOptions{Source: RegistrationSourceBuiltin})

@@ -164,10 +164,10 @@ func cloneAny(value any) any {
 		return cloneAnyMap(typed)
 	case []any:
 		return cloneAnySlice(typed)
-	case map[string]string:
-		cloned := make(map[string]string, len(typed))
+	case map[string][]string:
+		cloned := make(map[string][]string, len(typed))
 		for key, item := range typed {
-			cloned[key] = item
+			cloned[key] = append([]string(nil), item...)
 		}
 		return cloned
 	case []string:

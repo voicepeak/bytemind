@@ -161,6 +161,43 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 	}
 }
 
+func TestRegistryAddSupportsUncomparableToolType(t *testing.T) {
+	registry := &Registry{}
+	tool := uncomparableTool{name: "map_tool", payload: map[string]string{"k": "v"}}
+	if err := registry.Add(tool); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+	if _, ok := registry.Get("map_tool"); !ok {
+		t.Fatal("expected added tool")
+	}
+}
+
+func TestRegistryGetReturnsClonedMapStringSliceValues(t *testing.T) {
+	registry := &Registry{}
+	tool := testTool{
+		name: "typed_map_clone_tool",
+		parameters: map[string]any{
+			"type":   "object",
+			"groups": map[string][]string{"alpha": {"a", "b"}},
+		},
+	}
+	if err := registry.Register(tool, RegisterOptions{Source: RegistrationSourceBuiltin}); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+	resolved, ok := registry.Get("typed_map_clone_tool")
+	if !ok {
+		t.Fatal("expected tool")
+	}
+	resolved.Definition.Function.Parameters["groups"].(map[string][]string)["alpha"][0] = "mutated"
+	resolvedAgain, ok := registry.Get("typed_map_clone_tool")
+	if !ok {
+		t.Fatal("expected tool on second get")
+	}
+	if got := resolvedAgain.Definition.Function.Parameters["groups"].(map[string][]string)["alpha"][0]; got != "a" {
+		t.Fatalf("registry typed map slice mutated: %#v", resolvedAgain.Definition.Function.Parameters["groups"])
+	}
+}
+
 func TestRegistryGetReturnsClonedTypedSchemaValues(t *testing.T) {
 	registry := &Registry{}
 	tool := testTool{
@@ -310,6 +347,26 @@ func TestRegistryErrorHelpersAndCloneCoverage(t *testing.T) {
 	if cloneAny(map[string]string{"k": "v"}).(map[string]string)["k"] != "v" {
 		t.Fatal("expected map[string]string clone to preserve values")
 	}
+}
+
+type uncomparableTool struct {
+	name    string
+	payload map[string]string
+}
+
+func (t uncomparableTool) Definition() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Type: "function",
+		Function: llm.FunctionDefinition{
+			Name:        t.name,
+			Description: "uncomparable test tool",
+			Parameters:  map[string]any{"type": "object", "payload": t.payload},
+		},
+	}
+}
+
+func (uncomparableTool) Run(context.Context, json.RawMessage, *ExecutionContext) (string, error) {
+	return "ok", nil
 }
 
 type testTool struct {
