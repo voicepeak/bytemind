@@ -3,6 +3,7 @@ package extensions
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,15 +21,19 @@ type extensionManager struct {
 	userDir    string
 	projectDir string
 
-	catalog map[string]ExtensionInfo
+	catalog  map[string]ExtensionInfo
+	disabled map[string]struct{}
 }
 
 func NewManager(workspace string) Manager {
-	home, _ := os.UserHomeDir()
+	userDir := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		userDir = filepath.Join(home, ".bytemind", "skills")
+	}
 	return NewManagerWithDirs(
 		workspace,
 		filepath.Join(workspace, "internal", "skills"),
-		filepath.Join(home, ".bytemind", "skills"),
+		userDir,
 		filepath.Join(workspace, ".bytemind", "skills"),
 	)
 }
@@ -40,6 +45,7 @@ func NewManagerWithDirs(workspace, builtinDir, userDir, projectDir string) Manag
 		userDir:    userDir,
 		projectDir: projectDir,
 		catalog:    map[string]ExtensionInfo{},
+		disabled:   map[string]struct{}{},
 	}
 }
 
@@ -50,6 +56,7 @@ func (m *extensionManager) Load(_ context.Context, source string) (ExtensionInfo
 	}
 	m.mu.Lock()
 	m.catalog[loaded.ID] = loaded
+	delete(m.disabled, loaded.ID)
 	m.mu.Unlock()
 	return loaded, nil
 }
@@ -59,12 +66,19 @@ func (m *extensionManager) Unload(_ context.Context, extensionID string) error {
 	if id == "" {
 		return wrapError(ErrCodeInvalidExtension, "extension id is required", nil)
 	}
+	if err := m.reload(); err != nil {
+		var extErr *ExtensionError
+		if !errors.As(err, &extErr) || extErr.Code != ErrCodeNotFound {
+			return err
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.catalog[id]; !ok {
 		return wrapError(ErrCodeNotFound, "extension not found", nil)
 	}
 	delete(m.catalog, id)
+	m.disabled[id] = struct{}{}
 	return nil
 }
 
@@ -73,18 +87,15 @@ func (m *extensionManager) Get(_ context.Context, extensionID string) (Extension
 	if id == "" {
 		return ExtensionInfo{}, wrapError(ErrCodeInvalidExtension, "extension id is required", nil)
 	}
-	m.mu.RLock()
-	item, ok := m.catalog[id]
-	m.mu.RUnlock()
-	if ok {
-		return item, nil
-	}
 	if err := m.reload(); err != nil {
 		return ExtensionInfo{}, err
 	}
 	m.mu.RLock()
-	item, ok = m.catalog[id]
-	m.mu.RUnlock()
+	defer m.mu.RUnlock()
+	if _, disabled := m.disabled[id]; disabled {
+		return ExtensionInfo{}, wrapError(ErrCodeNotFound, "extension not found", nil)
+	}
+	item, ok := m.catalog[id]
 	if !ok {
 		return ExtensionInfo{}, wrapError(ErrCodeNotFound, "extension not found", nil)
 	}
@@ -98,7 +109,10 @@ func (m *extensionManager) List(_ context.Context) ([]ExtensionInfo, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	items := make([]ExtensionInfo, 0, len(m.catalog))
-	for _, item := range m.catalog {
+	for id, item := range m.catalog {
+		if _, disabled := m.disabled[id]; disabled {
+			continue
+		}
 		items = append(items, item)
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -147,7 +161,11 @@ func (m *extensionManager) discoverOne(source string) (ExtensionInfo, error) {
 	if !info.IsDir() {
 		return ExtensionInfo{}, wrapError(ErrCodeInvalidSource, "extension source must be a directory", nil)
 	}
-	item, ok, err := discoverExtension(scopeForPath(resolved, m), resolved, filepath.Base(resolved))
+	scope, ok := scopeForPath(resolved, m)
+	if !ok {
+		scope = ExtensionScopeRemote
+	}
+	item, ok, err := discoverExtension(scope, resolved, filepath.Base(resolved))
 	if err != nil {
 		return ExtensionInfo{}, err
 	}
@@ -176,7 +194,7 @@ func discoverScope(scope ExtensionScope, root string) ([]ExtensionInfo, error) {
 		}
 		item, ok, err := discoverExtension(scope, filepath.Join(root, entry.Name()), entry.Name())
 		if err != nil {
-			continue
+			return nil, err
 		}
 		if ok {
 			items = append(items, item)
@@ -291,7 +309,7 @@ func buildExtensionInfo(scope ExtensionScope, dir, dirName string, manifest Mani
 	}
 }
 
-func scopeForPath(path string, m *extensionManager) ExtensionScope {
+func scopeForPath(path string, m *extensionManager) (ExtensionScope, bool) {
 	clean := filepath.Clean(path)
 	for _, item := range []struct {
 		scope ExtensionScope
@@ -306,10 +324,10 @@ func scopeForPath(path string, m *extensionManager) ExtensionScope {
 		}
 		root := filepath.Clean(item.dir)
 		if clean == root || strings.HasPrefix(clean, root+string(os.PathSeparator)) {
-			return item.scope
+			return item.scope, true
 		}
 	}
-	return ExtensionScopeProject
+	return "", false
 }
 
 func fileExists(path string) bool {

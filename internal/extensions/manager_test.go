@@ -37,6 +37,29 @@ func TestManagerLoadDiscoversExtensionFromSource(t *testing.T) {
 	}
 }
 
+func TestManagerLoadMarksUnknownRootAsRemote(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(t.TempDir(), "review")
+	if err := os.MkdirAll(external, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(external, "skill.json"), []byte(`{"name":"review"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(external, "SKILL.md"), []byte("# /review"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(root)
+	item, err := mgr.Load(context.Background(), external)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if item.Source.Scope != ExtensionScopeRemote {
+		t.Fatalf("expected remote scope, got %q", item.Source.Scope)
+	}
+}
+
 func TestManagerListDiscoversAcrossScopesWithPriority(t *testing.T) {
 	root := t.TempDir()
 	builtin := filepath.Join(root, "builtin")
@@ -80,6 +103,31 @@ func TestManagerListDiscoversAcrossScopesWithPriority(t *testing.T) {
 	}
 }
 
+func TestManagerListReturnsManifestErrors(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	bad := filepath.Join(project, "bad")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "skill.json"), []byte(`{"name":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManagerWithDirs(root, filepath.Join(root, "builtin"), filepath.Join(root, "user"), project)
+	if _, err := mgr.List(context.Background()); err == nil {
+		t.Fatal("expected invalid manifest error")
+	} else {
+		var extErr *ExtensionError
+		if !errors.As(err, &extErr) {
+			t.Fatalf("expected ExtensionError, got %T", err)
+		}
+		if extErr.Code != ErrCodeInvalidManifest {
+			t.Fatalf("unexpected code: %s", extErr.Code)
+		}
+	}
+}
+
 func TestManagerGetReturnsNotFound(t *testing.T) {
 	mgr := NewManager(t.TempDir())
 	item, err := mgr.Get(context.Background(), "skill.review")
@@ -98,7 +146,7 @@ func TestManagerGetReturnsNotFound(t *testing.T) {
 	}
 }
 
-func TestManagerUnloadRemovesLoadedExtension(t *testing.T) {
+func TestManagerUnloadPersistsAcrossReload(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, ".bytemind", "skills")
 	if err := os.MkdirAll(filepath.Join(project, "review"), 0o755); err != nil {
@@ -115,25 +163,33 @@ func TestManagerUnloadRemovesLoadedExtension(t *testing.T) {
 	if _, err := mgr.Load(context.Background(), filepath.Join(project, "review")); err != nil {
 		t.Fatal(err)
 	}
-	impl, ok := mgr.(*extensionManager)
-	if !ok {
-		t.Fatalf("expected extensionManager, got %T", mgr)
-	}
 	if err := mgr.Unload(context.Background(), "skill.review"); err != nil {
 		t.Fatalf("Unload failed: %v", err)
-	}
-	impl.mu.RLock()
-	_, exists := impl.catalog["skill.review"]
-	impl.mu.RUnlock()
-	if exists {
-		t.Fatal("expected loaded extension to be removed from manager cache")
 	}
 	items, err := mgr.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].ID != "skill.review" {
-		t.Fatalf("expected discovery pipeline to rehydrate extension from disk, got %#v", items)
+	if len(items) != 0 {
+		t.Fatalf("expected unloaded extension to stay hidden, got %#v", items)
+	}
+	if _, err := mgr.Get(context.Background(), "skill.review"); err == nil {
+		t.Fatal("expected not found after unload")
+	}
+}
+
+func TestManagerUnloadReturnsNotFoundForUnknownExtension(t *testing.T) {
+	mgr := NewManager(t.TempDir())
+	if err := mgr.Unload(context.Background(), "skill.missing"); err == nil {
+		t.Fatal("expected not found error")
+	} else {
+		var extErr *ExtensionError
+		if !errors.As(err, &extErr) {
+			t.Fatalf("expected ExtensionError, got %T", err)
+		}
+		if extErr.Code != ErrCodeNotFound {
+			t.Fatalf("unexpected code: %s", extErr.Code)
+		}
 	}
 }
 
@@ -160,6 +216,20 @@ func TestManagerRejectsInvalidSourceAndManifest(t *testing.T) {
 		if extErr.Code != ErrCodeInvalidManifest {
 			t.Fatalf("unexpected code: %s", extErr.Code)
 		}
+	}
+}
+
+func TestScopeForPathReturnsFoundFlag(t *testing.T) {
+	mgr := &extensionManager{
+		builtinDir: filepath.Join("repo", "internal", "skills"),
+		userDir:    filepath.Join("home", ".bytemind", "skills"),
+		projectDir: filepath.Join("repo", ".bytemind", "skills"),
+	}
+	if scope, ok := scopeForPath(filepath.Join("repo", ".bytemind", "skills", "review"), mgr); !ok || scope != ExtensionScopeProject {
+		t.Fatalf("expected project scope, got %q %v", scope, ok)
+	}
+	if scope, ok := scopeForPath(filepath.Join("outside", "review"), mgr); ok || scope != "" {
+		t.Fatalf("expected unknown scope, got %q %v", scope, ok)
 	}
 }
 
