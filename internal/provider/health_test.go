@@ -111,7 +111,7 @@ func TestExternalHealthTickerTick(t *testing.T) {
 
 func TestExternalHealthTickerTickReturnsAggregatedErrors(t *testing.T) {
 	checker := NewHealthChecker(HealthConfig{FailThreshold: 1, RecoverProbeSec: 1, RecoverSuccessThreshold: 1}, func(_ context.Context, id ProviderID) error {
-		return &Error{Code: ErrCodeUnavailable, Provider: id, Message: "down", Retryable: true}
+		return &Error{Code: ErrCodeBadRequest, Provider: id, Message: "bad", Retryable: false}
 	}).(*healthChecker)
 	now := time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC)
 	checker.clock = func() time.Time { return now }
@@ -124,6 +124,21 @@ func TestExternalHealthTickerTickReturnsAggregatedErrors(t *testing.T) {
 	})
 	if err := ticker.Tick(context.Background()); err == nil {
 		t.Fatal("expected aggregated error")
+	}
+}
+
+func TestExternalHealthTickerTickIgnoresExpectedUnavailableWindow(t *testing.T) {
+	checker := NewHealthChecker(HealthConfig{FailThreshold: 1, RecoverProbeSec: 10, RecoverSuccessThreshold: 1}, func(_ context.Context, _ ProviderID) error {
+		return nil
+	}).(*healthChecker)
+	now := time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC)
+	checker.clock = func() time.Time { return now }
+	checker.RecordFailure(context.Background(), "openai", &Error{Code: ErrCodeUnavailable, Retryable: true})
+	ticker := NewExternalHealthTicker(checker, func(context.Context) ([]ProviderID, error) {
+		return []ProviderID{"openai"}, nil
+	})
+	if err := ticker.Tick(context.Background()); err != nil {
+		t.Fatalf("expected recovery-window unavailable to be ignored, got %v", err)
 	}
 }
 

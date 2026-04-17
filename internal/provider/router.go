@@ -175,7 +175,7 @@ func filterHealthyCandidates(ctx context.Context, health HealthChecker, candidat
 			}
 			snapshot = health.Status(ctx, candidate.ProviderID)
 			checked[candidate.ProviderID] = snapshot
-			if err != nil && snapshot.Status != HealthStatusHalfOpen && snapshot.Status != HealthStatusHealthy && snapshot.Status != HealthStatusDegraded {
+			if err != nil {
 				continue
 			}
 		}

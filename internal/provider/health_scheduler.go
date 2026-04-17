@@ -28,6 +28,10 @@ func (t *ExternalHealthTicker) Tick(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return err
 			}
+			var providerErr *Error
+			if errors.As(err, &providerErr) && providerErr.Code == ErrCodeUnavailable {
+				continue
+			}
 			errs = append(errs, err)
 		}
 	}
