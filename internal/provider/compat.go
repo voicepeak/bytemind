@@ -14,6 +14,22 @@ type clientAdapter struct {
 	client       llm.Client
 }
 
+type RoutedClient struct {
+	router        Router
+	allowFallback bool
+}
+
+func NewRoutedClient(router Router) llm.Client {
+	return NewRoutedClientWithPolicy(router, false)
+}
+
+func NewRoutedClientWithPolicy(router Router, allowFallback bool) llm.Client {
+	if router == nil {
+		return nil
+	}
+	return &RoutedClient{router: router, allowFallback: allowFallback}
+}
+
 func WrapClient(providerID ProviderID, defaultModel ModelID, client llm.Client) Client {
 	if client == nil {
 		return nil
@@ -27,6 +43,133 @@ func WrapClient(providerID ProviderID, defaultModel ModelID, client llm.Client) 
 		defaultModel: ModelID(strings.TrimSpace(string(defaultModel))),
 		client:       client,
 	}
+}
+
+func (c *RoutedClient) CreateMessage(ctx context.Context, req llm.ChatRequest) (llm.Message, error) {
+	return c.execute(ctx, req, false, nil)
+}
+
+func (c *RoutedClient) StreamMessage(ctx context.Context, req llm.ChatRequest, onDelta func(string)) (llm.Message, error) {
+	return c.execute(ctx, req, true, onDelta)
+}
+
+func (c *RoutedClient) execute(ctx context.Context, req llm.ChatRequest, stream bool, onDelta func(string)) (llm.Message, error) {
+	if c == nil || c.router == nil {
+		return llm.Message{}, unavailableRouteError("no provider candidates available")
+	}
+	result, err := c.router.Route(ctx, ModelID(strings.TrimSpace(req.Model)), RouteContext{AllowFallback: c.allowFallback})
+	if err != nil {
+		return llm.Message{}, err
+	}
+	targets := make([]RouteTarget, 0, 1+len(result.Fallbacks))
+	targets = append(targets, result.Primary)
+	targets = append(targets, result.Fallbacks...)
+	var lastErr error
+	for _, target := range targets {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return llm.Message{}, ctxErr
+		}
+		if target.Client == nil {
+			continue
+		}
+		callReq := Request{ChatRequest: req}
+		callReq.Model = string(target.ModelID)
+		msg, deltas, err := executeTarget(ctx, target, callReq)
+		if err == nil {
+			if stream && onDelta != nil {
+				for _, delta := range deltas {
+					onDelta(delta)
+				}
+			}
+			return msg, nil
+		}
+		lastErr = err
+		var providerErr *Error
+		if errors.As(err, &providerErr) {
+			if !providerErr.Retryable {
+				return llm.Message{}, providerErr
+			}
+			continue
+		}
+		mapped := mapCompatError(target.ProviderID, err)
+		if !mapped.Retryable {
+			return llm.Message{}, mapped
+		}
+		lastErr = mapped
+	}
+	if lastErr != nil {
+		var providerErr *Error
+		if errors.As(lastErr, &providerErr) {
+			return llm.Message{}, providerErr
+		}
+		return llm.Message{}, mapCompatError("", lastErr)
+	}
+	return llm.Message{}, unavailableRouteError("no provider candidates available")
+}
+
+func executeTarget(ctx context.Context, target RouteTarget, req Request) (llm.Message, []string, error) {
+	streamCh, err := target.Client.Stream(ctx, req)
+	if err != nil {
+		return llm.Message{}, nil, err
+	}
+	var result llm.Message
+	var deltas []string
+	hasTerminal := false
+	hasDelta := false
+	for event := range streamCh {
+		switch event.Type {
+		case EventDelta:
+			if event.Delta != "" {
+				result.Content += event.Delta
+				deltas = append(deltas, event.Delta)
+				hasDelta = true
+			}
+		case EventToolCall:
+			if event.ToolCall != nil {
+				result.ToolCalls = append(result.ToolCalls, *event.ToolCall)
+			}
+		case EventUsage:
+			if event.Usage != nil {
+				result.Usage = &llm.Usage{InputTokens: int(event.Usage.InputTokens), OutputTokens: int(event.Usage.OutputTokens), TotalTokens: int(event.Usage.TotalTokens)}
+			}
+		case EventResult:
+			hasTerminal = true
+			if event.Result != nil {
+				merged := *event.Result
+				if strings.TrimSpace(merged.Content) == "" && result.Content != "" {
+					merged.Content = result.Content
+				}
+				if len(merged.ToolCalls) == 0 && len(result.ToolCalls) > 0 {
+					merged.ToolCalls = append([]llm.ToolCall(nil), result.ToolCalls...)
+				}
+				if merged.Usage == nil && result.Usage != nil {
+					usage := *result.Usage
+					merged.Usage = &usage
+				}
+				merged.Normalize()
+				return merged, deltas, nil
+			}
+			result.Normalize()
+			return result, deltas, nil
+		case EventError:
+			hasTerminal = true
+			if event.Error != nil {
+				return llm.Message{}, nil, event.Error
+			}
+			return llm.Message{}, nil, unavailableRouteError("provider stream emitted error event without error payload")
+		}
+	}
+	if !hasTerminal {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return llm.Message{}, nil, ctxErr
+		}
+		if hasDelta || len(result.ToolCalls) > 0 || result.Usage != nil {
+			return llm.Message{}, nil, unavailableRouteError("provider stream terminated without terminal event")
+		}
+		return llm.Message{}, nil, unavailableRouteError("provider stream terminated unexpectedly")
+	}
+	result.Normalize()
+	return result, deltas, nil
 }
 
 func (a *clientAdapter) ProviderID() ProviderID {

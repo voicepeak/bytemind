@@ -5,6 +5,7 @@ import "strings"
 type ProviderRuntimeConfig struct {
 	DefaultProvider string                    `json:"default_provider"`
 	DefaultModel    string                    `json:"default_model"`
+	AllowFallback   bool                      `json:"allow_fallback"`
 	Providers       map[string]ProviderConfig `json:"providers"`
 }
 
@@ -20,6 +21,7 @@ func LegacyProviderRuntimeConfig(cfg ProviderConfig) ProviderRuntimeConfig {
 	return ProviderRuntimeConfig{
 		DefaultProvider: providerID,
 		DefaultModel:    cfg.Model,
+		AllowFallback:   false,
 		Providers: map[string]ProviderConfig{
 			providerID: cfg,
 		},
