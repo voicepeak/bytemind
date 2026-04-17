@@ -87,6 +87,11 @@ func (h *healthChecker) Check(ctx context.Context, id ProviderID) error {
 	if state.status == "" {
 		state.status = HealthStatusHealthy
 	}
+	if state.status == HealthStatusHealthy || state.status == HealthStatusDegraded {
+		state.lastCheckAt = now
+		h.mu.Unlock()
+		return nil
+	}
 	if state.status == HealthStatusUnavailable && now.Before(state.nextProbeAt) {
 		snapshot := h.snapshotLocked(state)
 		h.mu.Unlock()

@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -65,13 +64,14 @@ func NewRouterClient(cfg config.ProviderRuntimeConfig, health HealthChecker) (ll
 		return nil, err
 	}
 	if health == nil {
-		health = NewHealthChecker(HealthConfigFromRuntime(cfg.Health), newRuntimePreflightChecker(cfg))
+		health = NewHealthChecker(HealthConfigFromRuntime(cfg.Health), nil)
 	}
 	return NewRoutedClientWithPolicy(NewRouter(reg, health, RouterConfig{
 		DefaultProvider: ProviderID(cfg.DefaultProvider),
 		DefaultModel:    ModelID(cfg.DefaultModel),
 	}), health, cfg.AllowFallback), nil
 }
+<<<<<<< HEAD
 
 func newRuntimePreflightChecker(cfg config.ProviderRuntimeConfig) func(context.Context, ProviderID) error {
 	providers := make(map[ProviderID]config.ProviderConfig, len(cfg.Providers))
@@ -164,3 +164,5 @@ func newRuntimePreflightChecker(cfg config.ProviderRuntimeConfig) func(context.C
 		return &Error{Code: ErrCodeUnavailable, Provider: normalizedID, Message: availability.Reason, Retryable: true, Detail: availability.Detail, Err: errorsUnavailable}
 	}
 }
+=======
+>>>>>>> 03a608a (fix: limit provider active health probes)

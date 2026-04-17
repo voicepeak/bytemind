@@ -215,8 +215,8 @@ func TestNewRouterClient(t *testing.T) {
 		t.Fatal("expected default health checker to be wired")
 	}
 	healthImpl, ok := routed.health.(*healthChecker)
-	if !ok || healthImpl.checker == nil {
-		t.Fatalf("expected default preflight checker to be wired, got %#v", routed.health)
+	if !ok || healthImpl.checker != nil {
+		t.Fatalf("expected request path to avoid default preflight checker, got %#v", routed.health)
 	}
 	if _, err := NewRouterClient(config.ProviderRuntimeConfig{Providers: map[string]config.ProviderConfig{"broken": {Type: ""}}}, nil); err == nil {
 		t.Fatal("expected registry error")
@@ -227,13 +227,6 @@ func TestHealthConfigFromRuntime(t *testing.T) {
 	cfg := HealthConfigFromRuntime(config.ProviderHealthRuntimeConfig{FailThreshold: 4, RecoverProbeSec: 12, RecoverSuccessThreshold: 3, WindowSize: 6})
 	if cfg.FailThreshold != 4 || cfg.RecoverProbeSec != 12 || cfg.RecoverSuccessThreshold != 3 || cfg.WindowSize != 6 {
 		t.Fatalf("unexpected health config %#v", cfg)
-	}
-}
-
-func TestRuntimePreflightCheckerRejectsUnknownProvider(t *testing.T) {
-	checker := newRuntimePreflightChecker(config.ProviderRuntimeConfig{Providers: map[string]config.ProviderConfig{"openai": {Type: "openai-compatible", BaseURL: "https://api.openai.com/v1", APIKey: "key", Model: "gpt-5.4"}}})
-	if err := checker(context.Background(), "missing"); err == nil {
-		t.Fatal("expected missing provider error")
 	}
 }
 
