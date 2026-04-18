@@ -92,7 +92,7 @@ func TestLoadRuntimeConfigRejectsNegativeMaxIterationsOverride(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for negative max-iterations")
 	}
-	if !strings.Contains(err.Error(), "-max-iterations must be greater than 0") {
+	if !strings.Contains(err.Error(), "-max-iterations must be greater than or equal to 0") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
