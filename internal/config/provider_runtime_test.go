@@ -147,15 +147,18 @@ func TestConfigLoadPreservesExplicitProviderRuntimeFieldsWhenProvidersMissing(t 
 		t.Fatal(err)
 	}
 	if cfg.ProviderRuntime.DefaultProvider != "anthropic" {
-		t.Fatalf("expected explicit default_provider to be preserved, got %q", cfg.ProviderRuntime.DefaultProvider)
+		t.Fatalf("expected explicit default provider to be preserved, got %q", cfg.ProviderRuntime.DefaultProvider)
 	}
 	if cfg.ProviderRuntime.DefaultModel != "runtime-model" {
-		t.Fatalf("expected explicit default_model to be preserved, got %q", cfg.ProviderRuntime.DefaultModel)
+		t.Fatalf("expected explicit default model to be preserved, got %q", cfg.ProviderRuntime.DefaultModel)
 	}
 	if !cfg.ProviderRuntime.AllowFallback {
-		t.Fatalf("expected explicit allow_fallback to be preserved, got %#v", cfg.ProviderRuntime)
+		t.Fatalf("expected explicit allow_fallback=true to be preserved, got %#v", cfg.ProviderRuntime)
 	}
-	if len(cfg.ProviderRuntime.Providers) == 0 {
-		t.Fatalf("expected legacy provider entries to be backfilled, got %#v", cfg.ProviderRuntime.Providers)
+	if len(cfg.ProviderRuntime.Providers) != 1 {
+		t.Fatalf("expected legacy providers to be backfilled, got %#v", cfg.ProviderRuntime.Providers)
+	}
+	if _, ok := cfg.ProviderRuntime.Providers["openai"]; !ok {
+		t.Fatalf("expected backfilled openai provider, got %#v", cfg.ProviderRuntime.Providers)
 	}
 }
