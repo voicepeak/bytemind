@@ -133,7 +133,10 @@ func NewRunner(opts Options) *Runner {
 	}
 	client := opts.Client
 	if client != nil {
-		client = routeAwareClient{base: client}
+		client = routeAwareClient{
+			base:          client,
+			allowFallback: cfg.ProviderRuntime.AllowFallback,
+		}
 	}
 	runner := &Runner{
 		workspace:     opts.Workspace,
@@ -193,21 +196,25 @@ func (r *Runner) modelID() string {
 }
 
 type routeAwareClient struct {
-	base llm.Client
+	base          llm.Client
+	allowFallback bool
+}
+
+func mergeAllowFallbackRouteContext(ctx context.Context, allowFallback bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rc := provider.RouteContextFromContext(ctx)
+	rc.AllowFallback = rc.AllowFallback || allowFallback
+	return provider.WithRouteContext(ctx, rc)
 }
 
 func (c routeAwareClient) CreateMessage(ctx context.Context, request llm.ChatRequest) (llm.Message, error) {
-	return c.base.CreateMessage(mergeAllowFallbackRouteContext(ctx), request)
+	return c.base.CreateMessage(mergeAllowFallbackRouteContext(ctx, c.allowFallback), request)
 }
 
 func (c routeAwareClient) StreamMessage(ctx context.Context, request llm.ChatRequest, onDelta func(string)) (llm.Message, error) {
-	return c.base.StreamMessage(mergeAllowFallbackRouteContext(ctx), request, onDelta)
-}
-
-func mergeAllowFallbackRouteContext(ctx context.Context) context.Context {
-	rc := provider.RouteContextFromContext(ctx)
-	rc.AllowFallback = true
-	return provider.WithRouteContext(ctx, rc)
+	return c.base.StreamMessage(mergeAllowFallbackRouteContext(ctx, c.allowFallback), request, onDelta)
 }
 
 func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput, mode string, out io.Writer) (string, error) {

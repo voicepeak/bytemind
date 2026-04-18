@@ -12,22 +12,29 @@ import (
 type staticCompatRouter struct {
 	result RouteResult
 	err    error
+	seenRC *RouteContext
 }
 
-func (r staticCompatRouter) Route(context.Context, ModelID, RouteContext) (RouteResult, error) {
+func (r staticCompatRouter) Route(_ context.Context, _ ModelID, rc RouteContext) (RouteResult, error) {
+	if r.seenRC != nil {
+		*r.seenRC = rc
+	}
 	return r.result, r.err
 }
 
 type captureCompatRouter struct {
 	result      RouteResult
+	err         error
+	rcs         []RouteContext
 	lastContext RouteContext
 	lastModelID ModelID
 }
 
 func (r *captureCompatRouter) Route(_ context.Context, model ModelID, rc RouteContext) (RouteResult, error) {
+	r.rcs = append(r.rcs, rc)
 	r.lastModelID = model
 	r.lastContext = rc
-	return r.result, nil
+	return r.result, r.err
 }
 
 type stubCompatClient struct {

@@ -61,9 +61,9 @@ func Bootstrap(req BootstrapRequest) (Runtime, error) {
 		req.StreamOverride = strings.TrimSpace(strconv.FormatBool(cfg.Stream))
 	}
 
-	apiKey := cfg.Provider.ResolveAPIKey()
+	apiKey := resolveBootstrapAPIKey(cfg)
 	if req.RequireAPIKey && apiKey == "" {
-		return Runtime{}, errors.New("missing API key; configure provider.api_key in the config file")
+		return Runtime{}, errors.New("missing API key; configure provider.api_key or provider_runtime.providers.<id>.api_key in the config file")
 	}
 
 	home, err := config.EnsureHomeLayout()
@@ -150,4 +150,28 @@ func Bootstrap(req BootstrapRequest) (Runtime, error) {
 		TaskManager: taskManager,
 		Extensions:  extensions,
 	}, nil
+}
+
+func resolveBootstrapAPIKey(cfg config.Config) string {
+	if key := cfg.Provider.ResolveAPIKey(); key != "" {
+		return key
+	}
+	runtimeCfg := cfg.ProviderRuntime
+	if len(runtimeCfg.Providers) == 0 {
+		runtimeCfg = config.LegacyProviderRuntimeConfig(cfg.Provider)
+	}
+	defaultProvider := strings.ToLower(strings.TrimSpace(runtimeCfg.DefaultProvider))
+	if defaultProvider != "" {
+		if providerCfg, ok := runtimeCfg.Providers[defaultProvider]; ok {
+			if key := providerCfg.ResolveAPIKey(); key != "" {
+				return key
+			}
+		}
+	}
+	for _, providerCfg := range runtimeCfg.Providers {
+		if key := providerCfg.ResolveAPIKey(); key != "" {
+			return key
+		}
+	}
+	return ""
 }

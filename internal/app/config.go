@@ -40,7 +40,7 @@ func LoadRuntimeConfig(req ConfigRequest) (config.Config, error) {
 		cfg.Stream = parsed
 	}
 	if req.MaxIterationsOverride < 0 {
-		return cfg, fmt.Errorf("-max-iterations must be greater than 0")
+		return cfg, fmt.Errorf("-max-iterations must be greater than or equal to 0")
 	}
 	if req.MaxIterationsOverride > 0 {
 		cfg.MaxIterations = req.MaxIterationsOverride

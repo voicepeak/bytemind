@@ -183,6 +183,44 @@ func TestBootstrapForTUIAllowsMissingAPIKey(t *testing.T) {
 	}
 }
 
+func TestBootstrapAcceptsRuntimeProviderAPIKey(t *testing.T) {
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+	t.Setenv("BYTEMIND_API_KEY", "")
+	writeEntrypointTestConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+		},
+		"provider_runtime": map[string]any{
+			"default_provider": "openai",
+			"default_model":    "gpt-5.4-mini",
+			"providers": map[string]any{
+				"openai": map[string]any{
+					"type":     "openai-compatible",
+					"base_url": "https://api.openai.com/v1",
+					"model":    "gpt-5.4-mini",
+					"api_key":  "runtime-key",
+				},
+			},
+		},
+		"stream": false,
+	})
+
+	runtimeBundle, err := BootstrapEntrypoint(EntrypointRequest{
+		RequireAPIKey: true,
+		Stdin:         strings.NewReader(""),
+		Stdout:        &bytes.Buffer{},
+	})
+	if err != nil {
+		t.Fatalf("expected runtime provider api key to satisfy bootstrap, got %v", err)
+	}
+	if runtimeBundle.Runner == nil {
+		t.Fatal("expected runner to be initialized")
+	}
+}
+
 func TestBootstrapRejectsExplicitMissingConfigFile(t *testing.T) {
 	workspace := t.TempDir()
 	t.Chdir(workspace)

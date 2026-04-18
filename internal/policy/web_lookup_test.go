@@ -32,3 +32,17 @@ func TestExplicitWebLookupInstructionReturnsEmptyWhenLocalOnly(t *testing.T) {
 		t.Fatalf("expected empty instruction, got %q", got)
 	}
 }
+
+func TestExplicitWebLookupInstructionDoesNotTriggerOnRepoSubstring(t *testing.T) {
+	got := ExplicitWebLookupInstruction("Need remote report summary for this incident")
+	if got != "" {
+		t.Fatalf("expected empty instruction for repo substring match, got %q", got)
+	}
+}
+
+func TestExplicitWebLookupInstructionDoesNotTriggerOnHyphenatedRepositoryWord(t *testing.T) {
+	got := ExplicitWebLookupInstruction("Please do an online repository-like comparison")
+	if got != "" {
+		t.Fatalf("expected empty instruction for hyphenated repository-like wording, got %q", got)
+	}
+}

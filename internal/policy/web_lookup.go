@@ -23,10 +23,20 @@ func ExplicitWebLookupInstruction(userInput string) string {
 		}
 	}
 
-	hasRepoWord := strings.Contains(text, "repo") || strings.Contains(text, "repository")
+	hasRepoWord := containsWordToken(text, "repo") || containsWordToken(text, "repository")
 	hasRemoteQualifier := strings.Contains(text, "github") || strings.Contains(text, "gitlab") || strings.Contains(text, "bitbucket") || strings.Contains(text, "online") || strings.Contains(text, "remote")
 	if hasRepoWord && hasRemoteQualifier {
 		return "The user explicitly requested online or GitHub-source lookup. Use web_search/web_fetch first. Do not substitute local-workspace tools (list_files/read_file/search_text) for this request unless the user explicitly asks to inspect the current workspace repository."
 	}
 	return ""
+}
+
+func containsWordToken(text, word string) bool {
+	for _, token := range strings.Fields(text) {
+		token = strings.Trim(token, ".,;:!?\"'`()[]{}<>")
+		if token == word {
+			return true
+		}
+	}
+	return false
 }

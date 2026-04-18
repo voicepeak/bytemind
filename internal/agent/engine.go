@@ -62,7 +62,8 @@ func (e *defaultEngine) HandleTurn(ctx context.Context, req TurnRequest) (<-chan
 			return
 		}
 
-		answer, err := e.runner.runPromptTurns(ctx, req.Session, setup, req.Out)
+		runCtx := withTurnEventSink(ctx, stream)
+		answer, err := e.runner.runPromptTurns(runCtx, req.Session, setup, req.Out)
 		if err != nil {
 			_ = stream.Emit(TurnEvent{
 				Type:      TurnEventError,

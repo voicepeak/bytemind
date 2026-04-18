@@ -180,7 +180,10 @@ func (c *routeContextClient) StreamMessage(ctx context.Context, req llm.ChatRequ
 func TestCompleteTurnInjectsRouteContext(t *testing.T) {
 	client := &routeContextClient{}
 	runner := NewRunner(Options{
-		Config: config.Config{Stream: false},
+		Config: config.Config{
+			Stream:          false,
+			ProviderRuntime: config.ProviderRuntimeConfig{AllowFallback: true},
+		},
 		Client: client,
 	})
 	streamed := false
@@ -196,7 +199,10 @@ func TestCompleteTurnInjectsRouteContext(t *testing.T) {
 func TestCompleteTurnMergesRouteContextFromCaller(t *testing.T) {
 	client := &routeContextClient{}
 	runner := NewRunner(Options{
-		Config: config.Config{Stream: false},
+		Config: config.Config{
+			Stream:          false,
+			ProviderRuntime: config.ProviderRuntimeConfig{AllowFallback: true},
+		},
 		Client: client,
 	})
 	streamed := false
@@ -226,6 +232,73 @@ func TestCompleteTurnMergesRouteContextFromCaller(t *testing.T) {
 	}
 	if client.lastRouteContext.Tags["team"] != "platform" {
 		t.Fatalf("expected tags to be preserved, got %#v", client.lastRouteContext)
+	}
+}
+
+func TestHandleTurnEmitsRuntimeEventsViaEngineStream(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name:      "list_files",
+					Arguments: `{"path":"."}`,
+				},
+			}},
+		},
+		{
+			Role:    llm.RoleAssistant,
+			Content: "done",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "gpt-5.4-mini"},
+			MaxIterations: 4,
+			Stream:        true,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	events, err := runner.engine.HandleTurn(context.Background(), TurnRequest{
+		Session: session.New(workspace),
+		Input: RunPromptInput{
+			DisplayText: "list files then finish",
+		},
+		Mode: "build",
+		Out:  io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := map[TurnEventType]bool{}
+	for event := range events {
+		seen[event.Type] = true
+	}
+
+	for _, eventType := range []TurnEventType{
+		TurnEventStart,
+		TurnEventToolUse,
+		TurnEventToolResult,
+		TurnEventDelta,
+		TurnEventComplete,
+	} {
+		if !seen[eventType] {
+			t.Fatalf("expected event type %q to be emitted, got %#v", eventType, seen)
+		}
 	}
 }
 
@@ -277,6 +350,25 @@ func TestRunPromptUsesRuntimeDefaultModelInRequestAndPrompt(t *testing.T) {
 	}
 	if strings.Contains(systemPrompt, "legacy-model") {
 		t.Fatalf("expected system prompt to avoid legacy model, got %q", systemPrompt)
+	}
+}
+
+func TestCompleteTurnDoesNotEnableFallbackWhenRuntimeConfigDisablesIt(t *testing.T) {
+	client := &routeContextClient{}
+	runner := NewRunner(Options{
+		Config: config.Config{
+			Stream:          false,
+			ProviderRuntime: config.ProviderRuntimeConfig{AllowFallback: false},
+		},
+		Client: client,
+	})
+	streamed := false
+	_, err := runner.completeTurn(context.Background(), llm.ChatRequest{}, io.Discard, &streamed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.lastRouteContext.AllowFallback {
+		t.Fatalf("expected allow fallback to remain false, got %#v", client.lastRouteContext)
 	}
 }
 
