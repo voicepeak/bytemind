@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -65,6 +66,54 @@ func TestRunPromptWithRoutedClientReturnsAssistantContent(t *testing.T) {
 	}
 	if answer != "done" {
 		t.Fatalf("unexpected answer %q", answer)
+	}
+}
+
+func TestRunPromptUsesRuntimeDefaultModelInRequestAndPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	client := &fakeClient{replies: []llm.Message{{
+		Role:    llm.RoleAssistant,
+		Content: "done",
+	}}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:        config.ProviderConfig{Model: "legacy-model"},
+			ProviderRuntime: config.ProviderRuntimeConfig{DefaultProvider: "openai", DefaultModel: "runtime-model"},
+			MaxIterations:   4,
+			Stream:          false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	if _, err := runner.RunPrompt(context.Background(), sess, "inspect repo", "build", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) == 0 {
+		t.Fatal("expected at least one request to be sent")
+	}
+	request := client.requests[0]
+	if request.Model != "runtime-model" {
+		t.Fatalf("expected request model runtime-model, got %q", request.Model)
+	}
+	systemMessage := ""
+	for _, message := range request.Messages {
+		if message.Role == llm.RoleSystem {
+			systemMessage = message.Text()
+			break
+		}
+	}
+	if !strings.Contains(systemMessage, "runtime-model") {
+		t.Fatalf("expected system prompt to include runtime model, got %q", systemMessage)
 	}
 }
 
@@ -166,10 +215,14 @@ func TestCompleteTurnFallsBackToCreateWhenStreamReplyIsEmpty(t *testing.T) {
 
 type routeContextClient struct {
 	lastRouteContext provider.RouteContext
+	lastRequestModel string
+	lastRequest      llm.ChatRequest
 }
 
-func (c *routeContextClient) CreateMessage(ctx context.Context, _ llm.ChatRequest) (llm.Message, error) {
+func (c *routeContextClient) CreateMessage(ctx context.Context, request llm.ChatRequest) (llm.Message, error) {
 	c.lastRouteContext = provider.RouteContextFromContext(ctx)
+	c.lastRequestModel = request.Model
+	c.lastRequest = request
 	return llm.Message{Role: "assistant", Content: "done"}, nil
 }
 
@@ -199,67 +252,28 @@ func TestCompleteTurnMergesRouteContextFromCaller(t *testing.T) {
 		Config: config.Config{Stream: false},
 		Client: client,
 	})
-	streamed := false
-	ctx := provider.WithRouteContext(context.Background(), provider.RouteContext{
-		Scenario:      "oneshot",
-		Region:        "us-east-1",
+	inputCtx := provider.WithRouteContext(context.Background(), provider.RouteContext{
+		Scenario:      "build",
+		Region:        "us",
+		PreferLatency: true,
 		PreferLowCost: true,
-		Tags:          map[string]string{"source": "caller"},
+		Tags:          map[string]string{"provider": "openai", "tier": "pro"},
 	})
-	_, err := runner.completeTurn(ctx, llm.ChatRequest{}, io.Discard, &streamed)
-	if err != nil {
+	streamed := false
+	if _, err := runner.completeTurn(inputCtx, llm.ChatRequest{}, io.Discard, &streamed); err != nil {
 		t.Fatal(err)
 	}
-	got := client.lastRouteContext
-	if !got.AllowFallback {
-		t.Fatalf("expected allow fallback route context, got %#v", got)
+	if !client.lastRouteContext.AllowFallback {
+		t.Fatalf("expected allow fallback route context, got %#v", client.lastRouteContext)
 	}
-	if got.Scenario != "oneshot" || got.Region != "us-east-1" || !got.PreferLowCost || got.Tags["source"] != "caller" {
-		t.Fatalf("expected caller route context to be preserved, got %#v", got)
+	if client.lastRouteContext.Scenario != "build" || client.lastRouteContext.Region != "us" {
+		t.Fatalf("expected scenario/region to be preserved, got %#v", client.lastRouteContext)
 	}
-}
-
-func TestRunPromptUsesRuntimeDefaultModelInRequestAndPrompt(t *testing.T) {
-	workspace := t.TempDir()
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	if !client.lastRouteContext.PreferLatency || !client.lastRouteContext.PreferLowCost {
+		t.Fatalf("expected preference flags to be preserved, got %#v", client.lastRouteContext)
 	}
-	sess := session.New(workspace)
-	client := &fakeClient{replies: []llm.Message{{
-		Role:    "assistant",
-		Content: "done",
-	}}}
-	runner := NewRunner(Options{
-		Workspace: workspace,
-		Config: config.Config{
-			Provider:        config.ProviderConfig{Model: "legacy-model"},
-			ProviderRuntime: config.ProviderRuntimeConfig{DefaultProvider: "openai", DefaultModel: "runtime-model"},
-			MaxIterations:   4,
-			Stream:          false,
-		},
-		Client:   client,
-		Store:    store,
-		Registry: tools.DefaultRegistry(),
-		Stdin:    strings.NewReader(""),
-		Stdout:   io.Discard,
-	})
-
-	answer, err := runner.RunPrompt(context.Background(), sess, "inspect repo", "build", io.Discard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if answer != "done" {
-		t.Fatalf("unexpected answer %q", answer)
-	}
-	if len(client.requests) == 0 {
-		t.Fatal("expected at least one request")
-	}
-	if client.requests[0].Model != "runtime-model" {
-		t.Fatalf("expected request model runtime-model, got %q", client.requests[0].Model)
-	}
-	if len(client.requests[0].Messages) == 0 || !strings.Contains(client.requests[0].Messages[0].Content, "model: runtime-model") {
-		t.Fatalf("expected system prompt model to use runtime default model, got %#v", client.requests[0].Messages)
+	if !reflect.DeepEqual(client.lastRouteContext.Tags, map[string]string{"provider": "openai", "tier": "pro"}) {
+		t.Fatalf("expected route tags to be preserved, got %#v", client.lastRouteContext.Tags)
 	}
 }
 
