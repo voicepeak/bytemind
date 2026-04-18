@@ -191,18 +191,21 @@ type routeAwareClient struct {
 	base llm.Client
 }
 
+func withFallbackRouteContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	routeContext := provider.RouteContextFromContext(ctx)
+	routeContext.AllowFallback = true
+	return provider.WithRouteContext(ctx, routeContext)
+}
+
 func (c routeAwareClient) CreateMessage(ctx context.Context, request llm.ChatRequest) (llm.Message, error) {
-	return c.base.CreateMessage(withMergedRouteContext(ctx), request)
+	return c.base.CreateMessage(withFallbackRouteContext(ctx), request)
 }
 
 func (c routeAwareClient) StreamMessage(ctx context.Context, request llm.ChatRequest, onDelta func(string)) (llm.Message, error) {
-	return c.base.StreamMessage(withMergedRouteContext(ctx), request, onDelta)
-}
-
-func withMergedRouteContext(ctx context.Context) context.Context {
-	rc := provider.RouteContextFromContext(ctx)
-	rc.AllowFallback = true
-	return provider.WithRouteContext(ctx, rc)
+	return c.base.StreamMessage(withFallbackRouteContext(ctx), request, onDelta)
 }
 
 func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput, mode string, out io.Writer) (string, error) {

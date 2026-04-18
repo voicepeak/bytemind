@@ -352,19 +352,21 @@ func normalize(cfg *Config) error {
 	if strings.TrimSpace(cfg.ProviderRuntime.DefaultModel) == "" {
 		cfg.ProviderRuntime.DefaultModel = legacyRuntime.DefaultModel
 	}
-	if len(cfg.ProviderRuntime.Providers) == 0 {
-		cfg.ProviderRuntime.Providers = map[string]ProviderConfig{}
-		for id, providerCfg := range legacyRuntime.Providers {
-			cfg.ProviderRuntime.Providers[id] = providerCfg
-		}
-	}
 	cfg.ProviderRuntime.DefaultProvider = strings.ToLower(strings.TrimSpace(cfg.ProviderRuntime.DefaultProvider))
+	if cfg.ProviderRuntime.DefaultProvider == "" {
+		cfg.ProviderRuntime.DefaultProvider = legacyRuntime.DefaultProvider
+	}
 	cfg.ProviderRuntime.DefaultModel = strings.TrimSpace(cfg.ProviderRuntime.DefaultModel)
 	if cfg.ProviderRuntime.DefaultModel == "" {
 		cfg.ProviderRuntime.DefaultModel = cfg.Provider.Model
 	}
 	if cfg.ProviderRuntime.Providers == nil {
 		cfg.ProviderRuntime.Providers = map[string]ProviderConfig{}
+	}
+	if len(cfg.ProviderRuntime.Providers) == 0 {
+		for id, providerCfg := range legacyRuntime.Providers {
+			cfg.ProviderRuntime.Providers[id] = providerCfg
+		}
 	}
 	normalizedProviders := make(map[string]ProviderConfig, len(cfg.ProviderRuntime.Providers))
 	normalizedSources := make(map[string]string, len(cfg.ProviderRuntime.Providers))
