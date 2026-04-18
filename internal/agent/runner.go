@@ -2,11 +2,14 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"strings"
 
 	"bytemind/internal/config"
 	extensionspkg "bytemind/internal/extensions"
 	"bytemind/internal/llm"
+	"bytemind/internal/provider"
 	runtimepkg "bytemind/internal/runtime"
 	"bytemind/internal/session"
 	"bytemind/internal/skills"
@@ -35,22 +38,25 @@ const (
 )
 
 type Options struct {
-	Workspace    string
-	Config       config.Config
-	Client       llm.Client
-	Store        SessionStore
-	Registry     ToolRegistry
-	Executor     ToolExecutor
-	TaskManager  runtimepkg.TaskManager
-	Extensions   extensionspkg.Manager
-	SkillManager *skills.Manager
-	TokenManager *tokenusage.TokenUsageManager
-	AuditStore   storagepkg.AuditStore
-	PromptStore  storagepkg.PromptHistoryWriter
-	Observer     Observer
-	Approval     tools.ApprovalHandler
-	Stdin        io.Reader
-	Stdout       io.Writer
+	Workspace     string
+	Config        config.Config
+	Client        llm.Client
+	Store         SessionStore
+	Registry      ToolRegistry
+	Executor      ToolExecutor
+	PolicyGateway PolicyGateway
+	Engine        Engine
+	TaskManager   runtimepkg.TaskManager
+	Runtime       RuntimeGateway
+	Extensions    extensionspkg.Manager
+	SkillManager  *skills.Manager
+	TokenManager  *tokenusage.TokenUsageManager
+	AuditStore    storagepkg.AuditStore
+	PromptStore   storagepkg.PromptHistoryWriter
+	Observer      Observer
+	Approval      tools.ApprovalHandler
+	Stdin         io.Reader
+	Stdout        io.Writer
 }
 
 type RunPromptInput struct {
@@ -60,25 +66,33 @@ type RunPromptInput struct {
 }
 
 type Runner struct {
-	workspace    string
-	config       config.Config
-	client       llm.Client
-	store        SessionStore
-	registry     ToolRegistry
-	executor     ToolExecutor
-	taskManager  runtimepkg.TaskManager
-	extensions   extensionspkg.Manager
-	skillManager *skills.Manager
-	tokenManager *tokenusage.TokenUsageManager
-	auditStore   storagepkg.AuditStore
-	promptStore  storagepkg.PromptHistoryWriter
-	observer     Observer
-	approval     tools.ApprovalHandler
-	stdin        io.Reader
-	stdout       io.Writer
+	workspace     string
+	config        config.Config
+	client        llm.Client
+	store         SessionStore
+	registry      ToolRegistry
+	executor      ToolExecutor
+	policyGateway PolicyGateway
+	engine        Engine
+	taskManager   runtimepkg.TaskManager
+	runtime       RuntimeGateway
+	extensions    extensionspkg.Manager
+	skillManager  *skills.Manager
+	tokenManager  *tokenusage.TokenUsageManager
+	auditStore    storagepkg.AuditStore
+	promptStore   storagepkg.PromptHistoryWriter
+	observer      Observer
+	approval      tools.ApprovalHandler
+	stdin         io.Reader
+	stdout        io.Writer
 }
 
 func NewRunner(opts Options) *Runner {
+	cfg := opts.Config
+	if model := strings.TrimSpace(cfg.ProviderRuntime.DefaultModel); model != "" {
+		cfg.Provider.Model = model
+	}
+
 	manager := opts.SkillManager
 	if manager == nil {
 		manager = skills.NewManager(opts.Workspace)
@@ -93,6 +107,10 @@ func NewRunner(opts Options) *Runner {
 			executor = tools.NewExecutor(concrete)
 		}
 	}
+	policyGateway := opts.PolicyGateway
+	if policyGateway == nil {
+		policyGateway = NewDefaultPolicyGateway()
+	}
 	auditStore := opts.AuditStore
 	if auditStore == nil {
 		auditStore = storagepkg.NopAuditStore{}
@@ -105,28 +123,91 @@ func NewRunner(opts Options) *Runner {
 	if taskManager == nil {
 		taskManager = runtimepkg.NewInMemoryTaskManager()
 	}
+	runtimeGateway := opts.Runtime
+	if runtimeGateway == nil {
+		runtimeGateway = newDefaultRuntimeGateway(taskManager)
+	}
 	extensions := opts.Extensions
 	if extensions == nil {
 		extensions = extensionspkg.NopManager{}
 	}
-	return &Runner{
-		workspace:    opts.Workspace,
-		config:       opts.Config,
-		client:       opts.Client,
-		store:        opts.Store,
-		registry:     registry,
-		executor:     executor,
-		taskManager:  taskManager,
-		extensions:   extensions,
-		skillManager: manager,
-		tokenManager: opts.TokenManager,
-		auditStore:   auditStore,
-		promptStore:  promptStore,
-		observer:     opts.Observer,
-		approval:     opts.Approval,
-		stdin:        opts.Stdin,
-		stdout:       opts.Stdout,
+	client := opts.Client
+	if client != nil {
+		client = routeAwareClient{base: client}
 	}
+	runner := &Runner{
+		workspace:     opts.Workspace,
+		config:        cfg,
+		client:        client,
+		store:         opts.Store,
+		registry:      registry,
+		executor:      executor,
+		policyGateway: policyGateway,
+		taskManager:   taskManager,
+		runtime:       runtimeGateway,
+		extensions:    extensions,
+		skillManager:  manager,
+		tokenManager:  opts.TokenManager,
+		auditStore:    auditStore,
+		promptStore:   promptStore,
+		observer:      opts.Observer,
+		approval:      opts.Approval,
+		stdin:         opts.Stdin,
+		stdout:        opts.Stdout,
+	}
+
+	engine := opts.Engine
+	if engine == nil {
+		engine = NewDefaultEngine(runner)
+	}
+	runner.engine = engine
+
+	return runner
+}
+
+func (r *Runner) GetClient() llm.Client {
+	if r == nil {
+		return nil
+	}
+	if wrapped, ok := r.client.(routeAwareClient); ok {
+		return wrapped.base
+	}
+	return r.client
+}
+
+func (r *Runner) GetConfig() config.Config {
+	if r == nil {
+		return config.Config{}
+	}
+	return r.config
+}
+
+func (r *Runner) modelID() string {
+	if r == nil {
+		return ""
+	}
+	if model := strings.TrimSpace(r.config.ProviderRuntime.DefaultModel); model != "" {
+		return model
+	}
+	return strings.TrimSpace(r.config.Provider.Model)
+}
+
+type routeAwareClient struct {
+	base llm.Client
+}
+
+func (c routeAwareClient) CreateMessage(ctx context.Context, request llm.ChatRequest) (llm.Message, error) {
+	return c.base.CreateMessage(mergeAllowFallbackRouteContext(ctx), request)
+}
+
+func (c routeAwareClient) StreamMessage(ctx context.Context, request llm.ChatRequest, onDelta func(string)) (llm.Message, error) {
+	return c.base.StreamMessage(mergeAllowFallbackRouteContext(ctx), request, onDelta)
+}
+
+func mergeAllowFallbackRouteContext(ctx context.Context) context.Context {
+	rc := provider.RouteContextFromContext(ctx)
+	rc.AllowFallback = true
+	return provider.WithRouteContext(ctx, rc)
 }
 
 func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput, mode string, out io.Writer) (string, error) {
@@ -137,9 +218,77 @@ func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput
 }
 
 func (r *Runner) RunPromptWithInput(ctx context.Context, sess *session.Session, input RunPromptInput, mode string, out io.Writer) (string, error) {
-	setup, err := r.prepareRunPrompt(sess, input, mode)
+	if r.engine == nil {
+		return "", fmt.Errorf("agent engine is unavailable")
+	}
+
+	events, err := r.engine.HandleTurn(ctx, TurnRequest{
+		Session: sess,
+		Input:   input,
+		Mode:    mode,
+		Out:     out,
+	})
 	if err != nil {
 		return "", err
 	}
-	return r.runPromptTurns(ctx, sess, setup, out)
+	if events == nil {
+		return "", fmt.Errorf("engine returned nil event stream")
+	}
+
+	handleEvent := func(event TurnEvent) (string, error, bool) {
+		switch event.Type {
+		case TurnEventCompleted:
+			return event.Answer, nil, true
+		case TurnEventFailed:
+			if event.Error != nil {
+				return "", event.Error, true
+			}
+			return "", fmt.Errorf("agent turn failed"), true
+		default:
+			return "", nil, false
+		}
+	}
+
+	for {
+		// Prefer already-ready engine events (especially terminal ones) over cancellation.
+		select {
+		case event, ok := <-events:
+			if !ok {
+				return "", fmt.Errorf("engine ended without terminal event")
+			}
+			answer, eventErr, done := handleEvent(event)
+			if done {
+				return answer, eventErr
+			}
+			continue
+		default:
+		}
+
+		select {
+		case event, ok := <-events:
+			if !ok {
+				return "", fmt.Errorf("engine ended without terminal event")
+			}
+			answer, eventErr, done := handleEvent(event)
+			if done {
+				return answer, eventErr
+			}
+		case <-ctx.Done():
+			// If cancellation races with terminal events, prefer already-ready terminal events.
+			for {
+				select {
+				case event, ok := <-events:
+					if !ok {
+						return "", ctx.Err()
+					}
+					answer, eventErr, done := handleEvent(event)
+					if done {
+						return answer, eventErr
+					}
+				default:
+					return "", ctx.Err()
+				}
+			}
+		}
+	}
 }

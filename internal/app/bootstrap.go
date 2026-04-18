@@ -3,7 +3,9 @@ package app
 import (
 	"errors"
 	"io"
+	"log"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"bytemind/internal/agent"
@@ -55,8 +57,8 @@ func Bootstrap(req BootstrapRequest) (Runtime, error) {
 	if err != nil {
 		return Runtime{}, err
 	}
-	if req.MaxIterationsOverride < 0 {
-		return Runtime{}, errors.New("-max-iterations must be greater than 0")
+	if req.StreamOverride == "" {
+		req.StreamOverride = strings.TrimSpace(strconv.FormatBool(cfg.Stream))
 	}
 
 	apiKey := cfg.Provider.ResolveAPIKey()
@@ -87,7 +89,11 @@ func Bootstrap(req BootstrapRequest) (Runtime, error) {
 	}
 
 	cfg.Provider.APIKey = apiKey
-	client, err := provider.NewClient(cfg.Provider)
+	runtimeCfg := cfg.ProviderRuntime
+	if len(runtimeCfg.Providers) == 0 {
+		runtimeCfg = config.LegacyProviderRuntimeConfig(cfg.Provider)
+	}
+	client, err := provider.NewClientFromRuntime(runtimeCfg, nil)
 	if err != nil {
 		return Runtime{}, err
 	}
@@ -101,7 +107,27 @@ func Bootstrap(req BootstrapRequest) (Runtime, error) {
 		promptStore = storagepkg.NopPromptHistoryStore{}
 	}
 
-	taskManager := runtimepkg.NewInMemoryTaskManager()
+	taskEventStore := runtimepkg.TaskEventStore(runtimepkg.NopTaskEventStore{})
+	taskStore, taskStoreErr := storagepkg.NewDefaultTaskStoreWithOptions(nil, storagepkg.TaskStoreOptions{
+		SyncOnAppend: false,
+	})
+	if taskStoreErr == nil {
+		taskEventStore = storagepkg.NewRuntimeTaskEventAdapter(taskStore)
+	} else {
+		log.Printf("bootstrap: failed to initialize unified task store: %v", taskStoreErr)
+		legacyTaskStore, legacyErr := storagepkg.NewDefaultRuntimeTaskStore()
+		if legacyErr == nil {
+			log.Printf("bootstrap: falling back to legacy runtime task store")
+			taskEventStore = legacyTaskStore
+		} else {
+			log.Printf("bootstrap: failed to initialize legacy runtime task store: %v", legacyErr)
+			log.Printf("bootstrap: runtime task events disabled; using NopTaskEventStore")
+		}
+	}
+
+	taskManager := runtimepkg.NewInMemoryTaskManager(
+		runtimepkg.WithTaskEventStore(taskEventStore),
+	)
 	extensions := extensionspkg.NopManager{}
 	runner := agent.NewRunner(agent.Options{
 		Workspace:   workspace,

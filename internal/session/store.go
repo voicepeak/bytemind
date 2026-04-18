@@ -1,6 +1,12 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"bytemind/internal/llm"
@@ -17,6 +23,7 @@ type ActiveSkill struct {
 type Session struct {
 	ID           string            `json:"id"`
 	Workspace    string            `json:"workspace"`
+	Title        string            `json:"title,omitempty"`
 	CreatedAt    time.Time         `json:"created_at"`
 	UpdatedAt    time.Time         `json:"updated_at"`
 	Conversation Conversation      `json:"conversation,omitempty"`
@@ -49,16 +56,33 @@ type ImageAssetMeta struct {
 }
 
 type Store struct {
-	files *storagepkg.SessionFileStore
+	files  *storagepkg.SessionFileStore
+	locker storagepkg.Locker
+
+	mu             sync.Mutex
+	recentEventIDs map[string]*eventIDWindow
+
+	now            func() time.Time
+	newEventID     func() string
+	lockTimeout    time.Duration
+	snapshotEveryN int64
+	snapshotEveryT time.Duration
 }
 
 type Summary struct {
-	ID              string    `json:"id"`
-	Workspace       string    `json:"workspace"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-	LastUserMessage string    `json:"last_user_message,omitempty"`
-	MessageCount    int       `json:"message_count"`
+	ID                            string    `json:"id"`
+	Workspace                     string    `json:"workspace"`
+	Title                         string    `json:"title,omitempty"`
+	Preview                       string    `json:"preview,omitempty"`
+	CreatedAt                     time.Time `json:"created_at"`
+	UpdatedAt                     time.Time `json:"updated_at"`
+	LastUserMessage               string    `json:"last_user_message,omitempty"`
+	MessageCount                  int       `json:"message_count"`
+	RawMessageCount               int       `json:"raw_msg_count"`
+	UserEffectiveInputCount       int       `json:"user_effective_input_count"`
+	AssistantEffectiveOutputCount int       `json:"assistant_effective_output_count"`
+	ZeroMsgSession                bool      `json:"zero_msg_session"`
+	NoReplySession                bool      `json:"no_reply_session"`
 }
 
 func New(workspace string) *Session {
@@ -85,13 +109,34 @@ func NewStore(dir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{files: files}, nil
-}
-
-func (s *Store) Load(id string) (*Session, error) {
-	path, err := s.findSessionPath(id)
+	locker, err := storagepkg.NewDefaultLocker(filepath.Join(dir, ".locks"))
 	if err != nil {
 		return nil, err
 	}
-	return loadSessionFile(s.files, path)
+	return &Store{
+		files:          files,
+		locker:         locker,
+		recentEventIDs: make(map[string]*eventIDWindow),
+		now: func() time.Time {
+			return time.Now().UTC()
+		},
+		newEventID: func() string {
+			var entropy [8]byte
+			if _, err := rand.Read(entropy[:]); err != nil {
+				return fmt.Sprintf("evt-%d", time.Now().UTC().UnixNano())
+			}
+			return "evt-" + hex.EncodeToString(entropy[:])
+		},
+		lockTimeout:    5 * time.Second,
+		snapshotEveryN: defaultSnapshotEveryN,
+		snapshotEveryT: defaultSnapshotEveryT,
+	}, nil
+}
+
+func (s *Store) Load(id string) (*Session, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("session id is required")
+	}
+	return s.load(id)
 }
