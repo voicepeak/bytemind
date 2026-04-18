@@ -18,6 +18,16 @@ func (r staticCompatRouter) Route(context.Context, ModelID, RouteContext) (Route
 	return r.result, r.err
 }
 
+type captureCompatRouter struct {
+	result RouteResult
+	rcs    []RouteContext
+}
+
+func (r *captureCompatRouter) Route(_ context.Context, _ ModelID, rc RouteContext) (RouteResult, error) {
+	r.rcs = append(r.rcs, rc)
+	return r.result, nil
+}
+
 type stubCompatClient struct {
 	message llm.Message
 	err     error
@@ -228,6 +238,46 @@ func TestWrapClientStreamMapsProviderErrors(t *testing.T) {
 				t.Fatalf("unexpected mapped error %#v", got)
 			}
 		})
+	}
+}
+
+func TestRoutedClientPreservesRouteContextAndMergesAllowFallback(t *testing.T) {
+	target := RouteTarget{
+		ProviderID: ProviderOpenAI,
+		ModelID:    ModelID("gpt-5.4"),
+		Client:     WrapClient(ProviderOpenAI, ModelID("gpt-5.4"), stubCompatClient{message: llm.Message{Role: llm.RoleAssistant, Content: "ok"}}),
+	}
+	router := &captureCompatRouter{result: RouteResult{Primary: target}}
+	client := &RoutedClient{router: router, allowFallback: false}
+
+	ctx := WithRouteContext(context.Background(), RouteContext{
+		Scenario:      "plan",
+		Region:        "us",
+		PreferLatency: true,
+		AllowFallback: true,
+		Tags:          map[string]string{"req": "1"},
+	})
+	if _, err := client.CreateMessage(ctx, llm.ChatRequest{Model: "gpt-5.4"}); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(router.rcs) != 1 {
+		t.Fatalf("expected one route call, got %d", len(router.rcs))
+	}
+	got := router.rcs[0]
+	if got.Scenario != "plan" || got.Region != "us" || !got.PreferLatency || got.Tags["req"] != "1" {
+		t.Fatalf("expected route context fields to be preserved, got %#v", got)
+	}
+	if !got.AllowFallback {
+		t.Fatalf("expected caller fallback to be preserved, got %#v", got)
+	}
+
+	router.rcs = nil
+	client.allowFallback = true
+	if _, err := client.CreateMessage(context.Background(), llm.ChatRequest{Model: "gpt-5.4"}); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(router.rcs) != 1 || !router.rcs[0].AllowFallback {
+		t.Fatalf("expected client policy to enable fallback, got %#v", router.rcs)
 	}
 }
 
