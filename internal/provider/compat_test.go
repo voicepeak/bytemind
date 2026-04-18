@@ -18,6 +18,16 @@ func (r staticCompatRouter) Route(context.Context, ModelID, RouteContext) (Route
 	return r.result, r.err
 }
 
+type capturingCompatRouter struct {
+	lastRouteContext RouteContext
+	err              error
+}
+
+func (r *capturingCompatRouter) Route(_ context.Context, _ ModelID, rc RouteContext) (RouteResult, error) {
+	r.lastRouteContext = rc
+	return RouteResult{}, r.err
+}
+
 type stubCompatClient struct {
 	message llm.Message
 	err     error
@@ -248,6 +258,52 @@ func TestWrapClientStreamStopsWhenContextCancelled(t *testing.T) {
 			for range stream {
 			}
 		}
+	}
+}
+
+func TestRoutedClientMergesAllowFallbackFromContextAndClientPolicy(t *testing.T) {
+	tests := []struct {
+		name         string
+		contextValue bool
+		clientValue  bool
+		wantFallback bool
+	}{
+		{
+			name:         "context true client false",
+			contextValue: true,
+			clientValue:  false,
+			wantFallback: true,
+		},
+		{
+			name:         "context false client true",
+			contextValue: false,
+			clientValue:  true,
+			wantFallback: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := &capturingCompatRouter{err: errors.New("stop after route")}
+			client := &RoutedClient{router: router, allowFallback: tt.clientValue}
+			ctx := WithRouteContext(context.Background(), RouteContext{
+				Scenario:      "compat-test",
+				AllowFallback: tt.contextValue,
+				Tags:          map[string]string{"provider": "openai"},
+			})
+
+			_, _ = client.CreateMessage(ctx, llm.ChatRequest{Model: "gpt-5.4"})
+
+			if router.lastRouteContext.AllowFallback != tt.wantFallback {
+				t.Fatalf("unexpected allow fallback, got=%v want=%v", router.lastRouteContext.AllowFallback, tt.wantFallback)
+			}
+			if router.lastRouteContext.Scenario != "compat-test" {
+				t.Fatalf("expected scenario to be preserved, got %#v", router.lastRouteContext)
+			}
+			if router.lastRouteContext.Tags["provider"] != "openai" {
+				t.Fatalf("expected tags to be preserved, got %#v", router.lastRouteContext)
+			}
+		})
 	}
 }
 

@@ -73,7 +73,7 @@ func (c *RoutedClient) execute(ctx context.Context, req llm.ChatRequest, stream 
 		return llm.Message{}, unavailableRouteError("no provider candidates available")
 	}
 	routeContext := RouteContextFromContext(ctx)
-	routeContext.AllowFallback = c.allowFallback
+	routeContext.AllowFallback = routeContext.AllowFallback || c.allowFallback
 	result, err := c.router.Route(ctx, ModelID(strings.TrimSpace(req.Model)), routeContext)
 	if err != nil {
 		return llm.Message{}, err
