@@ -166,12 +166,14 @@ func TestCompleteTurnFallsBackToCreateWhenStreamReplyIsEmpty(t *testing.T) {
 
 type routeContextClient struct {
 	lastRouteContext provider.RouteContext
+	lastRequestModel string
 	lastRequest      llm.ChatRequest
 }
 
-func (c *routeContextClient) CreateMessage(ctx context.Context, req llm.ChatRequest) (llm.Message, error) {
+func (c *routeContextClient) CreateMessage(ctx context.Context, request llm.ChatRequest) (llm.Message, error) {
 	c.lastRouteContext = provider.RouteContextFromContext(ctx)
-	c.lastRequest = req
+	c.lastRequestModel = request.Model
+	c.lastRequest = request
 	return llm.Message{Role: "assistant", Content: "done"}, nil
 }
 
@@ -203,22 +205,25 @@ func TestCompleteTurnMergesRouteContextFromCaller(t *testing.T) {
 	})
 	streamed := false
 	ctx := provider.WithRouteContext(context.Background(), provider.RouteContext{
-		Scenario: "batch",
+		Scenario: "build",
 		Region:   "us",
-		Tags:     map[string]string{"source": "caller"},
+		Tags:     map[string]string{"provider": "openai", "tier": "pro"},
 	})
 	_, err := runner.completeTurn(ctx, llm.ChatRequest{}, io.Discard, &streamed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if client.lastRouteContext.Scenario != "batch" || client.lastRouteContext.Region != "us" {
-		t.Fatalf("expected existing route fields to be preserved, got %#v", client.lastRouteContext)
-	}
-	if client.lastRouteContext.Tags["source"] != "caller" {
-		t.Fatalf("expected tags to be preserved, got %#v", client.lastRouteContext)
-	}
 	if !client.lastRouteContext.AllowFallback {
-		t.Fatalf("expected runner to enable fallback, got %#v", client.lastRouteContext)
+		t.Fatalf("expected allow fallback route context, got %#v", client.lastRouteContext)
+	}
+	if client.lastRouteContext.Scenario != "build" || client.lastRouteContext.Region != "us" {
+		t.Fatalf("expected scenario/region preserved, got %#v", client.lastRouteContext)
+	}
+	if got := client.lastRouteContext.Tags["provider"]; got != "openai" {
+		t.Fatalf("expected provider tag preserved, got %q", got)
+	}
+	if got := client.lastRouteContext.Tags["tier"]; got != "pro" {
+		t.Fatalf("expected tier tag preserved, got %q", got)
 	}
 }
 
@@ -233,13 +238,10 @@ func TestRunPromptUsesRuntimeDefaultModelInRequestAndPrompt(t *testing.T) {
 	runner := NewRunner(Options{
 		Workspace: workspace,
 		Config: config.Config{
-			Provider: config.ProviderConfig{Model: "legacy-model"},
-			ProviderRuntime: config.ProviderRuntimeConfig{
-				DefaultProvider: "openai",
-				DefaultModel:    "runtime-model",
-			},
-			MaxIterations: 2,
-			Stream:        false,
+			Provider:        config.ProviderConfig{Model: "legacy-model"},
+			ProviderRuntime: config.ProviderRuntimeConfig{DefaultModel: "runtime-model"},
+			MaxIterations:   2,
+			Stream:          false,
 		},
 		Client:   client,
 		Store:    store,
@@ -247,21 +249,21 @@ func TestRunPromptUsesRuntimeDefaultModelInRequestAndPrompt(t *testing.T) {
 		Stdin:    strings.NewReader(""),
 		Stdout:   io.Discard,
 	})
-	answer, err := runner.RunPrompt(context.Background(), sess, "ping", "build", io.Discard)
-	if err != nil {
+	if _, err := runner.RunPrompt(context.Background(), sess, "inspect", "build", io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if answer != "done" {
-		t.Fatalf("unexpected answer %q", answer)
-	}
-	if client.lastRequest.Model != "runtime-model" {
-		t.Fatalf("expected runtime model in request, got %q", client.lastRequest.Model)
+	if client.lastRequestModel != "runtime-model" {
+		t.Fatalf("expected request model runtime-model, got %q", client.lastRequestModel)
 	}
 	if len(client.lastRequest.Messages) == 0 {
-		t.Fatal("expected request messages")
+		t.Fatalf("expected outbound request messages, got %#v", client.lastRequest)
 	}
-	if !strings.Contains(client.lastRequest.Messages[0].Content, "runtime-model") {
-		t.Fatalf("expected system prompt to include runtime model, got %q", client.lastRequest.Messages[0].Content)
+	systemPrompt := client.lastRequest.Messages[0].Text()
+	if strings.TrimSpace(systemPrompt) == "" {
+		t.Fatalf("expected non-empty system prompt in outbound request, got %#v", client.lastRequest.Messages[0])
+	}
+	if !strings.Contains(systemPrompt, "model: runtime-model") {
+		t.Fatalf("expected system prompt model runtime-model, got %q", systemPrompt)
 	}
 }
 
