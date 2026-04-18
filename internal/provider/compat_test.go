@@ -18,6 +18,18 @@ func (r staticCompatRouter) Route(context.Context, ModelID, RouteContext) (Route
 	return r.result, r.err
 }
 
+type captureCompatRouter struct {
+	result           RouteResult
+	lastRouteContext RouteContext
+	lastRequested    ModelID
+}
+
+func (r *captureCompatRouter) Route(_ context.Context, requested ModelID, rc RouteContext) (RouteResult, error) {
+	r.lastRequested = requested
+	r.lastRouteContext = rc
+	return r.result, nil
+}
+
 type stubCompatClient struct {
 	message llm.Message
 	err     error
@@ -325,6 +337,51 @@ func TestRoutedClientCreateMessageReturnsResultContent(t *testing.T) {
 	}
 	if msg.Content != "Task complete." {
 		t.Fatalf("unexpected message %#v", msg)
+	}
+}
+
+func TestRoutedClientPreservesRouteContextAndMergesAllowFallback(t *testing.T) {
+	router := &captureCompatRouter{
+		result: RouteResult{
+			Primary: RouteTarget{
+				ProviderID: ProviderOpenAI,
+				ModelID:    ModelID("gpt-5.4"),
+				Client: WrapClient(ProviderOpenAI, ModelID("gpt-5.4"), stubCompatClient{
+					message: llm.Message{Role: llm.RoleAssistant, Content: "ok"},
+				}),
+			},
+		},
+	}
+	client := &RoutedClient{router: router, allowFallback: false}
+	ctx := WithRouteContext(context.Background(), RouteContext{
+		Scenario:      "review",
+		Region:        "us",
+		PreferLowCost: true,
+		AllowFallback: true,
+		Tags:          map[string]string{"source": "runner"},
+	})
+
+	msg, err := client.CreateMessage(ctx, llm.ChatRequest{Model: "gpt-5.4"})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if msg.Content != "ok" {
+		t.Fatalf("unexpected message %#v", msg)
+	}
+	if router.lastRequested != "gpt-5.4" {
+		t.Fatalf("unexpected requested model %q", router.lastRequested)
+	}
+	if router.lastRouteContext.Scenario != "review" || router.lastRouteContext.Region != "us" {
+		t.Fatalf("expected route context fields preserved, got %#v", router.lastRouteContext)
+	}
+	if !router.lastRouteContext.PreferLowCost {
+		t.Fatalf("expected prefer_low_cost to be preserved, got %#v", router.lastRouteContext)
+	}
+	if !router.lastRouteContext.AllowFallback {
+		t.Fatalf("expected allow_fallback merge to preserve true, got %#v", router.lastRouteContext)
+	}
+	if router.lastRouteContext.Tags["source"] != "runner" {
+		t.Fatalf("expected route context tags preserved, got %#v", router.lastRouteContext)
 	}
 }
 

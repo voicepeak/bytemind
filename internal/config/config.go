@@ -345,16 +345,17 @@ func normalize(cfg *Config) error {
 	if cfg.Provider.ExtraHeaders == nil {
 		cfg.Provider.ExtraHeaders = map[string]string{}
 	}
-	if len(cfg.ProviderRuntime.Providers) == 0 {
-		cfg.ProviderRuntime = LegacyProviderRuntimeConfig(cfg.Provider)
+	legacyRuntime := LegacyProviderRuntimeConfig(cfg.Provider)
+	if strings.TrimSpace(cfg.ProviderRuntime.DefaultProvider) == "" {
+		cfg.ProviderRuntime.DefaultProvider = legacyRuntime.DefaultProvider
 	}
 	cfg.ProviderRuntime.DefaultProvider = strings.ToLower(strings.TrimSpace(cfg.ProviderRuntime.DefaultProvider))
 	cfg.ProviderRuntime.DefaultModel = strings.TrimSpace(cfg.ProviderRuntime.DefaultModel)
 	if cfg.ProviderRuntime.DefaultModel == "" {
 		cfg.ProviderRuntime.DefaultModel = cfg.Provider.Model
 	}
-	if cfg.ProviderRuntime.Providers == nil {
-		cfg.ProviderRuntime.Providers = map[string]ProviderConfig{}
+	if len(cfg.ProviderRuntime.Providers) == 0 {
+		cfg.ProviderRuntime.Providers = legacyRuntime.Providers
 	}
 	normalizedProviders := make(map[string]ProviderConfig, len(cfg.ProviderRuntime.Providers))
 	normalizedSources := make(map[string]string, len(cfg.ProviderRuntime.Providers))
