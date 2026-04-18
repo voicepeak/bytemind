@@ -653,14 +653,24 @@ func TestRunPromptAwayFailFastStopsAfterPermissionDenied(t *testing.T) {
 	client := &fakeClient{replies: []llm.Message{
 		{
 			Role: "assistant",
-			ToolCalls: []llm.ToolCall{{
-				ID:   "call-1",
-				Type: "function",
-				Function: llm.ToolFunctionCall{
-					Name:      "write_file",
-					Arguments: `{"path":"x.txt","content":"x"}`,
+			ToolCalls: []llm.ToolCall{
+				{
+					ID:   "call-1",
+					Type: "function",
+					Function: llm.ToolFunctionCall{
+						Name:      "write_file",
+						Arguments: `{"path":"x.txt","content":"x"}`,
+					},
 				},
-			}},
+				{
+					ID:   "call-2",
+					Type: "function",
+					Function: llm.ToolFunctionCall{
+						Name:      "read_file",
+						Arguments: `{"path":"x.txt"}`,
+					},
+				},
+			},
 		},
 		{
 			Role:    "assistant",
@@ -693,6 +703,15 @@ func TestRunPromptAwayFailFastStopsAfterPermissionDenied(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fail_fast stopped run") {
 		t.Fatalf("expected fail_fast stop reason, got %v", err)
+	}
+	for _, want := range []string{
+		`"denied":["write_file"]`,
+		`"pending_approval":["write_file"]`,
+		`"skipped_due_to_dependency":["read_file"]`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected fail_fast error to include task report item %q, got %v", want, err)
+		}
 	}
 	if len(sess.Messages) != 3 {
 		t.Fatalf("expected session to stop after first denied tool call, got %#v", sess.Messages)

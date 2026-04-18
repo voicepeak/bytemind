@@ -15,6 +15,7 @@ import (
 func (r *Runner) runPromptTurns(ctx context.Context, sess *session.Session, setup runPromptSetup, out io.Writer) (string, error) {
 	toolSequenceTracker := runtimepkg.NewToolSequenceTracker(runtimepkg.DefaultRepeatedToolSequenceThreshold)
 	executedToolNames := make([]string, 0, 16)
+	taskReport := &runtimepkg.TaskReport{}
 	r.renderApprovalPrecheck(out, setup)
 
 	for step := 0; step < r.config.MaxIterations; step++ {
@@ -33,9 +34,13 @@ func (r *Runner) runPromptTurns(ctx context.Context, sess *session.Session, setu
 			DeniedTools:      setup.DeniedTools,
 			SequenceTracker:  toolSequenceTracker,
 			ExecutedTools:    &executedToolNames,
+			TaskReport:       taskReport,
 			Out:              out,
 		})
 		if err != nil {
+			if !taskReport.IsEmpty() {
+				return "", fmt.Errorf("%w\nTask report:\n%s", err, taskReport.JSON())
+			}
 			return "", err
 		}
 		if finished {
@@ -47,6 +52,7 @@ func (r *Runner) runPromptTurns(ctx context.Context, sess *session.Session, setu
 		SessionID:     corepkg.SessionID(sess.ID),
 		Reason:        fmt.Sprintf("I reached the current execution budget of %d turns before producing a final answer.", r.config.MaxIterations),
 		ExecutedTools: executedToolNames,
+		TaskReport:    taskReport,
 	})
 	return r.finishWithSummary(sess, summary, out, false)
 }

@@ -27,6 +27,7 @@ type turnProcessParams struct {
 	DeniedTools      map[string]struct{}
 	SequenceTracker  *runtimepkg.ToolSequenceTracker
 	ExecutedTools    *[]string
+	TaskReport       *runtimepkg.TaskReport
 	Out              io.Writer
 }
 
@@ -71,6 +72,7 @@ func (r *Runner) processTurn(ctx context.Context, p turnProcessParams) (string, 
 			SessionID:     corepkg.SessionID(p.Session.ID),
 			Reason:        fmt.Sprintf("I stopped because the assistant repeated the same tool sequence %d times in a row (%s).", sequenceObservation.RepeatCount, strings.Join(sequenceObservation.UniqueToolNames, ", ")),
 			ExecutedTools: *p.ExecutedTools,
+			TaskReport:    p.TaskReport,
 		})
 		answer, summaryErr := r.finishWithSummary(p.Session, summary, p.Out, streamedText)
 		return answer, true, summaryErr
@@ -86,9 +88,26 @@ func (r *Runner) processTurn(ctx context.Context, p turnProcessParams) (string, 
 	if streamedText && p.Out != nil {
 		_, _ = io.WriteString(p.Out, "\n")
 	}
-	for _, call := range reply.ToolCalls {
+	for idx, call := range reply.ToolCalls {
 		*p.ExecutedTools = append(*p.ExecutedTools, call.Function.Name)
-		if err := r.executeToolCall(ctx, p.Session, p.RunMode, call, p.Out, p.AllowedTools, p.DeniedTools); err != nil {
+		outcome, err := r.executeToolCall(ctx, p.Session, p.RunMode, call, p.Out, p.AllowedTools, p.DeniedTools)
+		if p.TaskReport != nil {
+			if outcome.Executed {
+				p.TaskReport.RecordExecuted(call.Function.Name)
+			}
+			if outcome.Denied {
+				p.TaskReport.RecordDenied(call.Function.Name)
+			}
+			if outcome.PendingApproval {
+				p.TaskReport.RecordPendingApproval(call.Function.Name)
+			}
+		}
+		if err != nil {
+			if p.TaskReport != nil && outcome.Denied && strings.TrimSpace(r.config.ApprovalMode) == "away" && strings.TrimSpace(r.config.AwayPolicy) == "fail_fast" {
+				for next := idx + 1; next < len(reply.ToolCalls); next++ {
+					p.TaskReport.RecordSkippedDueToDependency(reply.ToolCalls[next].Function.Name)
+				}
+			}
 			return "", false, err
 		}
 	}

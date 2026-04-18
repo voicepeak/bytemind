@@ -15,6 +15,12 @@ import (
 	"bytemind/internal/tools"
 )
 
+type toolExecutionOutcome struct {
+	Executed        bool
+	Denied          bool
+	PendingApproval bool
+}
+
 func (r *Runner) executeToolCall(
 	ctx context.Context,
 	sess *session.Session,
@@ -23,9 +29,9 @@ func (r *Runner) executeToolCall(
 	out io.Writer,
 	allowedTools map[string]struct{},
 	deniedTools map[string]struct{},
-) error {
+) (toolExecutionOutcome, error) {
 	if r.executor == nil {
-		return fmt.Errorf("tool executor is unavailable")
+		return toolExecutionOutcome{}, fmt.Errorf("tool executor is unavailable")
 	}
 	r.emit(Event{
 		Type:          EventToolCallStarted,
@@ -118,12 +124,12 @@ func (r *Runner) executeToolCall(
 
 	toolMessage := llm.NewToolResultMessage(call.ID, result)
 	if err := llm.ValidateMessage(toolMessage); err != nil {
-		return err
+		return toolExecutionOutcome{}, err
 	}
 	sess.Messages = append(sess.Messages, toolMessage)
 	if r.store != nil {
 		if err := r.store.Save(sess); err != nil {
-			return err
+			return toolExecutionOutcome{}, err
 		}
 	}
 	if call.Function.Name == "update_plan" {
@@ -133,10 +139,18 @@ func (r *Runner) executeToolCall(
 			Plan:      planpkg.CloneState(sess.Plan),
 		})
 	}
-	if shouldStopRunForAwayFailFast(execErr, r.config.ApprovalMode, r.config.AwayPolicy) {
-		return fmt.Errorf("away mode fail_fast stopped run after %s permission denial: %w", call.Function.Name, execErr)
+	outcome := toolExecutionOutcome{}
+	if execErr == nil {
+		outcome.Executed = true
 	}
-	return nil
+	if errorReasonCode == string(tools.ToolErrorPermissionDenied) {
+		outcome.Denied = true
+		outcome.PendingApproval = true
+	}
+	if shouldStopRunForAwayFailFast(execErr, r.config.ApprovalMode, r.config.AwayPolicy) {
+		return outcome, fmt.Errorf("away mode fail_fast stopped run after %s permission denial: %w", call.Function.Name, execErr)
+	}
+	return outcome, nil
 }
 
 func shouldStopRunForAwayFailFast(err error, approvalMode, awayPolicy string) bool {
