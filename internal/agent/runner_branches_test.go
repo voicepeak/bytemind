@@ -215,10 +215,14 @@ func TestCompleteTurnFallsBackToCreateWhenStreamReplyIsEmpty(t *testing.T) {
 
 type routeContextClient struct {
 	lastRouteContext provider.RouteContext
+	lastRequestModel string
+	lastRequest      llm.ChatRequest
 }
 
-func (c *routeContextClient) CreateMessage(ctx context.Context, _ llm.ChatRequest) (llm.Message, error) {
+func (c *routeContextClient) CreateMessage(ctx context.Context, request llm.ChatRequest) (llm.Message, error) {
 	c.lastRouteContext = provider.RouteContextFromContext(ctx)
+	c.lastRequestModel = request.Model
+	c.lastRequest = request
 	return llm.Message{Role: "assistant", Content: "done"}, nil
 }
 
@@ -249,11 +253,11 @@ func TestCompleteTurnMergesRouteContextFromCaller(t *testing.T) {
 		Client: client,
 	})
 	inputCtx := provider.WithRouteContext(context.Background(), provider.RouteContext{
-		Scenario:      "unit-test",
+		Scenario:      "build",
 		Region:        "us",
 		PreferLatency: true,
 		PreferLowCost: true,
-		Tags:          map[string]string{"provider": "openai"},
+		Tags:          map[string]string{"provider": "openai", "tier": "pro"},
 	})
 	streamed := false
 	if _, err := runner.completeTurn(inputCtx, llm.ChatRequest{}, io.Discard, &streamed); err != nil {
@@ -262,13 +266,13 @@ func TestCompleteTurnMergesRouteContextFromCaller(t *testing.T) {
 	if !client.lastRouteContext.AllowFallback {
 		t.Fatalf("expected allow fallback route context, got %#v", client.lastRouteContext)
 	}
-	if client.lastRouteContext.Scenario != "unit-test" || client.lastRouteContext.Region != "us" {
+	if client.lastRouteContext.Scenario != "build" || client.lastRouteContext.Region != "us" {
 		t.Fatalf("expected scenario/region to be preserved, got %#v", client.lastRouteContext)
 	}
 	if !client.lastRouteContext.PreferLatency || !client.lastRouteContext.PreferLowCost {
 		t.Fatalf("expected preference flags to be preserved, got %#v", client.lastRouteContext)
 	}
-	if !reflect.DeepEqual(client.lastRouteContext.Tags, map[string]string{"provider": "openai"}) {
+	if !reflect.DeepEqual(client.lastRouteContext.Tags, map[string]string{"provider": "openai", "tier": "pro"}) {
 		t.Fatalf("expected route tags to be preserved, got %#v", client.lastRouteContext.Tags)
 	}
 }

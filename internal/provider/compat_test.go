@@ -18,14 +18,14 @@ func (r staticCompatRouter) Route(context.Context, ModelID, RouteContext) (Route
 	return r.result, r.err
 }
 
-type capturingCompatRouter struct {
-	lastRouteContext RouteContext
-	err              error
+type captureCompatRouter struct {
+	result RouteResult
+	rcs    []RouteContext
 }
 
-func (r *capturingCompatRouter) Route(_ context.Context, _ ModelID, rc RouteContext) (RouteResult, error) {
-	r.lastRouteContext = rc
-	return RouteResult{}, r.err
+func (r *captureCompatRouter) Route(_ context.Context, _ ModelID, rc RouteContext) (RouteResult, error) {
+	r.rcs = append(r.rcs, rc)
+	return r.result, nil
 }
 
 type stubCompatClient struct {
@@ -241,6 +241,46 @@ func TestWrapClientStreamMapsProviderErrors(t *testing.T) {
 	}
 }
 
+func TestRoutedClientPreservesRouteContextAndMergesAllowFallback(t *testing.T) {
+	target := RouteTarget{
+		ProviderID: ProviderOpenAI,
+		ModelID:    ModelID("gpt-5.4"),
+		Client:     WrapClient(ProviderOpenAI, ModelID("gpt-5.4"), stubCompatClient{message: llm.Message{Role: llm.RoleAssistant, Content: "ok"}}),
+	}
+	router := &captureCompatRouter{result: RouteResult{Primary: target}}
+	client := &RoutedClient{router: router, allowFallback: false}
+
+	ctx := WithRouteContext(context.Background(), RouteContext{
+		Scenario:      "plan",
+		Region:        "us",
+		PreferLatency: true,
+		AllowFallback: true,
+		Tags:          map[string]string{"req": "1"},
+	})
+	if _, err := client.CreateMessage(ctx, llm.ChatRequest{Model: "gpt-5.4"}); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(router.rcs) != 1 {
+		t.Fatalf("expected one route call, got %d", len(router.rcs))
+	}
+	got := router.rcs[0]
+	if got.Scenario != "plan" || got.Region != "us" || !got.PreferLatency || got.Tags["req"] != "1" {
+		t.Fatalf("expected route context fields to be preserved, got %#v", got)
+	}
+	if !got.AllowFallback {
+		t.Fatalf("expected caller fallback to be preserved, got %#v", got)
+	}
+
+	router.rcs = nil
+	client.allowFallback = true
+	if _, err := client.CreateMessage(context.Background(), llm.ChatRequest{Model: "gpt-5.4"}); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(router.rcs) != 1 || !router.rcs[0].AllowFallback {
+		t.Fatalf("expected client policy to enable fallback, got %#v", router.rcs)
+	}
+}
+
 func TestWrapClientStreamStopsWhenContextCancelled(t *testing.T) {
 	adapter := WrapClient(ProviderOpenAI, ModelID("gpt-5.4"), stubCompatClient{message: llm.Message{Role: llm.RoleAssistant, Content: "hello world"}})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -258,52 +298,6 @@ func TestWrapClientStreamStopsWhenContextCancelled(t *testing.T) {
 			for range stream {
 			}
 		}
-	}
-}
-
-func TestRoutedClientMergesAllowFallbackFromContextAndClientPolicy(t *testing.T) {
-	tests := []struct {
-		name         string
-		contextValue bool
-		clientValue  bool
-		wantFallback bool
-	}{
-		{
-			name:         "context true client false",
-			contextValue: true,
-			clientValue:  false,
-			wantFallback: true,
-		},
-		{
-			name:         "context false client true",
-			contextValue: false,
-			clientValue:  true,
-			wantFallback: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			router := &capturingCompatRouter{err: errors.New("stop after route")}
-			client := &RoutedClient{router: router, allowFallback: tt.clientValue}
-			ctx := WithRouteContext(context.Background(), RouteContext{
-				Scenario:      "compat-test",
-				AllowFallback: tt.contextValue,
-				Tags:          map[string]string{"provider": "openai"},
-			})
-
-			_, _ = client.CreateMessage(ctx, llm.ChatRequest{Model: "gpt-5.4"})
-
-			if router.lastRouteContext.AllowFallback != tt.wantFallback {
-				t.Fatalf("unexpected allow fallback, got=%v want=%v", router.lastRouteContext.AllowFallback, tt.wantFallback)
-			}
-			if router.lastRouteContext.Scenario != "compat-test" {
-				t.Fatalf("expected scenario to be preserved, got %#v", router.lastRouteContext)
-			}
-			if router.lastRouteContext.Tags["provider"] != "openai" {
-				t.Fatalf("expected tags to be preserved, got %#v", router.lastRouteContext)
-			}
-		})
 	}
 }
 
