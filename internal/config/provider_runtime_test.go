@@ -124,3 +124,41 @@ func TestConfigLoadRejectsDuplicateNormalizedProviderRuntimeIDs(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestConfigLoadPreservesExplicitProviderRuntimeFieldsWhenProvidersMissing(t *testing.T) {
+	workspace := t.TempDir()
+	writeProviderRuntimeConfigFile(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "legacy-model",
+			"api_key":  "test-key",
+		},
+		"provider_runtime": map[string]any{
+			"default_provider": "openai",
+			"default_model":    "runtime-model",
+			"allow_fallback":   true,
+			"providers":        map[string]any{},
+		},
+	})
+
+	cfg, err := Load(workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProviderRuntime.DefaultProvider != "openai" {
+		t.Fatalf("unexpected default provider: %q", cfg.ProviderRuntime.DefaultProvider)
+	}
+	if cfg.ProviderRuntime.DefaultModel != "runtime-model" {
+		t.Fatalf("unexpected default model: %q", cfg.ProviderRuntime.DefaultModel)
+	}
+	if !cfg.ProviderRuntime.AllowFallback {
+		t.Fatal("expected allow fallback to remain true")
+	}
+	if len(cfg.ProviderRuntime.Providers) == 0 {
+		t.Fatal("expected legacy provider runtime entry to be backfilled")
+	}
+	if _, ok := cfg.ProviderRuntime.Providers["openai"]; !ok {
+		t.Fatalf("expected openai provider entry, got %#v", cfg.ProviderRuntime.Providers)
+	}
+}
