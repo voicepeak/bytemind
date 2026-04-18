@@ -16,6 +16,7 @@ const (
 )
 
 const (
+	DefaultTokenQuota                    = 300000
 	DefaultContextBudgetWarningRatio     = 0.85
 	DefaultContextBudgetCriticalRatio    = 0.95
 	DefaultContextBudgetMaxReactiveRetry = 1
@@ -74,7 +75,7 @@ func Default(workspace string) Config {
 		ApprovalPolicy: "on-request",
 		MaxIterations:  32,
 		Stream:         true,
-		TokenQuota:     300000,
+		TokenQuota:     DefaultTokenQuota,
 		TokenUsage: TokenUsageConfig{
 			StorageType:     "file",
 			StoragePath:     ".bytemind/token_usage.json",
@@ -197,7 +198,7 @@ func ensureDefaultConfigFile(home string) error {
 		ApprovalPolicy: "on-request",
 		MaxIterations:  32,
 		Stream:         true,
-		TokenQuota:     5000,
+		TokenQuota:     DefaultTokenQuota,
 		TokenUsage: TokenUsageConfig{
 			StorageType:     "file",
 			StoragePath:     ".bytemind/token_usage.json",
@@ -371,7 +372,7 @@ func normalize(cfg *Config) error {
 		return errors.New("approval_policy must be one of always, on-request, never")
 	}
 	if cfg.TokenQuota < 1 {
-		cfg.TokenQuota = 5000
+		cfg.TokenQuota = DefaultTokenQuota
 	}
 	if strings.TrimSpace(cfg.TokenUsage.StorageType) == "" {
 		cfg.TokenUsage.StorageType = "file"

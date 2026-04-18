@@ -16,9 +16,8 @@ import (
 )
 
 const (
-	legacyToolCallIndex         = -1
-	sseScannerInitialBufferSize = 64 * 1024
-	sseScannerMaxTokenSize      = 8 * 1024 * 1024
+	legacyToolCallIndex = -1
+	sseMaxLineBytes     = 8 * 1024 * 1024
 )
 
 type Config struct {
@@ -145,11 +144,23 @@ func (c *OpenAICompatible) StreamMessage(ctx context.Context, req llm.ChatReques
 	assembled := llm.Message{Role: llm.RoleAssistant}
 	toolCalls := map[int]*llm.ToolCall{}
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, sseScannerInitialBufferSize), sseScannerMaxTokenSize)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	reader := bufio.NewReader(resp.Body)
+	for {
+		rawLine, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return llm.Message{}, err
+		}
+		if len(rawLine) > sseMaxLineBytes {
+			return llm.Message{}, fmt.Errorf("sse line too long: %d bytes exceeds %d-byte limit", len(rawLine), sseMaxLineBytes)
+		}
+		line := strings.TrimSpace(rawLine)
+		if err == io.EOF && line == "" {
+			break
+		}
 		if line == "" || !strings.HasPrefix(line, "data:") {
+			if err == io.EOF {
+				break
+			}
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
@@ -204,9 +215,9 @@ func (c *OpenAICompatible) StreamMessage(ctx context.Context, req llm.ChatReques
 		if usage := parseOpenAIUsage(chunk.Usage); usage != nil {
 			assembled.Usage = usage
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return llm.Message{}, err
+		if err == io.EOF {
+			break
+		}
 	}
 
 	if len(toolCalls) > 0 {
