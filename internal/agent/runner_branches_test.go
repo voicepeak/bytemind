@@ -166,10 +166,14 @@ func TestCompleteTurnFallsBackToCreateWhenStreamReplyIsEmpty(t *testing.T) {
 
 type routeContextClient struct {
 	lastRouteContext provider.RouteContext
+	lastRequestModel string
+	lastRequest      llm.ChatRequest
 }
 
-func (c *routeContextClient) CreateMessage(ctx context.Context, _ llm.ChatRequest) (llm.Message, error) {
+func (c *routeContextClient) CreateMessage(ctx context.Context, request llm.ChatRequest) (llm.Message, error) {
 	c.lastRouteContext = provider.RouteContextFromContext(ctx)
+	c.lastRequestModel = request.Model
+	c.lastRequest = request
 	return llm.Message{Role: "assistant", Content: "done"}, nil
 }
 
@@ -190,6 +194,76 @@ func TestCompleteTurnInjectsRouteContext(t *testing.T) {
 	}
 	if !client.lastRouteContext.AllowFallback {
 		t.Fatalf("expected allow fallback route context, got %#v", client.lastRouteContext)
+	}
+}
+
+func TestCompleteTurnMergesRouteContextFromCaller(t *testing.T) {
+	client := &routeContextClient{}
+	runner := NewRunner(Options{
+		Config: config.Config{Stream: false},
+		Client: client,
+	})
+	streamed := false
+	ctx := provider.WithRouteContext(context.Background(), provider.RouteContext{
+		Scenario: "build",
+		Region:   "us",
+		Tags:     map[string]string{"provider": "openai", "tier": "pro"},
+	})
+	_, err := runner.completeTurn(ctx, llm.ChatRequest{}, io.Discard, &streamed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !client.lastRouteContext.AllowFallback {
+		t.Fatalf("expected allow fallback route context, got %#v", client.lastRouteContext)
+	}
+	if client.lastRouteContext.Scenario != "build" || client.lastRouteContext.Region != "us" {
+		t.Fatalf("expected scenario/region preserved, got %#v", client.lastRouteContext)
+	}
+	if got := client.lastRouteContext.Tags["provider"]; got != "openai" {
+		t.Fatalf("expected provider tag preserved, got %q", got)
+	}
+	if got := client.lastRouteContext.Tags["tier"]; got != "pro" {
+		t.Fatalf("expected tier tag preserved, got %q", got)
+	}
+}
+
+func TestRunPromptUsesRuntimeDefaultModelInRequestAndPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	client := &routeContextClient{}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:        config.ProviderConfig{Model: "legacy-model"},
+			ProviderRuntime: config.ProviderRuntimeConfig{DefaultModel: "runtime-model"},
+			MaxIterations:   2,
+			Stream:          false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+	if _, err := runner.RunPrompt(context.Background(), sess, "inspect", "build", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if client.lastRequestModel != "runtime-model" {
+		t.Fatalf("expected request model runtime-model, got %q", client.lastRequestModel)
+	}
+	if len(client.lastRequest.Messages) == 0 {
+		t.Fatalf("expected outbound request messages, got %#v", client.lastRequest)
+	}
+	systemPrompt := client.lastRequest.Messages[0].Text()
+	if strings.TrimSpace(systemPrompt) == "" {
+		t.Fatalf("expected non-empty system prompt in outbound request, got %#v", client.lastRequest.Messages[0])
+	}
+	if !strings.Contains(systemPrompt, "model: runtime-model") {
+		t.Fatalf("expected system prompt model runtime-model, got %q", systemPrompt)
 	}
 }
 
