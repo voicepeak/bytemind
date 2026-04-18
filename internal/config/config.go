@@ -345,23 +345,22 @@ func normalize(cfg *Config) error {
 	if cfg.Provider.ExtraHeaders == nil {
 		cfg.Provider.ExtraHeaders = map[string]string{}
 	}
-	if len(cfg.ProviderRuntime.Providers) == 0 {
-		legacy := LegacyProviderRuntimeConfig(cfg.Provider)
-		if strings.TrimSpace(cfg.ProviderRuntime.DefaultProvider) == "" {
-			cfg.ProviderRuntime.DefaultProvider = legacy.DefaultProvider
-		}
-		if strings.TrimSpace(cfg.ProviderRuntime.DefaultModel) == "" {
-			cfg.ProviderRuntime.DefaultModel = legacy.DefaultModel
-		}
-		cfg.ProviderRuntime.Providers = legacy.Providers
-	}
+	legacyRuntime := LegacyProviderRuntimeConfig(cfg.Provider)
 	cfg.ProviderRuntime.DefaultProvider = strings.ToLower(strings.TrimSpace(cfg.ProviderRuntime.DefaultProvider))
+	if cfg.ProviderRuntime.DefaultProvider == "" {
+		cfg.ProviderRuntime.DefaultProvider = legacyRuntime.DefaultProvider
+	}
 	cfg.ProviderRuntime.DefaultModel = strings.TrimSpace(cfg.ProviderRuntime.DefaultModel)
 	if cfg.ProviderRuntime.DefaultModel == "" {
-		cfg.ProviderRuntime.DefaultModel = cfg.Provider.Model
+		cfg.ProviderRuntime.DefaultModel = legacyRuntime.DefaultModel
 	}
 	if cfg.ProviderRuntime.Providers == nil {
 		cfg.ProviderRuntime.Providers = map[string]ProviderConfig{}
+	}
+	if len(cfg.ProviderRuntime.Providers) == 0 {
+		for id, providerCfg := range legacyRuntime.Providers {
+			cfg.ProviderRuntime.Providers[id] = providerCfg
+		}
 	}
 	normalizedProviders := make(map[string]ProviderConfig, len(cfg.ProviderRuntime.Providers))
 	normalizedSources := make(map[string]string, len(cfg.ProviderRuntime.Providers))

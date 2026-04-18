@@ -41,13 +41,12 @@ func (e *defaultEngine) processTurn(ctx context.Context, p turnProcessParams) (s
 	}
 	filteredTools := runner.registry.DefinitionsForModeWithFilters(p.RunMode, p.AllowedToolNames, p.DeniedToolNames)
 	request := contextpkg.BuildChatRequest(contextpkg.ChatRequestInput{
-		Model:       runner.config.Provider.Model,
+		Model:       runner.modelID(),
 		Messages:    p.Messages,
 		Tools:       filteredTools,
 		Assets:      p.Assets,
 		Temperature: 0.2,
 	})
-	request.Model = runner.modelID()
 
 	streamedText := false
 	turnStart := time.Now()
