@@ -29,7 +29,7 @@ func TestManagerLoadDiscoversExtensionFromSource(t *testing.T) {
 	if item.ID != "skill.review" {
 		t.Fatalf("unexpected id: %q", item.ID)
 	}
-	if item.Status != ExtensionStatusReady {
+	if item.Status != ExtensionStatusActive {
 		t.Fatalf("unexpected status: %q", item.Status)
 	}
 	if item.Capabilities.Prompts != 1 || item.Capabilities.Tools != 2 {
@@ -94,6 +94,68 @@ func TestManagerLoadMarksUnknownRootAsRemote(t *testing.T) {
 	}
 }
 
+func TestManagerLoadRejectsAlreadyLoaded(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, ".bytemind", "skills", "review")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "skill.json"), []byte(`{"name":"review"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "SKILL.md"), []byte("# /review"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(t.TempDir())
+	if _, err := mgr.Load(context.Background(), project); err != nil {
+		t.Fatalf("first load failed: %v", err)
+	}
+	_, err := mgr.Load(context.Background(), project)
+	var extErr *ExtensionError
+	if !errors.As(err, &extErr) {
+		t.Fatalf("expected ExtensionError, got %T", err)
+	}
+	if extErr.Code != ErrCodeAlreadyLoaded {
+		t.Fatalf("unexpected code: %s", extErr.Code)
+	}
+}
+
+func TestManagerLoadIsIdempotentDespiteUnrelatedDiscoveryErrors(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, ".bytemind", "skills")
+	review := filepath.Join(project, "review")
+	broken := filepath.Join(project, "broken")
+	if err := os.MkdirAll(review, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(review, "skill.json"), []byte(`{"name":"review"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(review, "SKILL.md"), []byte("# /review"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, "skill.json"), []byte(`{"name":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(root)
+	first, err := mgr.Load(context.Background(), review)
+	if err != nil {
+		t.Fatalf("first load failed: %v", err)
+	}
+	second, err := mgr.Load(context.Background(), review)
+	if err != nil {
+		t.Fatalf("expected idempotent reload, got %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected same extension, got %q vs %q", second.ID, first.ID)
+	}
+}
+
 func TestManagerUnloadIgnoresUnrelatedBrokenManifest(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, ".bytemind", "skills")
@@ -149,6 +211,80 @@ func TestManagerUnloadCanDisableBrokenExtension(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Fatalf("expected no visible extensions, got %#v", items)
+	}
+}
+
+func TestManagerListPreservesDegradedStatusForManifestOnlyExtension(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	degraded := filepath.Join(project, "degraded")
+	if err := os.MkdirAll(degraded, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(degraded, "skill.json"), []byte(`{"name":"degraded"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManagerWithDirs(root, filepath.Join(root, "builtin"), filepath.Join(root, "user"), project)
+	items, err := mgr.List(context.Background())
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 extension, got %d", len(items))
+	}
+	if items[0].Status != ExtensionStatusDegraded {
+		t.Fatalf("expected degraded status, got %q", items[0].Status)
+	}
+	if items[0].Health.Status != ExtensionStatusDegraded {
+		t.Fatalf("expected degraded health, got %q", items[0].Health.Status)
+	}
+}
+
+func TestManagerReloadAppliesDiscoveryDegradeToActiveExtension(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	review := filepath.Join(project, "review")
+	if err := os.MkdirAll(review, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(review, "skill.json"), []byte(`{"name":"review"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(review, "SKILL.md"), []byte("# /review"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManagerWithDirs(root, filepath.Join(root, "builtin"), filepath.Join(root, "user"), project)
+	items, err := mgr.List(context.Background())
+	if err != nil {
+		t.Fatalf("initial list failed: %v", err)
+	}
+	if items[0].Status != ExtensionStatusActive {
+		t.Fatalf("expected active status, got %q", items[0].Status)
+	}
+	if err := os.Remove(filepath.Join(review, "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	items, err = mgr.List(context.Background())
+	if err != nil {
+		t.Fatalf("reload list failed: %v", err)
+	}
+	if items[0].Status != ExtensionStatusDegraded {
+		t.Fatalf("expected degraded status after reload, got %q", items[0].Status)
+	}
+	if err := os.WriteFile(filepath.Join(review, "SKILL.md"), []byte("# /review restored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, err = mgr.List(context.Background())
+	if err != nil {
+		t.Fatalf("recovery list failed: %v", err)
+	}
+	if items[0].Status != ExtensionStatusActive {
+		t.Fatalf("expected active status after recovery, got %q", items[0].Status)
+	}
+	if items[0].Health.Status != ExtensionStatusActive {
+		t.Fatalf("expected active health after recovery, got %q", items[0].Health.Status)
 	}
 }
 
@@ -399,6 +535,49 @@ func TestManagerRejectsInvalidSourceAndManifest(t *testing.T) {
 		if extErr.Code != ErrCodeInvalidManifest {
 			t.Fatalf("unexpected code: %s", extErr.Code)
 		}
+	}
+}
+
+func TestDiscoverOneRejectsMissingDirectory(t *testing.T) {
+	mgr := NewManager(t.TempDir())
+	_, err := mgr.(*extensionManager).discoverOne("missing")
+	if err == nil {
+		t.Fatal("expected invalid source error")
+	}
+}
+
+func TestDiscoverScopeCollectsManifestErrors(t *testing.T) {
+	root := t.TempDir()
+	bad := filepath.Join(root, "bad")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "skill.json"), []byte(`{"name":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, errs, err := discoverScope(ExtensionScopeProject, root)
+	if err != nil {
+		t.Fatalf("discoverScope failed: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no discovered items, got %d", len(items))
+	}
+	if len(errs) != 1 {
+		t.Fatalf("expected one discovery error, got %d", len(errs))
+	}
+}
+
+func TestDiscoveryErrorReturnsWrappedFirstFailure(t *testing.T) {
+	err := discoveryError(map[string]error{
+		"skill.z": wrapError(ErrCodeInvalidManifest, "bad", nil),
+		"skill.a": wrapError(ErrCodeLoadFailed, "boom", nil),
+	})
+	var extErr *ExtensionError
+	if !errors.As(err, &extErr) {
+		t.Fatalf("expected ExtensionError, got %T", err)
+	}
+	if extErr.Code != ErrCodeLoadFailed {
+		t.Fatalf("unexpected code: %s", extErr.Code)
 	}
 }
 
