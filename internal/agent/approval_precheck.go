@@ -24,6 +24,11 @@ type runApprovalGrants struct {
 	Destructive bool
 }
 
+type preapprovalIntent struct {
+	Shell       bool
+	Destructive bool
+}
+
 func (g runApprovalGrants) hasAny() bool {
 	return g.Shell || g.Destructive
 }
@@ -40,9 +45,19 @@ func (r *Runner) prepareRunApprovalHandler(setup runPromptSetup, out io.Writer) 
 	if !hasShell && len(destructive) == 0 {
 		return base
 	}
+	intent := inferPreapprovalIntent(setup.UserInput)
+	policy := strings.ToLower(strings.TrimSpace(r.config.ApprovalPolicy))
+	if policy == "" {
+		policy = "on-request"
+	}
+	requestShell := hasShell && (policy == "always" || intent.Shell)
+	requestDestructive := len(destructive) > 0 && (policy == "always" || intent.Destructive)
+	if !requestShell && !requestDestructive {
+		return base
+	}
 
 	grants := runApprovalGrants{}
-	if hasShell {
+	if requestShell {
 		approved, err := base(tools.ApprovalRequest{
 			Command: "run_shell (session pre-approval)",
 			Reason:  "pre-approve approval-required run_shell commands for this run",
@@ -52,7 +67,7 @@ func (r *Runner) prepareRunApprovalHandler(setup runPromptSetup, out io.Writer) 
 			grants.Shell = true
 		}
 	}
-	if len(destructive) > 0 {
+	if requestDestructive {
 		approved, err := base(tools.ApprovalRequest{
 			Command: "workspace-modifying tools (session pre-approval)",
 			Reason:  fmt.Sprintf("pre-approve destructive tool calls for this run: %s", strings.Join(destructive, ", ")),
@@ -247,6 +262,46 @@ func classifyPreapprovalToolGroups(toolNames []string) (bool, []string) {
 	}
 	sort.Strings(destructive)
 	return hasShell, destructive
+}
+
+func inferPreapprovalIntent(userInput string) preapprovalIntent {
+	normalized := strings.ToLower(strings.TrimSpace(userInput))
+	if normalized == "" {
+		return preapprovalIntent{}
+	}
+	hasCodeContext := containsAnyToken(normalized,
+		"file", "files", "code", "repo", "repository", "project", "workspace", "function",
+		".go", ".ts", ".js", ".py", ".java", ".md",
+		"文件", "代码", "仓库", "项目", "目录", "函数",
+	)
+	shellHint := containsAnyToken(normalized,
+		"run", "shell", "command", "terminal", "test", "build", "compile", "install",
+		"go test", "go run", "npm", "pnpm", "yarn", "pip", "cargo", "make", "cmake",
+		"powershell", "bash", "cmd",
+		"执行", "命令", "终端", "测试", "构建", "编译", "安装", "脚本",
+	)
+	destructiveVerb := containsAnyToken(normalized,
+		"edit", "modify", "update", "write", "rewrite", "create", "implement", "fix",
+		"refactor", "patch", "delete", "remove", "rename", "change",
+		"修改", "更新", "写入", "重写", "创建", "实现", "修复", "重构", "补丁", "删除", "重命名", "改",
+	)
+	return preapprovalIntent{
+		Shell:       shellHint,
+		Destructive: hasCodeContext && destructiveVerb,
+	}
+}
+
+func containsAnyToken(input string, tokens ...string) bool {
+	for _, token := range tokens {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if token == "" {
+			continue
+		}
+		if strings.Contains(input, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func writePreapprovalResult(out io.Writer, category string, approved bool, err error) {

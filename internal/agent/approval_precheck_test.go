@@ -151,7 +151,10 @@ func TestPrepareRunApprovalHandlerPreApprovesRunShellAndDestructive(t *testing.T
 		},
 	}
 
-	handler := runner.prepareRunApprovalHandler(runPromptSetup{RunMode: planpkg.ModeBuild}, io.Discard)
+	handler := runner.prepareRunApprovalHandler(runPromptSetup{
+		RunMode:   planpkg.ModeBuild,
+		UserInput: "run tests and modify source files",
+	}, io.Discard)
 	if handler == nil {
 		t.Fatal("expected approval handler")
 	}
@@ -205,7 +208,10 @@ func TestPrepareRunApprovalHandlerFallsBackWhenPreApprovalDenied(t *testing.T) {
 		},
 	}
 
-	handler := runner.prepareRunApprovalHandler(runPromptSetup{RunMode: planpkg.ModeBuild}, io.Discard)
+	handler := runner.prepareRunApprovalHandler(runPromptSetup{
+		RunMode:   planpkg.ModeBuild,
+		UserInput: "run tests and modify source files",
+	}, io.Discard)
 	if handler == nil {
 		t.Fatal("expected approval handler")
 	}
@@ -248,7 +254,10 @@ func TestPrepareRunApprovalHandlerUsesStdinFallbackAndPreApproves(t *testing.T) 
 		stdout:   &approvalOut,
 	}
 
-	handler := runner.prepareRunApprovalHandler(runPromptSetup{RunMode: planpkg.ModeBuild}, io.Discard)
+	handler := runner.prepareRunApprovalHandler(runPromptSetup{
+		RunMode:   planpkg.ModeBuild,
+		UserInput: "run tests and modify source files",
+	}, io.Discard)
 	if handler == nil {
 		t.Fatal("expected approval handler")
 	}
@@ -289,7 +298,10 @@ func TestPrepareRunApprovalHandlerStdinFallbackPromptsAtRuntimeAfterDeniedPreApp
 		stdout:   &approvalOut,
 	}
 
-	handler := runner.prepareRunApprovalHandler(runPromptSetup{RunMode: planpkg.ModeBuild}, io.Discard)
+	handler := runner.prepareRunApprovalHandler(runPromptSetup{
+		RunMode:   planpkg.ModeBuild,
+		UserInput: "run tests and modify source files",
+	}, io.Discard)
 	if handler == nil {
 		t.Fatal("expected approval handler")
 	}
@@ -306,5 +318,42 @@ func TestPrepareRunApprovalHandlerStdinFallbackPromptsAtRuntimeAfterDeniedPreApp
 	}
 	if prompts := strings.Count(approvalOut.String(), "Approve action"); prompts != 3 {
 		t.Fatalf("expected one extra runtime prompt after denied pre-approval, got %d (%q)", prompts, approvalOut.String())
+	}
+}
+
+func TestPrepareRunApprovalHandlerSkipsPreapprovalWhenIntentUnclear(t *testing.T) {
+	requests := make([]tools.ApprovalRequest, 0, 2)
+	runner := &Runner{
+		config: config.Config{
+			ApprovalPolicy: "on-request",
+			ApprovalMode:   "interactive",
+		},
+		registry: tools.DefaultRegistry(),
+		approval: func(req tools.ApprovalRequest) (bool, error) {
+			requests = append(requests, req)
+			return true, nil
+		},
+	}
+
+	handler := runner.prepareRunApprovalHandler(runPromptSetup{
+		RunMode:   planpkg.ModeBuild,
+		UserInput: "summarize the current architecture and explain trade-offs",
+	}, io.Discard)
+	if handler == nil {
+		t.Fatal("expected approval handler")
+	}
+	if len(requests) != 0 {
+		t.Fatalf("expected no pre-approval requests for low-risk intent, got %+v", requests)
+	}
+
+	approved, err := handler(tools.ApprovalRequest{
+		Command: "go test ./...",
+		Reason:  "may modify files or environment: go",
+	})
+	if err != nil || !approved {
+		t.Fatalf("expected runtime approval handler to remain available, approved=%v err=%v", approved, err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("expected runtime call to use base handler, got %d requests", len(requests))
 	}
 }
