@@ -166,10 +166,12 @@ func TestCompleteTurnFallsBackToCreateWhenStreamReplyIsEmpty(t *testing.T) {
 
 type routeContextClient struct {
 	lastRouteContext provider.RouteContext
+	lastRequest      llm.ChatRequest
 }
 
-func (c *routeContextClient) CreateMessage(ctx context.Context, _ llm.ChatRequest) (llm.Message, error) {
+func (c *routeContextClient) CreateMessage(ctx context.Context, request llm.ChatRequest) (llm.Message, error) {
 	c.lastRouteContext = provider.RouteContextFromContext(ctx)
+	c.lastRequest = request
 	return llm.Message{Role: "assistant", Content: "done"}, nil
 }
 
@@ -190,6 +192,78 @@ func TestCompleteTurnInjectsRouteContext(t *testing.T) {
 	}
 	if !client.lastRouteContext.AllowFallback {
 		t.Fatalf("expected allow fallback route context, got %#v", client.lastRouteContext)
+	}
+}
+
+func TestCompleteTurnMergesRouteContextFromCaller(t *testing.T) {
+	client := &routeContextClient{}
+	runner := NewRunner(Options{
+		Config: config.Config{Stream: false},
+		Client: client,
+	})
+	streamed := false
+	ctx := provider.WithRouteContext(context.Background(), provider.RouteContext{
+		Scenario: "smoke",
+		Region:   "us-east",
+		Tags: map[string]string{
+			"team": "runtime",
+		},
+	})
+	_, err := runner.completeTurn(ctx, llm.ChatRequest{}, io.Discard, &streamed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !client.lastRouteContext.AllowFallback {
+		t.Fatalf("expected allow fallback route context, got %#v", client.lastRouteContext)
+	}
+	if client.lastRouteContext.Scenario != "smoke" || client.lastRouteContext.Region != "us-east" {
+		t.Fatalf("expected caller route context to be preserved, got %#v", client.lastRouteContext)
+	}
+	if client.lastRouteContext.Tags["team"] != "runtime" {
+		t.Fatalf("expected caller route context tags to be preserved, got %#v", client.lastRouteContext)
+	}
+}
+
+func TestRunPromptUsesRuntimeDefaultModelInRequestAndPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	sess := session.New(workspace)
+	client := &routeContextClient{}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:        config.ProviderConfig{Model: "legacy-model"},
+			ProviderRuntime: config.ProviderRuntimeConfig{DefaultProvider: "openai", DefaultModel: "runtime-model"},
+			MaxIterations:   4,
+			Stream:          false,
+		},
+		Client: client,
+		Stdin:  strings.NewReader(""),
+		Stdout: io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "print status", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "done" {
+		t.Fatalf("unexpected answer %q", answer)
+	}
+	if client.lastRequest.Model != "runtime-model" {
+		t.Fatalf("expected runtime default model in request, got %q", client.lastRequest.Model)
+	}
+
+	systemMessage := ""
+	for _, message := range client.lastRequest.Messages {
+		if message.Role == llm.RoleSystem {
+			systemMessage = message.Content
+			break
+		}
+	}
+	if systemMessage == "" {
+		t.Fatalf("expected system prompt message, got %#v", client.lastRequest.Messages)
+	}
+	if !strings.Contains(systemMessage, "model: runtime-model") {
+		t.Fatalf("expected system prompt to use runtime model, got %q", systemMessage)
 	}
 }
 
