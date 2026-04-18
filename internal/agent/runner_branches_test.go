@@ -235,25 +235,6 @@ func TestCompleteTurnMergesRouteContextFromCaller(t *testing.T) {
 	}
 }
 
-func TestCompleteTurnDoesNotEnableFallbackWhenRuntimeConfigDisablesIt(t *testing.T) {
-	client := &routeContextClient{}
-	runner := NewRunner(Options{
-		Config: config.Config{
-			Stream:          false,
-			ProviderRuntime: config.ProviderRuntimeConfig{AllowFallback: false},
-		},
-		Client: client,
-	})
-	streamed := false
-	_, err := runner.completeTurn(context.Background(), llm.ChatRequest{}, io.Discard, &streamed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if client.lastRouteContext.AllowFallback {
-		t.Fatalf("expected allow fallback route context to remain false, got %#v", client.lastRouteContext)
-	}
-}
-
 func TestHandleTurnEmitsRuntimeEventsViaEngineStream(t *testing.T) {
 	workspace := t.TempDir()
 	store, err := session.NewStore(t.TempDir())
@@ -369,6 +350,25 @@ func TestRunPromptUsesRuntimeDefaultModelInRequestAndPrompt(t *testing.T) {
 	}
 	if strings.Contains(systemPrompt, "legacy-model") {
 		t.Fatalf("expected system prompt to avoid legacy model, got %q", systemPrompt)
+	}
+}
+
+func TestCompleteTurnDoesNotEnableFallbackWhenRuntimeConfigDisablesIt(t *testing.T) {
+	client := &routeContextClient{}
+	runner := NewRunner(Options{
+		Config: config.Config{
+			Stream:          false,
+			ProviderRuntime: config.ProviderRuntimeConfig{AllowFallback: false},
+		},
+		Client: client,
+	})
+	streamed := false
+	_, err := runner.completeTurn(context.Background(), llm.ChatRequest{}, io.Discard, &streamed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.lastRouteContext.AllowFallback {
+		t.Fatalf("expected allow fallback to remain false, got %#v", client.lastRouteContext)
 	}
 }
 
