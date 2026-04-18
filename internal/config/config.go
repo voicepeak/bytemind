@@ -349,6 +349,9 @@ func normalize(cfg *Config) error {
 	if strings.TrimSpace(cfg.ProviderRuntime.DefaultProvider) == "" {
 		cfg.ProviderRuntime.DefaultProvider = legacyRuntime.DefaultProvider
 	}
+	if strings.TrimSpace(cfg.ProviderRuntime.DefaultModel) == "" {
+		cfg.ProviderRuntime.DefaultModel = legacyRuntime.DefaultModel
+	}
 	cfg.ProviderRuntime.DefaultProvider = strings.ToLower(strings.TrimSpace(cfg.ProviderRuntime.DefaultProvider))
 	cfg.ProviderRuntime.DefaultModel = strings.TrimSpace(cfg.ProviderRuntime.DefaultModel)
 	if cfg.ProviderRuntime.DefaultModel == "" {
