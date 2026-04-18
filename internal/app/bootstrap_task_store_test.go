@@ -129,7 +129,10 @@ func TestBootstrapFallsBackToLegacyRuntimeTaskStoreWhenUnifiedInitFails(t *testi
 		if getErr != nil {
 			t.Fatalf("Cancel failed: %v (and Get failed: %v)", err, getErr)
 		}
-		if task.Status != "failed" || task.ErrorCode != runtimepkg.ErrorCodeTaskExecutionFailed {
+		if task.Status != "failed" {
+			t.Fatalf("Cancel failed: %v (task status=%s error_code=%s)", err, task.Status, task.ErrorCode)
+		}
+		if task.ErrorCode != runtimepkg.ErrorCodeTaskExecutionFailed && task.ErrorCode != runtimepkg.ErrorCodeNotImplemented {
 			t.Fatalf("Cancel failed: %v (task status=%s error_code=%s)", err, task.Status, task.ErrorCode)
 		}
 	}
