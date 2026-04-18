@@ -166,10 +166,12 @@ func TestCompleteTurnFallsBackToCreateWhenStreamReplyIsEmpty(t *testing.T) {
 
 type routeContextClient struct {
 	lastRouteContext provider.RouteContext
+	lastModel        string
 }
 
-func (c *routeContextClient) CreateMessage(ctx context.Context, _ llm.ChatRequest) (llm.Message, error) {
+func (c *routeContextClient) CreateMessage(ctx context.Context, req llm.ChatRequest) (llm.Message, error) {
 	c.lastRouteContext = provider.RouteContextFromContext(ctx)
+	c.lastModel = req.Model
 	return llm.Message{Role: "assistant", Content: "done"}, nil
 }
 
@@ -190,6 +192,67 @@ func TestCompleteTurnInjectsRouteContext(t *testing.T) {
 	}
 	if !client.lastRouteContext.AllowFallback {
 		t.Fatalf("expected allow fallback route context, got %#v", client.lastRouteContext)
+	}
+}
+
+func TestCompleteTurnMergesRouteContextFromCaller(t *testing.T) {
+	client := &routeContextClient{}
+	runner := NewRunner(Options{
+		Config: config.Config{Stream: false},
+		Client: client,
+	})
+	ctx := provider.WithRouteContext(context.Background(), provider.RouteContext{
+		Scenario: "integration",
+		Region:   "us-east",
+		Tags: map[string]string{
+			"provider": "openai",
+		},
+	})
+	streamed := false
+	_, err := runner.completeTurn(ctx, llm.ChatRequest{}, io.Discard, &streamed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !client.lastRouteContext.AllowFallback {
+		t.Fatalf("expected allow fallback route context, got %#v", client.lastRouteContext)
+	}
+	if client.lastRouteContext.Scenario != "integration" || client.lastRouteContext.Region != "us-east" {
+		t.Fatalf("expected caller route context fields to be preserved, got %#v", client.lastRouteContext)
+	}
+	if client.lastRouteContext.Tags["provider"] != "openai" {
+		t.Fatalf("expected caller route context tags to be preserved, got %#v", client.lastRouteContext)
+	}
+}
+
+func TestRunPromptUsesRuntimeDefaultModelInRequestAndPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	client := &routeContextClient{}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:        config.ProviderConfig{Model: "legacy-model"},
+			ProviderRuntime: config.ProviderRuntimeConfig{DefaultModel: "runtime-model"},
+			MaxIterations:   2,
+			Stream:          false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	_, err = runner.RunPrompt(context.Background(), sess, "hello", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.lastModel != "runtime-model" {
+		t.Fatalf("expected request model runtime-model, got %q", client.lastModel)
 	}
 }
 
