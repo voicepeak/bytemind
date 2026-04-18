@@ -36,7 +36,7 @@ func (r *Runner) processTurn(ctx context.Context, p turnProcessParams) (string, 
 	}
 	filteredTools := r.registry.DefinitionsForModeWithFilters(p.RunMode, p.AllowedToolNames, p.DeniedToolNames)
 	request := contextpkg.BuildChatRequest(contextpkg.ChatRequestInput{
-		Model:       r.modelID(),
+		Model:       r.config.Provider.Model,
 		Messages:    p.Messages,
 		Tools:       filteredTools,
 		Assets:      p.Assets,

@@ -9,6 +9,7 @@ import (
 	"bytemind/internal/config"
 	extensionspkg "bytemind/internal/extensions"
 	"bytemind/internal/llm"
+	"bytemind/internal/provider"
 	runtimepkg "bytemind/internal/runtime"
 	"bytemind/internal/session"
 	"bytemind/internal/skills"
@@ -125,10 +126,14 @@ func NewRunner(opts Options) *Runner {
 	if extensions == nil {
 		extensions = extensionspkg.NopManager{}
 	}
+	client := opts.Client
+	if client != nil {
+		client = routeAwareClient{base: client}
+	}
 	runner := &Runner{
 		workspace:     opts.Workspace,
 		config:        opts.Config,
-		client:        opts.Client,
+		client:        client,
 		store:         opts.Store,
 		registry:      registry,
 		executor:      executor,
@@ -159,6 +164,9 @@ func (r *Runner) GetClient() llm.Client {
 	if r == nil {
 		return nil
 	}
+	if wrapped, ok := r.client.(routeAwareClient); ok {
+		return wrapped.base
+	}
 	return r.client
 }
 
@@ -177,6 +185,18 @@ func (r *Runner) modelID() string {
 		return model
 	}
 	return strings.TrimSpace(r.config.Provider.Model)
+}
+
+type routeAwareClient struct {
+	base llm.Client
+}
+
+func (c routeAwareClient) CreateMessage(ctx context.Context, request llm.ChatRequest) (llm.Message, error) {
+	return c.base.CreateMessage(provider.WithRouteContext(ctx, provider.RouteContext{AllowFallback: true}), request)
+}
+
+func (c routeAwareClient) StreamMessage(ctx context.Context, request llm.ChatRequest, onDelta func(string)) (llm.Message, error) {
+	return c.base.StreamMessage(provider.WithRouteContext(ctx, provider.RouteContext{AllowFallback: true}), request, onDelta)
 }
 
 func (r *Runner) RunPrompt(ctx context.Context, sess *session.Session, userInput, mode string, out io.Writer) (string, error) {

@@ -8,12 +8,10 @@ import (
 	"strings"
 
 	"bytemind/internal/llm"
-	"bytemind/internal/provider"
 	"bytemind/internal/session"
 )
 
 func (r *Runner) completeTurn(ctx context.Context, request llm.ChatRequest, out io.Writer, streamedText *bool) (llm.Message, error) {
-	ctx = provider.WithRouteContext(ctx, provider.RouteContext{AllowFallback: true})
 	if !r.config.Stream {
 		return r.client.CreateMessage(ctx, request)
 	}
@@ -39,6 +37,8 @@ func (r *Runner) completeTurn(ctx context.Context, request llm.ChatRequest, out 
 		return reply, nil
 	}
 
+	// Some providers/models occasionally return empty streaming payloads while
+	// still producing a valid non-stream completion. Retry once without stream.
 	fallback, fallbackErr := r.client.CreateMessage(ctx, request)
 	if fallbackErr == nil {
 		return fallback, nil
