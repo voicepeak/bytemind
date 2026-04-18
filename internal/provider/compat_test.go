@@ -18,6 +18,46 @@ func (r staticCompatRouter) Route(context.Context, ModelID, RouteContext) (Route
 	return r.result, r.err
 }
 
+type captureCompatRouter struct {
+	result          RouteResult
+	err             error
+	lastRouteCtx    RouteContext
+	lastRequestedID ModelID
+}
+
+func (r *captureCompatRouter) Route(_ context.Context, requested ModelID, rc RouteContext) (RouteResult, error) {
+	r.lastRequestedID = requested
+	r.lastRouteCtx = rc
+	return r.result, r.err
+}
+
+type staticRouteTargetClient struct {
+	providerID ProviderID
+	message    llm.Message
+}
+
+func (c staticRouteTargetClient) ProviderID() ProviderID {
+	if c.providerID == "" {
+		return ProviderOpenAI
+	}
+	return c.providerID
+}
+
+func (c staticRouteTargetClient) ListModels(context.Context) ([]ModelInfo, error) {
+	return nil, nil
+}
+
+func (c staticRouteTargetClient) Stream(context.Context, Request) (<-chan Event, error) {
+	stream := make(chan Event, 1)
+	go func() {
+		defer close(stream)
+		message := c.message
+		message.Normalize()
+		stream <- Event{Type: EventResult, Result: &message}
+	}()
+	return stream, nil
+}
+
 type stubCompatClient struct {
 	message llm.Message
 	err     error
@@ -85,6 +125,53 @@ func TestWrapClientStreamIgnoresAsyncDeltaAfterTerminal(t *testing.T) {
 	}
 	if events[1].Delta != "hello" {
 		t.Fatalf("unexpected delta %#v", events[1])
+	}
+}
+
+func TestRoutedClientPreservesRouteContextAndMergesAllowFallback(t *testing.T) {
+	router := &captureCompatRouter{
+		result: RouteResult{
+			Primary: RouteTarget{
+				ProviderID: ProviderOpenAI,
+				ModelID:    ModelID("gpt-5.4-mini"),
+				Client: staticRouteTargetClient{
+					providerID: ProviderOpenAI,
+					message:    llm.Message{Role: llm.RoleAssistant, Content: "ok"},
+				},
+			},
+		},
+	}
+	client := NewRoutedClientWithPolicy(router, nil, false)
+	if client == nil {
+		t.Fatal("expected routed client")
+	}
+	ctx := WithRouteContext(context.Background(), RouteContext{
+		Scenario:      "chat",
+		Region:        "us",
+		PreferLatency: true,
+		AllowFallback: true,
+		Tags: map[string]string{
+			"source": "caller",
+		},
+	})
+	msg, err := client.CreateMessage(ctx, llm.ChatRequest{Model: "gpt-5.4-mini"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Content != "ok" {
+		t.Fatalf("unexpected message %#v", msg)
+	}
+	if router.lastRequestedID != ModelID("gpt-5.4-mini") {
+		t.Fatalf("unexpected routed model %q", router.lastRequestedID)
+	}
+	if !router.lastRouteCtx.AllowFallback {
+		t.Fatalf("expected allow_fallback to remain true, got %#v", router.lastRouteCtx)
+	}
+	if router.lastRouteCtx.Scenario != "chat" || router.lastRouteCtx.Region != "us" || !router.lastRouteCtx.PreferLatency {
+		t.Fatalf("expected caller route context fields preserved, got %#v", router.lastRouteCtx)
+	}
+	if router.lastRouteCtx.Tags["source"] != "caller" {
+		t.Fatalf("expected caller tags preserved, got %#v", router.lastRouteCtx.Tags)
 	}
 }
 

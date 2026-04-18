@@ -193,6 +193,88 @@ func TestCompleteTurnInjectsRouteContext(t *testing.T) {
 	}
 }
 
+func TestCompleteTurnMergesRouteContextFromCaller(t *testing.T) {
+	client := &routeContextClient{}
+	runner := NewRunner(Options{
+		Config: config.Config{Stream: false},
+		Client: client,
+	})
+	streamed := false
+	ctx := provider.WithRouteContext(context.Background(), provider.RouteContext{
+		Scenario:      "chat",
+		Region:        "us",
+		PreferLatency: true,
+		Tags: map[string]string{
+			"source": "runner-test",
+		},
+	})
+	_, err := runner.completeTurn(ctx, llm.ChatRequest{}, io.Discard, &streamed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !client.lastRouteContext.AllowFallback {
+		t.Fatalf("expected allow fallback route context, got %#v", client.lastRouteContext)
+	}
+	if client.lastRouteContext.Scenario != "chat" || client.lastRouteContext.Region != "us" || !client.lastRouteContext.PreferLatency {
+		t.Fatalf("expected caller route context fields preserved, got %#v", client.lastRouteContext)
+	}
+	if client.lastRouteContext.Tags["source"] != "runner-test" {
+		t.Fatalf("expected caller route context tags preserved, got %#v", client.lastRouteContext.Tags)
+	}
+}
+
+func TestRunPromptUsesRuntimeDefaultModelInRequestAndPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	client := &fakeClient{replies: []llm.Message{{
+		Role:    llm.RoleAssistant,
+		Content: "done",
+	}}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider: config.ProviderConfig{
+				Model: "legacy-model",
+			},
+			ProviderRuntime: config.ProviderRuntimeConfig{
+				DefaultModel: "runtime-model",
+			},
+			MaxIterations: 4,
+			Stream:        false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "inspect repo", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "done" {
+		t.Fatalf("unexpected answer %q", answer)
+	}
+	if len(client.requests) == 0 {
+		t.Fatal("expected at least one model request")
+	}
+	if client.requests[0].Model != "runtime-model" {
+		t.Fatalf("expected runtime default model in request, got %q", client.requests[0].Model)
+	}
+	if len(client.requests[0].Messages) == 0 || client.requests[0].Messages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected first request message to be system prompt, got %#v", client.requests[0].Messages)
+	}
+	systemPrompt := client.requests[0].Messages[0].Text()
+	if !strings.Contains(systemPrompt, "model: runtime-model") {
+		t.Fatalf("expected system prompt to render runtime model, got %q", systemPrompt)
+	}
+}
+
 func TestRenderToolFeedbackBranches(t *testing.T) {
 	runner := NewRunner(Options{})
 	var out bytes.Buffer
