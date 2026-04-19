@@ -3,6 +3,7 @@ package mention
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,7 +20,7 @@ func TestWorkspaceFileIndexNilSafety(t *testing.T) {
 }
 
 func TestNewStaticWorkspaceFileIndexNormalizesCandidates(t *testing.T) {
-	osPath := filepath.Join("internal", "tui", "model.go")
+	osPath := filepath.Join("tui", "model.go")
 	idx := NewStaticWorkspaceFileIndex([]Candidate{
 		{Path: " " + osPath + " "},
 		{Path: ""},
@@ -44,7 +45,7 @@ func TestNewStaticWorkspaceFileIndexNormalizesCandidates(t *testing.T) {
 	if results[0].Path != "README.md" || results[0].BaseName != "README.md" || results[0].TypeTag != "md" {
 		t.Fatalf("unexpected first candidate: %#v", results[0])
 	}
-	if results[1].Path != "internal/tui/model.go" {
+	if results[1].Path != "tui/model.go" {
 		t.Fatalf("expected normalized slash path, got %#v", results[1])
 	}
 	if results[1].BaseName != "model.go" || results[1].TypeTag != "go" {
@@ -92,8 +93,8 @@ func TestInsertIntoInput(t *testing.T) {
 		Start: len([]rune("open ")),
 		End:   len([]rune("open @mod")),
 	}
-	got := InsertIntoInput("open @mod", token, "internal/tui/model.go")
-	want := "open @internal/tui/model.go "
+	got := InsertIntoInput("open @mod", token, "tui/model.go")
+	want := "open @tui/model.go "
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
@@ -107,8 +108,8 @@ func TestInsertIntoInputHandlesMidTokenAndInvalidRange(t *testing.T) {
 			Start: len([]rune("open ")),
 			End:   len([]rune("open @mod")),
 		}
-		got := InsertIntoInput(input, token, "internal/tui/model.go")
-		want := "open @internal/tui/model.go ,now"
+		got := InsertIntoInput(input, token, "tui/model.go")
+		want := "open @tui/model.go ,now"
 		if got != want {
 			t.Fatalf("expected %q, got %q", want, got)
 		}
@@ -127,7 +128,7 @@ func TestInsertIntoInputHandlesMidTokenAndInvalidRange(t *testing.T) {
 func TestWorkspaceFileIndexSearchSkipsIgnoredDirectories(t *testing.T) {
 	workspace := t.TempDir()
 	mustWriteMentionFile(t, filepath.Join(workspace, "README.md"), "hello")
-	mustWriteMentionFile(t, filepath.Join(workspace, "internal", "tui", "model.go"), "package mention")
+	mustWriteMentionFile(t, filepath.Join(workspace, "tui", "model.go"), "package mention")
 	mustWriteMentionFile(t, filepath.Join(workspace, ".git", "config"), "ignored")
 	mustWriteMentionFile(t, filepath.Join(workspace, "node_modules", "pkg", "index.js"), "ignored")
 	mustWriteMentionFile(t, filepath.Join(workspace, "vendor", "pkg", "a.go"), "ignored")
@@ -140,7 +141,7 @@ func TestWorkspaceFileIndexSearchSkipsIgnoredDirectories(t *testing.T) {
 	for _, item := range all {
 		paths = append(paths, item.Path)
 	}
-	for _, want := range []string{"README.md", "internal/tui/model.go"} {
+	for _, want := range []string{"README.md", "tui/model.go"} {
 		if !containsString(paths, want) {
 			t.Fatalf("expected indexed files to include %q, got %v", want, paths)
 		}
@@ -161,8 +162,8 @@ func TestWorkspaceFileIndexSearchSkipsIgnoredDirectories(t *testing.T) {
 	if len(filtered) == 0 {
 		t.Fatalf("expected mention search to return matches for model")
 	}
-	if filtered[0].Path != "internal/tui/model.go" {
-		t.Fatalf("expected best match to be internal/tui/model.go, got %q", filtered[0].Path)
+	if filtered[0].Path != "tui/model.go" {
+		t.Fatalf("expected best match to be tui/model.go, got %q", filtered[0].Path)
 	}
 	if filtered[0].TypeTag != "go" {
 		t.Fatalf("expected model.go tag to be go, got %q", filtered[0].TypeTag)
@@ -190,8 +191,8 @@ func TestWorkspaceFileIndexSearchWithRecencyPrioritizesRecent(t *testing.T) {
 func TestWorkspaceFileIndexUsesTriePrefixRecall(t *testing.T) {
 	idx := NewStaticWorkspaceFileIndex([]Candidate{
 		{Path: "README.md"},
-		{Path: "internal/tui/model.go"},
-		{Path: "internal/tui/module.go"},
+		{Path: "tui/model.go"},
+		{Path: "tui/module.go"},
 	}, 0, false)
 
 	if idx.trie == nil {
@@ -213,16 +214,16 @@ func TestWorkspaceFileIndexUsesTriePrefixRecall(t *testing.T) {
 
 func TestWorkspaceFileIndexSupportsFuzzyAbbreviation(t *testing.T) {
 	idx := NewStaticWorkspaceFileIndex([]Candidate{
-		{Path: "internal/tui/model.go"},
-		{Path: "internal/tui/module.go"},
-		{Path: "internal/tui/monitor.go"},
+		{Path: "tui/model.go"},
+		{Path: "tui/module.go"},
+		{Path: "tui/monitor.go"},
 	}, 0, false)
 
 	results := idx.Search("modl", 5)
 	if len(results) == 0 {
 		t.Fatal("expected fuzzy abbreviation to return matches")
 	}
-	if results[0].Path != "internal/tui/model.go" {
+	if results[0].Path != "tui/model.go" {
 		t.Fatalf("expected model.go to rank first for modl, got %q", results[0].Path)
 	}
 }
@@ -250,6 +251,17 @@ func TestWorkspaceFileIndexSupportsConfigurableIgnoreRules(t *testing.T) {
 		if containsString(paths, unwanted) {
 			t.Fatalf("did not expect ignored path %q in results %v", unwanted, paths)
 		}
+	}
+}
+
+func TestLoadMentionIgnoreMatcherSupportsLongRuleLines(t *testing.T) {
+	workspace := t.TempDir()
+	longRule := strings.Repeat("a", 70*1024) // exceed bufio.Scanner default 64KB token limit
+	mustWriteMentionFile(t, filepath.Join(workspace, ".bytemindignore"), longRule+"\nlogs/*\n")
+
+	matcher := loadMentionIgnoreMatcher(workspace)
+	if !matcher.SkipFile("debug.log", "logs/debug.log") {
+		t.Fatalf("expected matcher to keep parsing rules after long line")
 	}
 }
 

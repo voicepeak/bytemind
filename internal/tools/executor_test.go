@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -43,9 +41,16 @@ func (t executorTestTool) Run(ctx context.Context, raw json.RawMessage, execCtx 
 	return t.result, t.err
 }
 
+func registerBuiltinExecutorTool(t *testing.T, registry *Registry, tool executorTestTool) {
+	t.Helper()
+	if err := registry.Register(tool, RegisterOptions{Source: RegistrationSourceBuiltin}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExecutorRejectsUnknownArgumentsByDefault(t *testing.T) {
 	registry := &Registry{}
-	registry.Add(executorTestTool{name: "strict_tool", result: `{"ok":true}`})
+	registerBuiltinExecutorTool(t, registry, executorTestTool{name: "strict_tool", result: `{"ok":true}`})
 	executor := NewExecutor(registry)
 
 	_, err := executor.Execute(context.Background(), "strict_tool", `{"path":"a.txt","extra":true}`, &ExecutionContext{})
@@ -61,12 +66,103 @@ func TestExecutorRejectsUnknownArgumentsByDefault(t *testing.T) {
 	}
 }
 
-func TestExecutorAllowsUnknownArgumentsWhenSchemaAllowsThem(t *testing.T) {
+func TestExecutorRejectsUnknownArgumentsWhenSchemaHasNoProperties(t *testing.T) {
 	registry := &Registry{}
-	registry.Add(executorTestTool{
+	registerBuiltinExecutorTool(t, registry, executorTestTool{name: "strict_tool", result: `{"ok":true}`})
+	registry.tools["strict_tool"] = ResolvedTool{
+		Definition: llm.ToolDefinition{
+			Type: "function",
+			Function: llm.FunctionDefinition{
+				Name: "strict_tool",
+				Parameters: map[string]any{
+					"type": "object",
+				},
+			},
+		},
+		Spec: registry.tools["strict_tool"].Spec,
+		Tool: registry.tools["strict_tool"].Tool,
+	}
+	executor := NewExecutor(registry)
+
+	_, err := executor.Execute(context.Background(), "strict_tool", `{"extra":true}`, &ExecutionContext{})
+	if err == nil {
+		t.Fatal("expected argument validation error")
+	}
+	execErr, ok := AsToolExecError(err)
+	if !ok {
+		t.Fatalf("expected ToolExecError, got %T", err)
+	}
+	if execErr.Code != ToolErrorInvalidArgs {
+		t.Fatalf("unexpected code: %s", execErr.Code)
+	}
+}
+
+func TestExecutorDefaultsEmptyArgsToJSONObject(t *testing.T) {
+	registry := &Registry{}
+	registerBuiltinExecutorTool(t, registry, executorTestTool{
+		name: "strict_tool",
+		run: func(_ context.Context, raw json.RawMessage, _ *ExecutionContext) (string, error) {
+			if string(raw) != "{}" {
+				t.Fatalf("expected empty args to default to {}, got %q", string(raw))
+			}
+			return `{"ok":true}`, nil
+		},
+	})
+	executor := NewExecutor(registry)
+
+	got, err := executor.Execute(context.Background(), "strict_tool", "", &ExecutionContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != `{"ok":true}` {
+		t.Fatalf("unexpected result: %q", got)
+	}
+}
+
+func TestExecutorRejectsUnknownArgumentsWhenSchemaForbidsThem(t *testing.T) {
+	registry := &Registry{}
+	registerBuiltinExecutorTool(t, registry, executorTestTool{
 		name:   "strict_tool",
 		result: `{"ok":true}`,
 		run:    nil,
+	})
+	registry.tools["strict_tool"] = ResolvedTool{
+		Definition: llm.ToolDefinition{
+			Type: "function",
+			Function: llm.FunctionDefinition{
+				Name: "strict_tool",
+				Parameters: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"path": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+		Spec: registry.tools["strict_tool"].Spec,
+		Tool: registry.tools["strict_tool"].Tool,
+	}
+	executor := NewExecutor(registry)
+
+	_, err := executor.Execute(context.Background(), "strict_tool", `{"path":"a.txt","extra":true}`, &ExecutionContext{})
+	if err == nil {
+		t.Fatal("expected argument validation error")
+	}
+	execErr, ok := AsToolExecError(err)
+	if !ok {
+		t.Fatalf("expected ToolExecError, got %T", err)
+	}
+	if execErr.Code != ToolErrorInvalidArgs {
+		t.Fatalf("unexpected code: %s", execErr.Code)
+	}
+}
+
+func TestExecutorAllowsUnknownArgumentsWhenSchemaAllowsAdditionalProperties(t *testing.T) {
+	registry := &Registry{}
+	registerBuiltinExecutorTool(t, registry, executorTestTool{
+		name:   "strict_tool",
+		result: `{"ok":true}`,
 	})
 	registry.tools["strict_tool"] = ResolvedTool{
 		Definition: llm.ToolDefinition{
@@ -89,43 +185,7 @@ func TestExecutorAllowsUnknownArgumentsWhenSchemaAllowsThem(t *testing.T) {
 
 	got, err := executor.Execute(context.Background(), "strict_tool", `{"path":"a.txt","extra":true}`, &ExecutionContext{})
 	if err != nil {
-		t.Fatalf("expected extra field to be allowed, got %v", err)
-	}
-	if got != `{"ok":true}` {
-		t.Fatalf("unexpected result: %q", got)
-	}
-}
-
-func TestExecutorAllowsUnknownArgumentsWhenSchemaUsesAdditionalPropertiesObject(t *testing.T) {
-	registry := &Registry{}
-	registry.Add(executorTestTool{
-		name:   "strict_tool",
-		result: `{"ok":true}`,
-	})
-	registry.tools["strict_tool"] = ResolvedTool{
-		Definition: llm.ToolDefinition{
-			Type: "function",
-			Function: llm.FunctionDefinition{
-				Name: "strict_tool",
-				Parameters: map[string]any{
-					"type": "object",
-					"additionalProperties": map[string]any{
-						"type": "string",
-					},
-					"properties": map[string]any{
-						"path": map[string]any{"type": "string"},
-					},
-				},
-			},
-		},
-		Spec: registry.tools["strict_tool"].Spec,
-		Tool: registry.tools["strict_tool"].Tool,
-	}
-	executor := NewExecutor(registry)
-
-	got, err := executor.Execute(context.Background(), "strict_tool", `{"path":"a.txt","extra":"v"}`, &ExecutionContext{})
-	if err != nil {
-		t.Fatalf("expected extra field to be allowed, got %v", err)
+		t.Fatalf("expected additionalProperties=true to allow unknown fields, got %v", err)
 	}
 	if got != `{"ok":true}` {
 		t.Fatalf("unexpected result: %q", got)
@@ -134,7 +194,7 @@ func TestExecutorAllowsUnknownArgumentsWhenSchemaUsesAdditionalPropertiesObject(
 
 func TestExecutorMapsPolicyFailuresToPermissionDenied(t *testing.T) {
 	registry := &Registry{}
-	registry.Add(executorTestTool{name: "strict_tool", result: `{"ok":true}`})
+	registerBuiltinExecutorTool(t, registry, executorTestTool{name: "strict_tool", result: `{"ok":true}`})
 	executor := NewExecutor(registry)
 
 	_, err := executor.Execute(context.Background(), "strict_tool", `{"path":"a.txt"}`, &ExecutionContext{
@@ -149,96 +209,9 @@ func TestExecutorMapsPolicyFailuresToPermissionDenied(t *testing.T) {
 	}
 }
 
-func TestExecutorPromptsApprovalForDestructiveTools(t *testing.T) {
-	registry := DefaultRegistry()
-	executor := NewExecutor(registry)
-	workspace := t.TempDir()
-	var approvalCalled bool
-
-	_, err := executor.Execute(context.Background(), "write_file", `{"path":"a.txt","content":"ok"}`, &ExecutionContext{
-		Workspace:      workspace,
-		ApprovalPolicy: "on-request",
-		Approval: func(req ApprovalRequest) (bool, error) {
-			approvalCalled = true
-			if req.Command != "write_file" {
-				t.Fatalf("unexpected approval command: %q", req.Command)
-			}
-			return false, nil
-		},
-	})
-	if err == nil {
-		t.Fatal("expected approval denial")
-	}
-	if !approvalCalled {
-		t.Fatal("expected approval callback to be called")
-	}
-	execErr, ok := AsToolExecError(err)
-	if !ok || execErr.Code != ToolErrorPermissionDenied {
-		t.Fatalf("unexpected error: %#v", err)
-	}
-	if _, statErr := os.Stat(filepath.Join(workspace, "a.txt")); !os.IsNotExist(statErr) {
-		t.Fatalf("expected file not to be created, got %v", statErr)
-	}
-}
-
-func TestExecutorWrapsApprovalCallbackError(t *testing.T) {
-	registry := DefaultRegistry()
-	executor := NewExecutor(registry)
-	workspace := t.TempDir()
-	cause := errors.New("approval backend failed")
-
-	_, err := executor.Execute(context.Background(), "write_file", `{"path":"a.txt","content":"ok"}`, &ExecutionContext{
-		Workspace:      workspace,
-		ApprovalPolicy: "on-request",
-		Approval: func(req ApprovalRequest) (bool, error) {
-			if req.Command != "write_file" {
-				t.Fatalf("unexpected approval command: %q", req.Command)
-			}
-			return false, cause
-		},
-	})
-	if err == nil {
-		t.Fatal("expected approval callback failure")
-	}
-	execErr, ok := AsToolExecError(err)
-	if !ok {
-		t.Fatalf("expected ToolExecError, got %T", err)
-	}
-	if execErr.Code != ToolErrorPermissionDenied {
-		t.Fatalf("unexpected code: %s", execErr.Code)
-	}
-	if execErr.Retryable {
-		t.Fatal("approval callback failure should not be retryable")
-	}
-	if !errors.Is(err, cause) {
-		t.Fatal("expected wrapped approval callback cause")
-	}
-}
-
-func TestExecutorSkipsWriteApprovalWhenPolicyIsNever(t *testing.T) {
-	registry := DefaultRegistry()
-	executor := NewExecutor(registry)
-	workspace := t.TempDir()
-
-	_, err := executor.Execute(context.Background(), "write_file", `{"path":"a.txt","content":"ok"}`, &ExecutionContext{
-		Workspace:      workspace,
-		ApprovalPolicy: "never",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, readErr := os.ReadFile(filepath.Join(workspace, "a.txt"))
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if string(data) != "ok" {
-		t.Fatalf("unexpected file content: %q", string(data))
-	}
-}
-
 func TestExecutorNormalizesToolFailure(t *testing.T) {
 	registry := &Registry{}
-	registry.Add(executorTestTool{name: "failing_tool", err: errors.New("command is required")})
+	registerBuiltinExecutorTool(t, registry, executorTestTool{name: "failing_tool", err: errors.New("command is required")})
 	executor := NewExecutor(registry)
 
 	_, err := executor.Execute(context.Background(), "failing_tool", `{"path":"a.txt"}`, &ExecutionContext{})
@@ -256,7 +229,7 @@ func TestExecutorNormalizesToolFailure(t *testing.T) {
 
 func TestExecutorPreservesValidJSONOutputWhenOverLimit(t *testing.T) {
 	registry := &Registry{}
-	registry.Add(executorTestTool{name: "strict_tool", result: `{"content":"` + strings.Repeat("a", 70000) + `"}`})
+	registerBuiltinExecutorTool(t, registry, executorTestTool{name: "strict_tool", result: `{"content":"` + strings.Repeat("a", 70000) + `"}`})
 	executor := NewExecutor(registry)
 
 	got, err := executor.Execute(context.Background(), "strict_tool", `{"path":"a.txt"}`, &ExecutionContext{})
@@ -270,7 +243,7 @@ func TestExecutorPreservesValidJSONOutputWhenOverLimit(t *testing.T) {
 
 func TestExecutorTruncatesNonJSONOutputSafely(t *testing.T) {
 	registry := &Registry{}
-	registry.Add(executorTestTool{name: "strict_tool", result: strings.Repeat("a", 70000)})
+	registerBuiltinExecutorTool(t, registry, executorTestTool{name: "strict_tool", result: strings.Repeat("a", 70000)})
 	executor := NewExecutor(registry)
 
 	got, err := executor.Execute(context.Background(), "strict_tool", `{"path":"a.txt"}`, &ExecutionContext{})
@@ -284,7 +257,7 @@ func TestExecutorTruncatesNonJSONOutputSafely(t *testing.T) {
 
 func TestExecutorHonorsRequestedTimeoutSeconds(t *testing.T) {
 	registry := &Registry{}
-	registry.Add(executorTestTool{
+	registerBuiltinExecutorTool(t, registry, executorTestTool{
 		name: "strict_tool",
 		run: func(ctx context.Context, _ json.RawMessage, _ *ExecutionContext) (string, error) {
 			deadline, ok := ctx.Deadline()
@@ -302,5 +275,142 @@ func TestExecutorHonorsRequestedTimeoutSeconds(t *testing.T) {
 
 	if _, err := executor.Execute(context.Background(), "strict_tool", `{"path":"a.txt","timeout_seconds":60}`, &ExecutionContext{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestExecutorRequiresApprovalForDestructiveToolsByDefault(t *testing.T) {
+	registry := &Registry{}
+	registerBuiltinExecutorTool(t, registry, executorTestTool{name: "write_file", result: `{"ok":true}`})
+	executor := NewExecutor(registry)
+
+	_, err := executor.Execute(context.Background(), "write_file", `{"path":"a.txt"}`, &ExecutionContext{
+		ApprovalPolicy: "on-request",
+	})
+	if err == nil {
+		t.Fatal("expected approval error")
+	}
+	execErr, ok := AsToolExecError(err)
+	if !ok {
+		t.Fatalf("expected ToolExecError, got %T", err)
+	}
+	if execErr.Code != ToolErrorPermissionDenied {
+		t.Fatalf("unexpected code: %s", execErr.Code)
+	}
+}
+
+func TestExecutorRequiresApprovalForDestructiveToolsWhenContextMissing(t *testing.T) {
+	registry := &Registry{}
+	registerBuiltinExecutorTool(t, registry, executorTestTool{name: "write_file", result: `{"ok":true}`})
+	executor := NewExecutor(registry)
+
+	_, err := executor.Execute(context.Background(), "write_file", `{"path":"a.txt"}`, nil)
+	if err == nil {
+		t.Fatal("expected approval error")
+	}
+	execErr, ok := AsToolExecError(err)
+	if !ok {
+		t.Fatalf("expected ToolExecError, got %T", err)
+	}
+	if execErr.Code != ToolErrorPermissionDenied {
+		t.Fatalf("unexpected code: %s", execErr.Code)
+	}
+}
+
+func TestExecutorAllowsDestructiveToolWhenApprovalGranted(t *testing.T) {
+	registry := &Registry{}
+	registerBuiltinExecutorTool(t, registry, executorTestTool{name: "write_file", result: `{"ok":true}`})
+	executor := NewExecutor(registry)
+
+	got, err := executor.Execute(context.Background(), "write_file", `{"path":"a.txt"}`, &ExecutionContext{
+		ApprovalPolicy: "on-request",
+		Approval: func(req ApprovalRequest) (bool, error) {
+			if req.Command != "write_file" {
+				t.Fatalf("unexpected approval command: %q", req.Command)
+			}
+			if !strings.Contains(req.Reason, "destructive tool") {
+				t.Fatalf("unexpected approval reason: %q", req.Reason)
+			}
+			return true, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected approval success, got %v", err)
+	}
+	if got != `{"ok":true}` {
+		t.Fatalf("unexpected result: %q", got)
+	}
+}
+
+func TestExecutorSkipsDestructiveApprovalWhenPolicyNever(t *testing.T) {
+	registry := &Registry{}
+	registerBuiltinExecutorTool(t, registry, executorTestTool{name: "write_file", result: `{"ok":true}`})
+	executor := NewExecutor(registry)
+
+	got, err := executor.Execute(context.Background(), "write_file", `{"path":"a.txt"}`, &ExecutionContext{
+		ApprovalPolicy: "never",
+	})
+	if err != nil {
+		t.Fatalf("expected no approval under never policy, got %v", err)
+	}
+	if got != `{"ok":true}` {
+		t.Fatalf("unexpected result: %q", got)
+	}
+}
+
+func TestExecutorAwayModeAutoDenySkipsDestructiveApprovalPrompt(t *testing.T) {
+	registry := &Registry{}
+	registry.Add(executorTestTool{name: "write_file", result: `{"ok":true}`})
+	executor := NewExecutor(registry)
+
+	asked := false
+	_, err := executor.Execute(context.Background(), "write_file", `{"path":"a.txt"}`, &ExecutionContext{
+		ApprovalPolicy: "on-request",
+		ApprovalMode:   "away",
+		AwayPolicy:     "auto_deny_continue",
+		Approval: func(req ApprovalRequest) (bool, error) {
+			asked = true
+			return true, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected away mode to deny destructive tool without prompting")
+	}
+	if asked {
+		t.Fatal("expected away mode to skip approval prompt handler")
+	}
+	execErr, ok := AsToolExecError(err)
+	if !ok {
+		t.Fatalf("expected ToolExecError, got %T", err)
+	}
+	if execErr.Code != ToolErrorPermissionDenied {
+		t.Fatalf("unexpected code: %s", execErr.Code)
+	}
+	if !strings.Contains(execErr.Error(), "away mode") {
+		t.Fatalf("expected away mode reason, got %v", execErr)
+	}
+}
+
+func TestExecutorAwayModeFailFastStillReturnsPermissionDeniedForDestructiveTool(t *testing.T) {
+	registry := &Registry{}
+	registry.Add(executorTestTool{name: "write_file", result: `{"ok":true}`})
+	executor := NewExecutor(registry)
+
+	_, err := executor.Execute(context.Background(), "write_file", `{"path":"a.txt"}`, &ExecutionContext{
+		ApprovalPolicy: "on-request",
+		ApprovalMode:   "away",
+		AwayPolicy:     "fail_fast",
+	})
+	if err == nil {
+		t.Fatal("expected away fail_fast to deny destructive tool")
+	}
+	execErr, ok := AsToolExecError(err)
+	if !ok {
+		t.Fatalf("expected ToolExecError, got %T", err)
+	}
+	if execErr.Code != ToolErrorPermissionDenied {
+		t.Fatalf("unexpected code: %s", execErr.Code)
+	}
+	if !strings.Contains(execErr.Error(), "away_policy=fail_fast") {
+		t.Fatalf("expected fail_fast policy in error, got %v", execErr)
 	}
 }

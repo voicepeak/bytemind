@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,22 +13,32 @@ import (
 const (
 	envBytemindHome = "BYTEMIND_HOME"
 	defaultHomeDir  = ".bytemind"
+	defaultModelID  = "gpt-5.4-mini"
 )
 
 const (
+	DefaultTokenQuota                    = 300000
 	DefaultContextBudgetWarningRatio     = 0.85
 	DefaultContextBudgetCriticalRatio    = 0.95
 	DefaultContextBudgetMaxReactiveRetry = 1
 )
 
 type Config struct {
-	Provider       ProviderConfig      `json:"provider"`
-	ApprovalPolicy string              `json:"approval_policy"`
-	MaxIterations  int                 `json:"max_iterations"`
-	Stream         bool                `json:"stream"`
-	TokenQuota     int                 `json:"token_quota"`
-	TokenUsage     TokenUsageConfig    `json:"token_usage"`
-	ContextBudget  ContextBudgetConfig `json:"context_budget"`
+	Provider        ProviderConfig        `json:"provider"`
+	ProviderRuntime ProviderRuntimeConfig `json:"provider_runtime"`
+	ApprovalPolicy  string                `json:"approval_policy"`
+	ApprovalMode    string                `json:"approval_mode"`
+	AwayPolicy      string                `json:"away_policy"`
+	MaxIterations   int                   `json:"max_iterations"`
+	Stream          bool                  `json:"stream"`
+	UpdateCheck     UpdateCheckConfig     `json:"update_check"`
+	TokenQuota      int                   `json:"token_quota"`
+	TokenUsage      TokenUsageConfig      `json:"token_usage"`
+	ContextBudget   ContextBudgetConfig   `json:"context_budget"`
+}
+
+type UpdateCheckConfig struct {
+	Enabled bool `json:"enabled"`
 }
 
 type ProviderConfig struct {
@@ -67,13 +78,18 @@ func Default(workspace string) Config {
 		Provider: ProviderConfig{
 			Type:      "openai-compatible",
 			BaseURL:   "https://api.openai.com/v1",
-			Model:     "GPT-5.4",
+			Model:     defaultModelID,
 			APIKeyEnv: "BYTEMIND_API_KEY",
 		},
 		ApprovalPolicy: "on-request",
+		ApprovalMode:   "interactive",
+		AwayPolicy:     "auto_deny_continue",
 		MaxIterations:  32,
 		Stream:         true,
-		TokenQuota:     5000,
+		UpdateCheck: UpdateCheckConfig{
+			Enabled: true,
+		},
+		TokenQuota: DefaultTokenQuota,
 		TokenUsage: TokenUsageConfig{
 			StorageType:     "file",
 			StoragePath:     ".bytemind/token_usage.json",
@@ -189,14 +205,19 @@ func ensureDefaultConfigFile(home string) error {
 		Provider: ProviderConfig{
 			Type:             "openai-compatible",
 			BaseURL:          "https://api.openai.com/v1",
-			Model:            "GPT-5.4",
+			Model:            defaultModelID,
 			APIKeyEnv:        "BYTEMIND_API_KEY",
 			AnthropicVersion: "2023-06-01",
 		},
 		ApprovalPolicy: "on-request",
+		ApprovalMode:   "interactive",
+		AwayPolicy:     "auto_deny_continue",
 		MaxIterations:  32,
 		Stream:         true,
-		TokenQuota:     5000,
+		UpdateCheck: UpdateCheckConfig{
+			Enabled: true,
+		},
+		TokenQuota: DefaultTokenQuota,
 		TokenUsage: TokenUsageConfig{
 			StorageType:     "file",
 			StoragePath:     ".bytemind/token_usage.json",
@@ -296,9 +317,20 @@ func applyEnv(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("BYTEMIND_APPROVAL_POLICY")); value != "" {
 		cfg.ApprovalPolicy = value
 	}
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_APPROVAL_MODE")); value != "" {
+		cfg.ApprovalMode = value
+	}
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_AWAY_POLICY")); value != "" {
+		cfg.AwayPolicy = value
+	}
 	if value := strings.TrimSpace(os.Getenv("BYTEMIND_STREAM")); value != "" {
 		if parsed, err := strconv.ParseBool(value); err == nil {
 			cfg.Stream = parsed
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_UPDATE_CHECK")); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			cfg.UpdateCheck.Enabled = parsed
 		}
 	}
 	if value := strings.TrimSpace(os.Getenv("BYTEMIND_TOKEN_QUOTA")); value != "" {
@@ -324,7 +356,7 @@ func normalize(cfg *Config) error {
 		return errors.New("provider.base_url is required")
 	}
 	if strings.TrimSpace(cfg.Provider.Model) == "" {
-		cfg.Provider.Model = defaultModel(cfg.Provider.Type)
+		cfg.Provider.Model = defaultModel(cfg.Provider.Type, cfg.Provider.BaseURL)
 		if strings.TrimSpace(cfg.Provider.Model) == "" {
 			return errors.New("provider.model is required")
 		}
@@ -342,6 +374,68 @@ func normalize(cfg *Config) error {
 	if cfg.Provider.ExtraHeaders == nil {
 		cfg.Provider.ExtraHeaders = map[string]string{}
 	}
+	if len(cfg.ProviderRuntime.Providers) == 0 {
+		legacy := LegacyProviderRuntimeConfig(cfg.Provider)
+		if strings.TrimSpace(cfg.ProviderRuntime.DefaultProvider) == "" {
+			cfg.ProviderRuntime.DefaultProvider = legacy.DefaultProvider
+		}
+		if strings.TrimSpace(cfg.ProviderRuntime.DefaultModel) == "" {
+			cfg.ProviderRuntime.DefaultModel = legacy.DefaultModel
+		}
+		cfg.ProviderRuntime.Providers = legacy.Providers
+	}
+	cfg.ProviderRuntime.DefaultProvider = strings.ToLower(strings.TrimSpace(cfg.ProviderRuntime.DefaultProvider))
+	cfg.ProviderRuntime.DefaultModel = strings.TrimSpace(cfg.ProviderRuntime.DefaultModel)
+	if cfg.ProviderRuntime.DefaultModel == "" {
+		cfg.ProviderRuntime.DefaultModel = cfg.Provider.Model
+	}
+	if cfg.ProviderRuntime.Providers == nil {
+		cfg.ProviderRuntime.Providers = map[string]ProviderConfig{}
+	}
+	normalizedProviders := make(map[string]ProviderConfig, len(cfg.ProviderRuntime.Providers))
+	normalizedSources := make(map[string]string, len(cfg.ProviderRuntime.Providers))
+	for id, providerCfg := range cfg.ProviderRuntime.Providers {
+		normalizedID := strings.ToLower(strings.TrimSpace(id))
+		if normalizedID == "" {
+			return errors.New("provider_runtime.providers contains an empty provider id")
+		}
+		if existingSource, exists := normalizedSources[normalizedID]; exists {
+			return fmt.Errorf("provider_runtime.providers has duplicate provider id after normalization: %q (from %q and %q)", normalizedID, existingSource, id)
+		}
+		providerCfg.Type = normalizeProviderType(providerCfg.Type)
+		if providerCfg.Type == "" {
+			if providerCfg.AutoDetectType {
+				providerCfg.Type = detectProviderType(providerCfg)
+			} else {
+				providerCfg.Type = "openai-compatible"
+			}
+		}
+		if strings.TrimSpace(providerCfg.BaseURL) == "" {
+			providerCfg.BaseURL = defaultBaseURL(providerCfg.Type)
+		}
+		if strings.TrimSpace(providerCfg.Model) == "" {
+			providerCfg.Model = cfg.ProviderRuntime.DefaultModel
+		}
+		if providerCfg.APIKeyEnv == "" {
+			providerCfg.APIKeyEnv = cfg.Provider.APIKeyEnv
+		}
+		if strings.TrimSpace(providerCfg.APIKey) == "" {
+			providerCfg.APIKey = cfg.Provider.APIKey
+		}
+		providerCfg.APIPath = strings.TrimSpace(providerCfg.APIPath)
+		providerCfg.AuthHeader = strings.TrimSpace(providerCfg.AuthHeader)
+		providerCfg.AuthScheme = strings.TrimSpace(providerCfg.AuthScheme)
+		providerCfg.AnthropicVersion = strings.TrimSpace(providerCfg.AnthropicVersion)
+		if providerCfg.Type == "anthropic" && providerCfg.AnthropicVersion == "" {
+			providerCfg.AnthropicVersion = "2023-06-01"
+		}
+		if providerCfg.ExtraHeaders == nil {
+			providerCfg.ExtraHeaders = map[string]string{}
+		}
+		normalizedProviders[normalizedID] = providerCfg
+		normalizedSources[normalizedID] = id
+	}
+	cfg.ProviderRuntime.Providers = normalizedProviders
 	for key, value := range cfg.Provider.ExtraHeaders {
 		trimmedKey := strings.TrimSpace(key)
 		trimmedValue := strings.TrimSpace(value)
@@ -369,8 +463,22 @@ func normalize(cfg *Config) error {
 	default:
 		return errors.New("approval_policy must be one of always, on-request, never")
 	}
+	switch strings.TrimSpace(cfg.ApprovalMode) {
+	case "", "interactive":
+		cfg.ApprovalMode = "interactive"
+	case "away":
+	default:
+		return errors.New("approval_mode must be one of interactive, away")
+	}
+	switch strings.TrimSpace(cfg.AwayPolicy) {
+	case "", "auto_deny_continue":
+		cfg.AwayPolicy = "auto_deny_continue"
+	case "fail_fast":
+	default:
+		return errors.New("away_policy must be one of auto_deny_continue, fail_fast")
+	}
 	if cfg.TokenQuota < 1 {
-		cfg.TokenQuota = 5000
+		cfg.TokenQuota = DefaultTokenQuota
 	}
 	if strings.TrimSpace(cfg.TokenUsage.StorageType) == "" {
 		cfg.TokenUsage.StorageType = "file"
@@ -473,10 +581,13 @@ func defaultBaseURL(providerType string) string {
 	}
 }
 
-func defaultModel(providerType string) string {
+func defaultModel(providerType, baseURL string) string {
 	switch normalizeProviderType(providerType) {
 	case "openai-compatible", "openai", "":
-		return "GPT-5.4"
+		if strings.Contains(strings.ToLower(strings.TrimSpace(baseURL)), "deepseek.com") {
+			return "deepseek-chat"
+		}
+		return defaultModelID
 	default:
 		return ""
 	}

@@ -117,8 +117,10 @@ func (RunShellTool) Run(ctx context.Context, raw json.RawMessage, execCtx *Execu
 
 func requireApproval(command string, execCtx *ExecutionContext) error {
 	mode := planpkg.ModeBuild
+	approvalPolicy := ""
 	if execCtx != nil {
 		mode = planpkg.NormalizeMode(string(execCtx.Mode))
+		approvalPolicy = strings.TrimSpace(execCtx.ApprovalPolicy)
 	}
 	if mode == planpkg.ModePlan {
 		if !isPlanSafeCommand(command) {
@@ -132,7 +134,7 @@ func requireApproval(command string, execCtx *ExecutionContext) error {
 		return errors.New(assessment.Reason)
 	}
 
-	switch execCtx.ApprovalPolicy {
+	switch approvalPolicy {
 	case "never":
 		return nil
 	case "always":
@@ -213,6 +215,12 @@ func looksLikeScript(command string) bool {
 }
 
 func promptForApproval(command, reason string, execCtx *ExecutionContext) error {
+	if execCtx != nil && execCtx.isAwayMode() {
+		return awayModeApprovalDeniedError("shell command", command, execCtx)
+	}
+	if execCtx == nil {
+		return errors.New("shell command requires approval but no execution context is available")
+	}
 	if execCtx.Approval != nil {
 		approved, err := execCtx.Approval(ApprovalRequest{
 			Command: command,

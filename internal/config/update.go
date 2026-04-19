@@ -66,12 +66,21 @@ func upsertProviderValues(configPath string, values map[string]string) (string, 
 		providerSection["base_url"] = "https://api.openai.com/v1"
 	}
 	if strings.TrimSpace(asString(providerSection["model"])) == "" {
-		providerSection["model"] = "GPT-5.4"
+		providerSection["model"] = defaultModel(
+			asString(providerSection["type"]),
+			asString(providerSection["base_url"]),
+		)
 	}
 	raw["provider"] = providerSection
 
 	if _, ok := raw["approval_policy"]; !ok {
 		raw["approval_policy"] = "on-request"
+	}
+	if _, ok := raw["approval_mode"]; !ok {
+		raw["approval_mode"] = "interactive"
+	}
+	if _, ok := raw["away_policy"]; !ok {
+		raw["away_policy"] = "auto_deny_continue"
 	}
 	if _, ok := raw["max_iterations"]; !ok {
 		raw["max_iterations"] = 32
