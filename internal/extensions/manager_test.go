@@ -546,24 +546,23 @@ func TestDiscoverOneRejectsMissingDirectory(t *testing.T) {
 	}
 }
 
-func TestDiscoverScopeCollectsManifestErrors(t *testing.T) {
+func TestReloadCollectsSkillDiagnosticsAsDiscoveryErrors(t *testing.T) {
 	root := t.TempDir()
-	bad := filepath.Join(root, "bad")
+	project := filepath.Join(root, "project")
+	bad := filepath.Join(project, "bad")
 	if err := os.MkdirAll(bad, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(bad, "skill.json"), []byte(`{"name":`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	items, errs, err := discoverScope(ExtensionScopeProject, root)
-	if err != nil {
-		t.Fatalf("discoverScope failed: %v", err)
+	mgr := NewManagerWithDirs(root, filepath.Join(root, "builtin"), filepath.Join(root, "user"), project)
+	items, err := mgr.List(context.Background())
+	if err == nil {
+		t.Fatal("expected discovery error")
 	}
 	if len(items) != 0 {
 		t.Fatalf("expected no discovered items, got %d", len(items))
-	}
-	if len(errs) != 1 {
-		t.Fatalf("expected one discovery error, got %d", len(errs))
 	}
 }
 

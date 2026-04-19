@@ -117,6 +117,12 @@ func (m *Manager) Reload() Catalog {
 	return cloneCatalog(m.catalog)
 }
 
+func (m *Manager) Snapshot() Catalog {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneCatalog(m.catalog)
+}
+
 func (m *Manager) List() ([]Skill, []Diagnostic) {
 	catalog := m.Reload()
 	return catalog.Skills, catalog.Diagnostics
@@ -385,12 +391,16 @@ func loadSkillFromDir(scope Scope, skillDir, dirName string) (Skill, bool, []Dia
 
 func buildToolPolicy(policy string, items []string, frontmatter map[string]string) (ToolPolicy, *Diagnostic) {
 	policy = strings.TrimSpace(strings.ToLower(policy))
+	cleanItems := uniqueStrings(items)
 	if policy == "" {
 		if allowed := parseToolList(frontmatter["allowed-tools"]); len(allowed) > 0 {
 			return ToolPolicy{
 				Policy: ToolPolicyAllowlist,
 				Items:  allowed,
 			}, nil
+		}
+		if len(cleanItems) > 0 {
+			return ToolPolicy{Policy: ToolPolicyInherit, Items: cleanItems}, nil
 		}
 		return ToolPolicy{Policy: ToolPolicyInherit}, nil
 	}
@@ -399,7 +409,7 @@ func buildToolPolicy(policy string, items []string, frontmatter map[string]strin
 	case ToolPolicyInherit, ToolPolicyAllowlist, ToolPolicyDenylist:
 		return ToolPolicy{
 			Policy: ToolPolicyMode(policy),
-			Items:  uniqueStrings(items),
+			Items:  cleanItems,
 		}, nil
 	default:
 		return ToolPolicy{Policy: ToolPolicyInherit}, &Diagnostic{
