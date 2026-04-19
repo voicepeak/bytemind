@@ -21,7 +21,7 @@ iwr -useb https://raw.githubusercontent.com/1024XEngineer/bytemind/main/scripts/
 ### macOS / Linux
 
 ```bash
-BYTEMIND_VERSION=v0.3.0 curl -fsSL https://raw.githubusercontent.com/1024XEngineer/bytemind/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/1024XEngineer/bytemind/main/scripts/install.sh | BYTEMIND_VERSION=v0.3.0 bash
 ```
 
 ### Windows PowerShell
