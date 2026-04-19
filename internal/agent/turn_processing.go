@@ -102,7 +102,7 @@ func (e *defaultEngine) processTurn(ctx context.Context, p turnProcessParams) (s
 					answer, summaryErr := e.finishWithSummary(p.Session, summary, p.Out, streamedText)
 					return answer, true, summaryErr
 				}
-				p.AdaptiveState.schedulePendingSystemNote(buildSemanticRepairInstruction(reply, attempt, maxAttempts))
+				p.AdaptiveState.schedulePendingControlNote(buildSemanticRepairInstruction(reply, attempt, maxAttempts))
 			}
 			if p.Out != nil {
 				fmt.Fprintf(p.Out, "%sassistant indicated ongoing work but emitted no structured tool calls; retrying with a correction prompt%s\n", ansiDim, ansiReset)

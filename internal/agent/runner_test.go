@@ -336,9 +336,14 @@ func TestRunPromptRepairsContinueWorkWithoutToolCalls(t *testing.T) {
 	if len(client.requests) != 3 {
 		t.Fatalf("expected three requests (repair + tool + finalize), got %d", len(client.requests))
 	}
-	if len(client.requests[1].Messages) == 0 || client.requests[1].Messages[0].Role != llm.RoleSystem ||
-		!strings.Contains(strings.ToLower(client.requests[1].Messages[0].Text()), "ongoing work but returned no structured tool calls") {
-		t.Fatalf("expected repair system note in second request, got %#v", client.requests[1].Messages)
+	secondTurnMessages := client.requests[1].Messages
+	if len(secondTurnMessages) == 0 || secondTurnMessages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected second request to keep system prompt first, got %#v", secondTurnMessages)
+	}
+	lastMsg := secondTurnMessages[len(secondTurnMessages)-1]
+	if lastMsg.Role != llm.RoleUser ||
+		!strings.Contains(strings.ToLower(lastMsg.Text()), "ongoing work but returned no structured tool calls") {
+		t.Fatalf("expected repair control note to be appended as user message, got %#v", secondTurnMessages)
 	}
 	if len(sess.Messages) != 4 {
 		t.Fatalf("expected user + tool call + tool result + final assistant, got %#v", sess.Messages)

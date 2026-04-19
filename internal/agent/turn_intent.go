@@ -71,20 +71,100 @@ func inferAssistantTurnIntent(text string) assistantTurnIntent {
 		return turnIntentUnknown
 	}
 
-	if containsAnyToken(normalized,
-		"please confirm", "if you agree", "do you want", "would you like", "can you confirm",
-		"should i", "tell me if you want", "你要我", "请确认", "是否继续", "要不要我", "如果你同意",
-	) {
+	if hasAskUserSignal(normalized) {
 		return turnIntentAskUser
 	}
+	if hasFinalizeSignal(normalized) {
+		return turnIntentFinalize
+	}
 
-	if containsAnyToken(normalized,
-		"i will", "i'll", "let me", "next i'll", "i am going to", "i'm going to",
-		"我会", "我将", "我先", "接下来我", "然后我", "继续处理", "继续执行", "准备调用", "开始调用",
-	) {
+	// Keep untagged continue_work fallback strict:
+	// require both a strong "I will do X" signal and a concrete execution marker.
+	if hasContinueStrongSignal(normalized) && hasExecutionActionMarker(normalized) {
 		return turnIntentContinueWork
 	}
 	return turnIntentUnknown
+}
+
+func hasAskUserSignal(text string) bool {
+	return containsAnyToken(text,
+		"please confirm",
+		"if you agree",
+		"do you want",
+		"would you like",
+		"can you confirm",
+		"should i",
+		"tell me if you want",
+		"let me know if you want",
+		"\u8bf7\u786e\u8ba4",             // 请确认
+		"\u662f\u5426\u7ee7\u7eed",       // 是否继续
+		"\u8981\u4e0d\u8981\u6211",       // 要不要我
+		"\u5982\u679c\u4f60\u540c\u610f", // 如果你同意
+	)
+}
+
+func hasFinalizeSignal(text string) bool {
+	return containsAnyToken(text,
+		"all done",
+		"task completed",
+		"work completed",
+		"final answer",
+		"final response",
+		"\u5df2\u5b8c\u6210", // 已完成
+		"\u5b8c\u6210\u4e86", // 完成了
+		"\u603b\u7ed3",       // 总结
+	)
+}
+
+func hasContinueStrongSignal(text string) bool {
+	return containsAnyToken(text,
+		"i will",
+		"i'll",
+		"let me",
+		"next i'll",
+		"i am going to",
+		"i'm going to",
+		"now i'll",
+		"\u6211\u4f1a",             // 我会
+		"\u6211\u5c06",             // 我将
+		"\u6211\u5148",             // 我先
+		"\u63a5\u4e0b\u6765\u6211", // 接下来我
+		"\u6211\u73b0\u5728",       // 我现在
+	)
+}
+
+func hasExecutionActionMarker(text string) bool {
+	return containsAnyToken(text,
+		"run",
+		"execute",
+		"call",
+		"invoke",
+		"search",
+		"inspect",
+		"read",
+		"open",
+		"edit",
+		"write",
+		"create",
+		"apply",
+		"test",
+		"build",
+		"compile",
+		"tool",
+		"command",
+		"file",
+		"\u8c03\u7528", // 调用
+		"\u6267\u884c", // 执行
+		"\u8fd0\u884c", // 运行
+		"\u67e5\u770b", // 查看
+		"\u68c0\u67e5", // 检查
+		"\u8bfb\u53d6", // 读取
+		"\u4fee\u6539", // 修改
+		"\u7f16\u8f91", // 编辑
+		"\u7f16\u5199", // 编写
+		"\u6d4b\u8bd5", // 测试
+		"\u67e5\u627e", // 查找
+	)
 }
 
 func maxSemanticRepairAttempts(maxReactiveRetry int) int {
@@ -124,7 +204,7 @@ type adaptiveTurnState struct {
 	maxSemanticRepairs     int
 	noProgressTurns        int
 	noProgressTurnLimit    int
-	pendingSystemNote      string
+	pendingControlNote     string
 }
 
 func newAdaptiveTurnState(maxReactiveRetry int) *adaptiveTurnState {
@@ -139,20 +219,20 @@ func newAdaptiveTurnState(maxReactiveRetry int) *adaptiveTurnState {
 	}
 }
 
-func (s *adaptiveTurnState) consumePendingSystemNote() string {
+func (s *adaptiveTurnState) consumePendingControlNote() string {
 	if s == nil {
 		return ""
 	}
-	note := strings.TrimSpace(s.pendingSystemNote)
-	s.pendingSystemNote = ""
+	note := strings.TrimSpace(s.pendingControlNote)
+	s.pendingControlNote = ""
 	return note
 }
 
-func (s *adaptiveTurnState) schedulePendingSystemNote(note string) {
+func (s *adaptiveTurnState) schedulePendingControlNote(note string) {
 	if s == nil {
 		return
 	}
-	s.pendingSystemNote = strings.TrimSpace(note)
+	s.pendingControlNote = strings.TrimSpace(note)
 }
 
 func (s *adaptiveTurnState) recordNoProgressTurn() {
@@ -168,7 +248,7 @@ func (s *adaptiveTurnState) recordProgress() {
 	}
 	s.noProgressTurns = 0
 	s.semanticRepairAttempts = 0
-	s.pendingSystemNote = ""
+	s.pendingControlNote = ""
 }
 
 func (s *adaptiveTurnState) recordSemanticRepairAttempt() int {

@@ -24,10 +24,16 @@ func TestInferAssistantTurnIntent(t *testing.T) {
 	if got := inferAssistantTurnIntent("I will inspect files now."); got != turnIntentContinueWork {
 		t.Fatalf("expected continue_work, got %q", got)
 	}
+	if got := inferAssistantTurnIntent("I will continue shortly."); got != turnIntentUnknown {
+		t.Fatalf("expected unknown for vague no-tag continue text, got %q", got)
+	}
 	if got := inferAssistantTurnIntent("Please confirm if you want me to continue."); got != turnIntentAskUser {
 		t.Fatalf("expected ask_user, got %q", got)
 	}
-	if got := inferAssistantTurnIntent("All done."); got != turnIntentUnknown {
+	if got := inferAssistantTurnIntent("All done. Final answer below."); got != turnIntentFinalize {
+		t.Fatalf("expected finalize for explicit completion text, got %q", got)
+	}
+	if got := inferAssistantTurnIntent("Thanks for waiting."); got != turnIntentUnknown {
 		t.Fatalf("expected unknown for neutral final text, got %q", got)
 	}
 }

@@ -30,12 +30,12 @@ func (e *defaultEngine) runPromptTurns(ctx context.Context, sess *session.Sessio
 		if err != nil {
 			return "", err
 		}
-		if note := adaptiveState.consumePendingSystemNote(); note != "" {
-			noteMessage := llm.NewTextMessage(llm.RoleSystem, note)
+		if note := adaptiveState.consumePendingControlNote(); note != "" {
+			noteMessage := llm.NewUserTextMessage(note)
 			if err := llm.ValidateMessage(noteMessage); err != nil {
 				return "", err
 			}
-			messages = append([]llm.Message{noteMessage}, messages...)
+			messages = append(messages, noteMessage)
 		}
 		answer, finished, err := e.processTurnWithReactiveCompaction(ctx, setup, turnProcessParams{
 			Session:          sess,
