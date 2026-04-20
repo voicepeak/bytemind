@@ -23,8 +23,8 @@ func (w *workerTestDouble) Run(_ context.Context, _ workerRunRequest) (string, e
 }
 
 func TestShouldRouteToWorker(t *testing.T) {
-	if shouldRouteToWorker("run_shell", &ExecutionContext{SandboxEnabled: false}) {
-		t.Fatal("expected sandbox disabled to skip worker route")
+	if !shouldRouteToWorker("run_shell", &ExecutionContext{SandboxEnabled: false}) {
+		t.Fatal("expected run_shell to route to worker regardless of sandbox toggle")
 	}
 	if !shouldRouteToWorker("run_shell", &ExecutionContext{SandboxEnabled: true}) {
 		t.Fatal("expected run_shell to route to worker in sandbox mode")
@@ -40,7 +40,7 @@ func TestShouldRouteToWorker(t *testing.T) {
 	}
 }
 
-func TestExecutorRoutesSandboxToolsToWorker(t *testing.T) {
+func TestExecutorRoutesCoreToolsToWorker(t *testing.T) {
 	registry := &Registry{}
 	registerBuiltinExecutorTool(t, registry, executorTestTool{
 		name: "run_shell",
@@ -53,7 +53,7 @@ func TestExecutorRoutesSandboxToolsToWorker(t *testing.T) {
 	worker := &workerTestDouble{output: `{"ok":true,"worker":true}`}
 	executor.worker = worker
 
-	out, err := executor.Execute(context.Background(), "run_shell", `{}`, &ExecutionContext{SandboxEnabled: true})
+	out, err := executor.Execute(context.Background(), "run_shell", `{}`, &ExecutionContext{SandboxEnabled: false})
 	if err != nil {
 		t.Fatalf("executor execute: %v", err)
 	}

@@ -294,9 +294,7 @@ func cloneKeyring(source map[string][]byte) map[string][]byte {
 }
 
 func shouldRouteToWorker(toolName string, execCtx *ExecutionContext) bool {
-	if execCtx == nil || !execCtx.SandboxEnabled {
-		return false
-	}
+	_ = execCtx
 	switch toolName {
 	case "run_shell", "read_file", "write_file":
 		return true
