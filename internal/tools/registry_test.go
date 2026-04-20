@@ -351,6 +351,40 @@ func TestRegistryRegisterAllowsShadowBuiltinOriginalNameWhenOptedIn(t *testing.T
 	}
 }
 
+func TestRegistryRegisterShadowBuiltinStillRejectsExistingExtensionConflict(t *testing.T) {
+	registry := &Registry{}
+	if err := registry.Register(testTool{name: "read_file"}, RegisterOptions{Source: RegistrationSourceBuiltin}); err != nil {
+		t.Fatalf("register builtin failed: %v", err)
+	}
+	if err := registry.Register(testTool{name: "skill:skill_review:read_file"}, RegisterOptions{
+		Source:                         RegistrationSourceExtension,
+		ExtensionID:                    "skill.review",
+		OriginalName:                   "read_file",
+		AllowOriginalNameShadowBuiltin: true,
+	}); err != nil {
+		t.Fatalf("register first extension shadow tool failed: %v", err)
+	}
+	err := registry.Register(testTool{name: "skill:skill_plan:read_file"}, RegisterOptions{
+		Source:                         RegistrationSourceExtension,
+		ExtensionID:                    "skill.plan",
+		OriginalName:                   "read_file",
+		AllowOriginalNameShadowBuiltin: true,
+	})
+	if err == nil {
+		t.Fatal("expected duplicate original name error against existing extension")
+	}
+	regErr, ok := err.(*RegistryError)
+	if !ok {
+		t.Fatalf("expected RegistryError, got %T", err)
+	}
+	if regErr.Code != RegistryErrorDuplicateName {
+		t.Fatalf("expected duplicate_name, got %s", regErr.Code)
+	}
+	if regErr.ConflictWith.Source != RegistrationSourceExtension {
+		t.Fatalf("expected extension conflict source, got %+v", regErr.ConflictWith)
+	}
+}
+
 func TestRegistryFindByOriginalNameIsCaseInsensitive(t *testing.T) {
 	registry := &Registry{}
 	if err := registry.Register(testTool{name: "skill:skill_demo:open_doc"}, RegisterOptions{
