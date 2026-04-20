@@ -318,7 +318,7 @@ func (m *extensionManager) discoverOne(source string) (ExtensionInfo, error) {
 	if !ok {
 		scope = ExtensionScopeRemote
 	}
-	skill, err := discoverSkillFromDir(resolved, extensionScopeToSkillScope(scope))
+	skill, err := discoverSkillFromDir(resolved, skillsScopeForExtension(scope))
 	if err != nil {
 		return ExtensionInfo{}, err
 	}
@@ -374,6 +374,17 @@ func scopeForPath(path string, m *extensionManager) (ExtensionScope, bool) {
 		}
 	}
 	return "", false
+}
+
+func skillsScopeForExtension(scope ExtensionScope) skillspkg.Scope {
+	switch scope {
+	case ExtensionScopeBuiltin:
+		return skillspkg.ScopeBuiltin
+	case ExtensionScopeUser:
+		return skillspkg.ScopeUser
+	default:
+		return skillspkg.ScopeProject
+	}
 }
 
 func extensionIDForDir(dirName string) string {
@@ -553,17 +564,6 @@ func discoverToolPolicy(policy string, items []string) skillspkg.ToolPolicy {
 			Policy: skillspkg.ToolPolicyInherit,
 			Items:  cleanItems,
 		}
-	}
-}
-
-func extensionScopeToSkillScope(scope ExtensionScope) skillspkg.Scope {
-	switch scope {
-	case ExtensionScopeBuiltin:
-		return skillspkg.ScopeBuiltin
-	case ExtensionScopeUser:
-		return skillspkg.ScopeUser
-	default:
-		return skillspkg.ScopeProject
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	contextpkg "bytemind/internal/context"
 	corepkg "bytemind/internal/core"
 	"bytemind/internal/llm"
-	runtimepkg "bytemind/internal/runtime"
 	"bytemind/internal/session"
 )
 
@@ -19,10 +18,10 @@ func (e *defaultEngine) runPromptTurns(ctx context.Context, sess *session.Sessio
 	}
 
 	runner := e.runner
-	toolSequenceTracker := runtimepkg.NewToolSequenceTracker(runtimepkg.DefaultRepeatedToolSequenceThreshold)
+	toolSequenceTracker := NewToolSequenceTracker(DefaultRepeatedToolSequenceThreshold)
 	adaptiveState := newAdaptiveTurnState(runner.contextBudgetMaxReactiveRetry())
 	executedToolNames := make([]string, 0, 16)
-	taskReport := &runtimepkg.TaskReport{}
+	taskReport := &TaskReport{}
 	approvalHandler := runner.prepareRunApprovalHandler(setup, out)
 
 	for step := 0; step < runner.config.MaxIterations; step++ {
@@ -62,7 +61,7 @@ func (e *defaultEngine) runPromptTurns(ctx context.Context, sess *session.Sessio
 		}
 	}
 
-	summary := runtimepkg.BuildStopSummary(runtimepkg.StopSummaryInput{
+	summary := BuildStopSummary(StopSummaryInput{
 		SessionID:     corepkg.SessionID(sess.ID),
 		Reason:        fmt.Sprintf("I reached the current execution budget of %d turns before producing a final answer.", runner.config.MaxIterations),
 		ExecutedTools: executedToolNames,
@@ -134,7 +133,7 @@ func (e *defaultEngine) messagesForStep(ctx context.Context, sess *session.Sessi
 	return e.buildTurnMessages(sess, setup)
 }
 
-func appendTaskReportToError(err error, taskReport *runtimepkg.TaskReport) error {
+func appendTaskReportToError(err error, taskReport *TaskReport) error {
 	if err == nil || taskReport == nil || taskReport.IsEmpty() {
 		return err
 	}
@@ -145,7 +144,7 @@ func appendTaskReportToError(err error, taskReport *runtimepkg.TaskReport) error
 	return fmt.Errorf("%w\nTask report (json):\n%s", err, taskReport.JSON())
 }
 
-func writeCompletionTaskReport(out io.Writer, taskReport *runtimepkg.TaskReport) {
+func writeCompletionTaskReport(out io.Writer, taskReport *TaskReport) {
 	if out == nil || taskReport == nil || !taskReport.HasNonSuccessOutcomes() {
 		return
 	}

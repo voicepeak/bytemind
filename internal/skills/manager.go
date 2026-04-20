@@ -161,6 +161,14 @@ func (m *Manager) Workspace() string {
 	return m.workspace
 }
 
+func LoadFromDir(scope Scope, skillDir string) (Skill, bool, []Diagnostic) {
+	skillDir = strings.TrimSpace(skillDir)
+	if skillDir == "" {
+		return Skill{}, false, nil
+	}
+	return loadSkillFromDir(scope, skillDir, filepath.Base(skillDir))
+}
+
 type skillManifest struct {
 	Name        string `json:"name"`
 	Version     string `json:"version"`

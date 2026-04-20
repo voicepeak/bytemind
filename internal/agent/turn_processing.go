@@ -12,7 +12,6 @@ import (
 	corepkg "bytemind/internal/core"
 	"bytemind/internal/llm"
 	planpkg "bytemind/internal/plan"
-	runtimepkg "bytemind/internal/runtime"
 	"bytemind/internal/session"
 	"bytemind/internal/tokenusage"
 	"bytemind/internal/tools"
@@ -27,11 +26,11 @@ type turnProcessParams struct {
 	DeniedToolNames  []string
 	AllowedTools     map[string]struct{}
 	DeniedTools      map[string]struct{}
-	SequenceTracker  *runtimepkg.ToolSequenceTracker
+	SequenceTracker  *ToolSequenceTracker
 	AdaptiveState    *adaptiveTurnState
 	ExecutedTools    *[]string
 	Approval         tools.ApprovalHandler
-	TaskReport       *runtimepkg.TaskReport
+	TaskReport       *TaskReport
 	Out              io.Writer
 }
 
@@ -93,7 +92,7 @@ func (e *defaultEngine) processTurn(ctx context.Context, p turnProcessParams) (s
 					if p.TaskReport != nil {
 						p.TaskReport.RecordEscalation("semantic repair retries exceeded while waiting for structured tool calls")
 					}
-					summary := runtimepkg.BuildStopSummary(runtimepkg.StopSummaryInput{
+					summary := BuildStopSummary(StopSummaryInput{
 						SessionID:     corepkg.SessionID(p.Session.ID),
 						Reason:        fmt.Sprintf("I paused because the assistant kept signaling ongoing work without structured tool calls (attempts=%d, explicit_intent=%t).", attempt, explicitIntent),
 						ExecutedTools: *p.ExecutedTools,
@@ -133,7 +132,7 @@ func (e *defaultEngine) processTurn(ctx context.Context, p turnProcessParams) (s
 		if sequenceObservation.MatchMode == "name_only" {
 			repeatKind = "same tool-name sequence (arguments varied)"
 		}
-		summary := runtimepkg.BuildStopSummary(runtimepkg.StopSummaryInput{
+		summary := BuildStopSummary(StopSummaryInput{
 			SessionID:     corepkg.SessionID(p.Session.ID),
 			Reason:        fmt.Sprintf("I stopped because the assistant repeated the %s %d times in a row (%s).", repeatKind, sequenceObservation.RepeatCount, strings.Join(sequenceObservation.UniqueToolNames, ", ")),
 			ExecutedTools: *p.ExecutedTools,

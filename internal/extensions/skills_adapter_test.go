@@ -59,37 +59,41 @@ func TestSkillAdapterFromSkillMarksManifestOnlyAsDegraded(t *testing.T) {
 
 func TestSkillAdapterSyncConcurrentDoesNotPanic(t *testing.T) {
 	adapter := newSkillAdapter()
-	now := time.Now().UTC()
+	base := time.Now().UTC()
 	catalogs := []skillspkg.Catalog{
-		{
-			Skills: []skillspkg.Skill{{
-				Name:         "review",
-				Title:        "review",
-				Scope:        skillspkg.ScopeProject,
-				SourceDir:    `C:\\repo\\.bytemind\\skills\\review`,
-				DiscoveredAt: now,
-			}},
-		},
-		{
-			Skills: []skillspkg.Skill{{
-				Name:         "lint",
-				Title:        "lint",
-				Scope:        skillspkg.ScopeProject,
-				SourceDir:    `C:\\repo\\.bytemind\\skills\\lint`,
-				DiscoveredAt: now.Add(1 * time.Second),
-			}},
-		},
+		{Skills: []skillspkg.Skill{{
+			Name:         "review",
+			Title:        "review",
+			Description:  "desc",
+			Scope:        skillspkg.ScopeProject,
+			SourceDir:    `C:\\repo\\.bytemind\\skills\\review`,
+			Instruction:  "body",
+			DiscoveredAt: base,
+		}}},
+		{Skills: []skillspkg.Skill{{
+			Name:         "plan",
+			Title:        "plan",
+			Description:  "desc",
+			Scope:        skillspkg.ScopeProject,
+			SourceDir:    `C:\\repo\\.bytemind\\skills\\plan`,
+			Instruction:  "body",
+			DiscoveredAt: base.Add(time.Second),
+		}}},
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < 64; i++ {
-		for _, catalog := range catalogs {
-			wg.Add(1)
-			go func(c skillspkg.Catalog) {
-				defer wg.Done()
-				_ = adapter.Sync(c)
-			}(catalog)
-		}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				items := adapter.Sync(catalogs[(idx+j)%len(catalogs)])
+				if len(items) != 1 {
+					t.Errorf("expected 1 extension, got %d", len(items))
+					return
+				}
+			}
+		}(i)
 	}
 	wg.Wait()
 }
