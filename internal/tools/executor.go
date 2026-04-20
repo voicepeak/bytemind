@@ -56,7 +56,7 @@ func NewExecutor(registry *Registry) *Executor {
 		permissionEngine: defaultPermissionEngine{},
 		argumentDecoder:  strictJSONArgumentDecoder{},
 		outputNormalizer: normalizer,
-		worker:           inProcessWorker{normalizer: normalizer},
+		worker:           inProcessWorker{registry: registry, normalizer: normalizer},
 	}
 }
 
@@ -118,7 +118,7 @@ func (e *Executor) runTool(ctx context.Context, resolved ResolvedTool, raw json.
 			return "", NewToolExecError(ToolErrorInternal, "sandbox worker is unavailable", false, nil)
 		}
 		return e.worker.Run(ctx, workerRunRequest{
-			Resolved:  resolved,
+			ToolName:  resolved.Definition.Function.Name,
 			RawArgs:   raw,
 			Execution: execCtx,
 		})

@@ -104,13 +104,9 @@ func TestInProcessWorkerAllowsRunShellWhenCommandInLeaseAllowlist(t *testing.T) 
 			return `{"ok":true}`, nil
 		},
 	})
-	resolved, ok := registry.Get("run_shell")
-	if !ok {
-		t.Fatal("expected run_shell tool in registry")
-	}
-	worker := inProcessWorker{}
+	worker := inProcessWorker{registry: registry}
 	out, err := worker.Run(context.Background(), workerRunRequest{
-		Resolved: resolved,
+		ToolName: "run_shell",
 		RawArgs:  json.RawMessage(`{"command":"go test ./..."}`),
 		Execution: &ExecutionContext{
 			SandboxEnabled: true,
@@ -140,13 +136,9 @@ func TestInProcessWorkerDeniesRunShellWhenCommandNotInAllowlist(t *testing.T) {
 			return "", nil
 		},
 	})
-	resolved, ok := registry.Get("run_shell")
-	if !ok {
-		t.Fatal("expected run_shell tool in registry")
-	}
-	worker := inProcessWorker{}
+	worker := inProcessWorker{registry: registry}
 	_, err := worker.Run(context.Background(), workerRunRequest{
-		Resolved: resolved,
+		ToolName: "run_shell",
 		RawArgs:  json.RawMessage(`{"command":"go test ./..."}`),
 		Execution: &ExecutionContext{
 			SandboxEnabled: true,
@@ -176,13 +168,9 @@ func TestInProcessWorkerEscalatesRunShellWhenCommandNotInAllowlist(t *testing.T)
 			return `{"ok":true}`, nil
 		},
 	})
-	resolved, ok := registry.Get("run_shell")
-	if !ok {
-		t.Fatal("expected run_shell tool in registry")
-	}
-	worker := inProcessWorker{}
+	worker := inProcessWorker{registry: registry}
 	_, err := worker.Run(context.Background(), workerRunRequest{
-		Resolved: resolved,
+		ToolName: "run_shell",
 		RawArgs:  json.RawMessage(`{"command":"go test ./..."}`),
 		Execution: &ExecutionContext{
 			SandboxEnabled: true,
@@ -223,13 +211,9 @@ func TestInProcessWorkerEscalatesRunShellWithStdinFallback(t *testing.T) {
 			return `{"ok":true}`, nil
 		},
 	})
-	resolved, ok := registry.Get("run_shell")
-	if !ok {
-		t.Fatal("expected run_shell tool in registry")
-	}
-	worker := inProcessWorker{}
+	worker := inProcessWorker{registry: registry}
 	_, err := worker.Run(context.Background(), workerRunRequest{
-		Resolved: resolved,
+		ToolName: "run_shell",
 		RawArgs:  json.RawMessage(`{"command":"go test ./..."}`),
 		Execution: &ExecutionContext{
 			SandboxEnabled: true,
@@ -263,13 +247,9 @@ func TestInProcessWorkerEscalatesRunShellWithStdinFallbackDenied(t *testing.T) {
 			return "", nil
 		},
 	})
-	resolved, ok := registry.Get("run_shell")
-	if !ok {
-		t.Fatal("expected run_shell tool in registry")
-	}
-	worker := inProcessWorker{}
+	worker := inProcessWorker{registry: registry}
 	_, err := worker.Run(context.Background(), workerRunRequest{
-		Resolved: resolved,
+		ToolName: "run_shell",
 		RawArgs:  json.RawMessage(`{"command":"go test ./..."}`),
 		Execution: &ExecutionContext{
 			SandboxEnabled: true,
@@ -301,10 +281,6 @@ func TestInProcessWorkerDeniesWriteFileOutsideLeaseScope(t *testing.T) {
 			return "", nil
 		},
 	})
-	resolved, ok := registry.Get("write_file")
-	if !ok {
-		t.Fatal("expected write_file tool in registry")
-	}
 	workspace := t.TempDir()
 	allowed := t.TempDir()
 	outside := t.TempDir()
@@ -315,9 +291,9 @@ func TestInProcessWorkerDeniesWriteFileOutsideLeaseScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	worker := inProcessWorker{}
+	worker := inProcessWorker{registry: registry}
 	_, err = worker.Run(context.Background(), workerRunRequest{
-		Resolved: resolved,
+		ToolName: "write_file",
 		RawArgs:  json.RawMessage(payload),
 		Execution: &ExecutionContext{
 			SandboxEnabled: true,
@@ -331,6 +307,21 @@ func TestInProcessWorkerDeniesWriteFileOutsideLeaseScope(t *testing.T) {
 	execErr, ok := AsToolExecError(err)
 	if !ok || execErr.Code != ToolErrorPermissionDenied {
 		t.Fatalf("expected permission denied tool error, got %#v", err)
+	}
+}
+
+func TestInProcessWorkerRejectsMissingRegistry(t *testing.T) {
+	worker := inProcessWorker{}
+	_, err := worker.Run(context.Background(), workerRunRequest{
+		ToolName: "run_shell",
+		RawArgs:  json.RawMessage(`{"command":"go test ./..."}`),
+	})
+	if err == nil {
+		t.Fatal("expected missing registry error")
+	}
+	execErr, ok := AsToolExecError(err)
+	if !ok || execErr.Code != ToolErrorInternal {
+		t.Fatalf("expected internal tool error, got %#v", err)
 	}
 }
 

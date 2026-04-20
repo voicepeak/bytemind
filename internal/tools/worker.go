@@ -14,7 +14,7 @@ import (
 )
 
 type workerRunRequest struct {
-	Resolved  ResolvedTool
+	ToolName  string
 	RawArgs   json.RawMessage
 	Execution *ExecutionContext
 }
@@ -24,29 +24,48 @@ type executorWorker interface {
 }
 
 type inProcessWorker struct {
+	registry   *Registry
 	normalizer OutputNormalizer
 }
 
 func (w inProcessWorker) Run(ctx context.Context, req workerRunRequest) (string, error) {
-	if err := w.enforcePolicy(ctx, req); err != nil {
+	resolved, err := w.resolveTool(req.ToolName)
+	if err != nil {
+		return "", err
+	}
+	if err := w.enforcePolicy(ctx, resolved.Definition.Function.Name, req.RawArgs, req.Execution); err != nil {
 		return "", err
 	}
 	normalizer := w.normalizer
 	if normalizer == nil {
 		normalizer = maxCharsOutputNormalizer{}
 	}
-	runCtx, cancel := context.WithTimeout(ctx, executionTimeout(req.RawArgs, req.Resolved.Spec))
+	runCtx, cancel := context.WithTimeout(ctx, executionTimeout(req.RawArgs, resolved.Spec))
 	defer cancel()
 
-	output, err := req.Resolved.Tool.Run(runCtx, req.RawArgs, req.Execution)
+	output, err := resolved.Tool.Run(runCtx, req.RawArgs, req.Execution)
 	if err != nil {
 		return "", normalizeToolError(err)
 	}
-	return normalizer.Normalize(output, req.Resolved), nil
+	return normalizer.Normalize(output, resolved), nil
 }
 
-func (w inProcessWorker) enforcePolicy(ctx context.Context, req workerRunRequest) error {
-	execCtx := req.Execution
+func (w inProcessWorker) resolveTool(toolName string) (ResolvedTool, error) {
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return ResolvedTool{}, NewToolExecError(ToolErrorInvalidArgs, "tool name is required", false, nil)
+	}
+	if w.registry == nil {
+		return ResolvedTool{}, NewToolExecError(ToolErrorInternal, "sandbox worker registry is unavailable", false, nil)
+	}
+	resolved, ok := w.registry.Get(toolName)
+	if !ok {
+		return ResolvedTool{}, NewToolExecError(ToolErrorInvalidArgs, fmt.Sprintf("unknown tool %q", toolName), false, nil)
+	}
+	return resolved, nil
+}
+
+func (w inProcessWorker) enforcePolicy(ctx context.Context, toolName string, raw json.RawMessage, execCtx *ExecutionContext) error {
 	if execCtx == nil || !execCtx.SandboxEnabled {
 		return nil
 	}
@@ -55,7 +74,7 @@ func (w inProcessWorker) enforcePolicy(ctx context.Context, req workerRunRequest
 		return NewToolExecError(ToolErrorPermissionDenied, err.Error(), false, err)
 	}
 
-	runtimeReq, err := runtimeRequestForTool(req.Resolved.Definition.Function.Name, req.RawArgs)
+	runtimeReq, err := runtimeRequestForTool(toolName, raw)
 	if err != nil {
 		return NewToolExecError(ToolErrorInvalidArgs, err.Error(), false, err)
 	}
@@ -83,9 +102,9 @@ func (w inProcessWorker) enforcePolicy(ctx context.Context, req workerRunRequest
 	case sandboxpkg.DecisionAllow:
 		return nil
 	case sandboxpkg.DecisionDeny:
-		return NewToolExecError(ToolErrorPermissionDenied, formatBrokerDeniedMessage(req.Resolved.Definition.Function.Name, decision), false, nil)
+		return NewToolExecError(ToolErrorPermissionDenied, formatBrokerDeniedMessage(toolName, decision), false, nil)
 	case sandboxpkg.DecisionEscalate:
-		return escalateWorkerApproval(req.Resolved.Definition.Function.Name, decision, execCtx)
+		return escalateWorkerApproval(toolName, decision, execCtx)
 	default:
 		return NewToolExecError(ToolErrorPermissionDenied, "sandbox policy returned unknown decision", false, nil)
 	}
