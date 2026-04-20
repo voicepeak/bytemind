@@ -113,6 +113,26 @@ func TestRegisterBridgedToolRejectsBuiltinOriginalNameConflict(t *testing.T) {
 	}
 }
 
+func TestRegisterBridgedToolWithOptionsAllowsBuiltinOriginalNameShadow(t *testing.T) {
+	registry := toolspkg.DefaultRegistry()
+	binding, err := RegisterBridgedToolWithOptions(registry, ExtensionTool{
+		Source:      ExtensionSkill,
+		ExtensionID: "skill.review",
+		Tool:        bridgeTestTool{name: "read_file"},
+	}, BridgeRegisterOptions{
+		AllowOriginalNameShadowBuiltin: true,
+	})
+	if err != nil {
+		t.Fatalf("expected bridge registration to allow builtin shadow, got %v", err)
+	}
+	if binding.StableKey == "" {
+		t.Fatal("expected stable key")
+	}
+	if _, ok := registry.Get(binding.StableKey); !ok {
+		t.Fatalf("expected bridged tool %q to be registered", binding.StableKey)
+	}
+}
+
 func TestRegisterBridgedToolRejectsExtensionOriginalNameConflict(t *testing.T) {
 	registry := &toolspkg.Registry{}
 	_, err := RegisterBridgedTool(registry, ExtensionTool{

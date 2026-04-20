@@ -20,6 +20,10 @@ type RegisterOptions struct {
 	Source       RegistrationSource
 	ExtensionID  string
 	OriginalName string
+	// AllowOriginalNameShadowBuiltin permits extension registrations to reuse an
+	// existing builtin original tool name. This is only intended for bridge
+	// aliases whose tool key is source-aware and unique.
+	AllowOriginalNameShadowBuiltin bool
 }
 
 type RegistrationMeta struct {

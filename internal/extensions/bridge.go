@@ -33,6 +33,10 @@ type BridgeBinding struct {
 	StableKey    string
 }
 
+type BridgeRegisterOptions struct {
+	AllowOriginalNameShadowBuiltin bool
+}
+
 // Bridge projects an extension tool to the source-aware tool namespace.
 // Invalid inputs are returned unchanged; callers that need strict validation
 // should use RegisterBridgedTool.
@@ -45,6 +49,10 @@ func Bridge(extensionTool ExtensionTool) toolspkg.Tool {
 }
 
 func RegisterBridgedTool(registry *toolspkg.Registry, extensionTool ExtensionTool) (BridgeBinding, error) {
+	return RegisterBridgedToolWithOptions(registry, extensionTool, BridgeRegisterOptions{})
+}
+
+func RegisterBridgedToolWithOptions(registry *toolspkg.Registry, extensionTool ExtensionTool, opts BridgeRegisterOptions) (BridgeBinding, error) {
 	if registry == nil {
 		return BridgeBinding{}, wrapError(ErrCodeInvalidExtension, "tool registry is required", nil)
 	}
@@ -53,9 +61,10 @@ func RegisterBridgedTool(registry *toolspkg.Registry, extensionTool ExtensionToo
 		return BridgeBinding{}, err
 	}
 	if err := registry.Register(bridged, toolspkg.RegisterOptions{
-		Source:       toolspkg.RegistrationSourceExtension,
-		ExtensionID:  binding.ExtensionID,
-		OriginalName: binding.OriginalName,
+		Source:                         toolspkg.RegistrationSourceExtension,
+		ExtensionID:                    binding.ExtensionID,
+		OriginalName:                   binding.OriginalName,
+		AllowOriginalNameShadowBuiltin: opts.AllowOriginalNameShadowBuiltin,
 	}); err != nil {
 		return BridgeBinding{}, err
 	}

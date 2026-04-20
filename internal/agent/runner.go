@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"bytemind/internal/config"
 	extensionspkg "bytemind/internal/extensions"
@@ -85,6 +86,10 @@ type Runner struct {
 	approval      tools.ApprovalHandler
 	stdin         io.Reader
 	stdout        io.Writer
+
+	bridgeMu                  sync.Mutex
+	activeSkillBridgeID       string
+	activeSkillBridgeToolKeys map[string]struct{}
 }
 
 func NewRunner(opts Options) *Runner {

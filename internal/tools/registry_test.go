@@ -331,6 +331,26 @@ func TestRegistryRegisterRejectsCaseInsensitiveOriginalNameConflict(t *testing.T
 	}
 }
 
+func TestRegistryRegisterAllowsShadowBuiltinOriginalNameWhenOptedIn(t *testing.T) {
+	registry := &Registry{}
+	if err := registry.Register(testTool{name: "read_file"}, RegisterOptions{Source: RegistrationSourceBuiltin}); err != nil {
+		t.Fatalf("register builtin failed: %v", err)
+	}
+	if err := registry.Register(testTool{name: "skill:skill_demo:read_file"}, RegisterOptions{
+		Source:                         RegistrationSourceExtension,
+		ExtensionID:                    "skill.demo",
+		OriginalName:                   "read_file",
+		AllowOriginalNameShadowBuiltin: true,
+	}); err != nil {
+		t.Fatalf("register extension shadow tool failed: %v", err)
+	}
+
+	metas := registry.FindByOriginalName("read_file")
+	if len(metas) != 2 {
+		t.Fatalf("expected two metadata records for read_file, got %#v", metas)
+	}
+}
+
 func TestRegistryFindByOriginalNameIsCaseInsensitive(t *testing.T) {
 	registry := &Registry{}
 	if err := registry.Register(testTool{name: "skill:skill_demo:open_doc"}, RegisterOptions{

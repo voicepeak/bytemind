@@ -132,6 +132,13 @@ func (r *Registry) Register(tool Tool, opts RegisterOptions) error {
 		}
 	}
 	if conflict, exists := r.findConflictByOriginalNameLocked(meta.OriginalToolName, meta.ToolKey); exists {
+		if opts.AllowOriginalNameShadowBuiltin &&
+			meta.Source == RegistrationSourceExtension &&
+			conflict.Source == RegistrationSourceBuiltin {
+			r.tools[meta.ToolKey] = resolved
+			r.meta[meta.ToolKey] = meta
+			return nil
+		}
 		return &RegistryError{
 			Code:             RegistryErrorDuplicateName,
 			Message:          fmt.Sprintf("tool original name %q already registered", meta.OriginalToolName),
