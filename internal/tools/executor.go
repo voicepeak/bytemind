@@ -46,14 +46,17 @@ type Executor struct {
 	permissionEngine PermissionEngine
 	argumentDecoder  ArgumentDecoder
 	outputNormalizer OutputNormalizer
+	worker           executorWorker
 }
 
 func NewExecutor(registry *Registry) *Executor {
+	normalizer := maxCharsOutputNormalizer{}
 	return &Executor{
 		registry:         registry,
 		permissionEngine: defaultPermissionEngine{},
 		argumentDecoder:  strictJSONArgumentDecoder{},
-		outputNormalizer: maxCharsOutputNormalizer{},
+		outputNormalizer: normalizer,
+		worker:           inProcessWorker{normalizer: normalizer},
 	}
 }
 
@@ -97,19 +100,36 @@ func (e *Executor) ExecuteRequest(ctx context.Context, req ExecuteRequest) (Exec
 		return ExecuteResult{}, err
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, executionTimeout(raw, resolved.Spec))
-	defer cancel()
-
-	output, runErr := resolved.Tool.Run(runCtx, raw, execCtx)
+	output, runErr := e.runTool(ctx, resolved, raw, execCtx)
 	if runErr != nil {
-		return ExecuteResult{}, normalizeToolError(runErr)
+		return ExecuteResult{}, runErr
 	}
 
 	return ExecuteResult{
 		Name:   resolved.Definition.Function.Name,
 		Spec:   resolved.Spec,
-		Output: e.outputNormalizer.Normalize(output, resolved),
+		Output: output,
 	}, nil
+}
+
+func (e *Executor) runTool(ctx context.Context, resolved ResolvedTool, raw json.RawMessage, execCtx *ExecutionContext) (string, error) {
+	if shouldRouteToWorker(resolved.Definition.Function.Name, execCtx) {
+		if e.worker == nil {
+			return "", NewToolExecError(ToolErrorInternal, "sandbox worker is unavailable", false, nil)
+		}
+		return e.worker.Run(ctx, workerRunRequest{
+			Resolved:  resolved,
+			RawArgs:   raw,
+			Execution: execCtx,
+		})
+	}
+	runCtx, cancel := context.WithTimeout(ctx, executionTimeout(raw, resolved.Spec))
+	defer cancel()
+	output, runErr := resolved.Tool.Run(runCtx, raw, execCtx)
+	if runErr != nil {
+		return "", normalizeToolError(runErr)
+	}
+	return e.outputNormalizer.Normalize(output, resolved), nil
 }
 
 type defaultPermissionEngine struct{}
@@ -296,7 +316,7 @@ func promptDestructiveApproval(toolName string, execCtx *ExecutionContext) error
 		return nil
 	}
 	if execCtx.Stdin == nil {
-		return NewToolExecError(ToolErrorPermissionDenied, fmt.Sprintf("tool %q requires approval but no stdin is available", toolName), false, nil)
+		return approvalChannelUnavailableError("tool", toolName)
 	}
 	if execCtx.Stdout != nil {
 		fmt.Fprintf(execCtx.Stdout, "Approve destructive tool (%s) %q? [y/N]: ", reason, toolName)

@@ -13,23 +13,34 @@ import (
 	"bytemind/internal/llm"
 	planpkg "bytemind/internal/plan"
 	runtimepkg "bytemind/internal/runtime"
+	sandboxpkg "bytemind/internal/sandbox"
 	"bytemind/internal/session"
 )
 
 type ExecutionContext struct {
-	Workspace      string
-	ApprovalPolicy string
-	ApprovalMode   string
-	AwayPolicy     string
-	Approval       ApprovalHandler
-	Session        *session.Session
-	TaskManager    runtimepkg.TaskManager
-	Extensions     extensionspkg.Manager
-	Mode           planpkg.AgentMode
-	Stdin          io.Reader
-	Stdout         io.Writer
-	AllowedTools   map[string]struct{}
-	DeniedTools    map[string]struct{}
+	Workspace        string
+	WritableRoots    []string
+	ApprovalPolicy   string
+	ApprovalMode     string
+	AwayPolicy       string
+	SandboxEnabled   bool
+	LeaseID          string
+	RunID            string
+	FSRead           []string
+	FSWrite          []string
+	ExecAllowlist    []sandboxpkg.ExecRule
+	NetworkAllowlist []sandboxpkg.NetworkRule
+	Lease            *sandboxpkg.Lease
+	LeaseKeyring     map[string][]byte
+	Approval         ApprovalHandler
+	Session          *session.Session
+	TaskManager      runtimepkg.TaskManager
+	Extensions       extensionspkg.Manager
+	Mode             planpkg.AgentMode
+	Stdin            io.Reader
+	Stdout           io.Writer
+	AllowedTools     map[string]struct{}
+	DeniedTools      map[string]struct{}
 }
 
 const (
