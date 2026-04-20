@@ -317,17 +317,10 @@ func (m *extensionManager) discoverOne(source string) (ExtensionInfo, error) {
 	if !ok {
 		scope = ExtensionScopeRemote
 	}
-	catalog := skillspkg.NewManagerWithDirs(m.workspace, "", "", filepath.Dir(resolved)).Reload()
-	var matched skillspkg.Skill
-	for _, skill := range catalog.Skills {
-		if sameExtensionSource(skill.SourceDir, resolved) {
-			matched = skill
-			break
-		}
-	}
-	if strings.TrimSpace(matched.Name) == "" {
-		if len(catalog.Diagnostics) > 0 {
-			return ExtensionInfo{}, wrapError(ErrCodeInvalidManifest, catalog.Diagnostics[0].Message, nil)
+	matched, ok, diags := skillspkg.LoadFromDir(skillsScopeForExtension(scope), resolved)
+	if !ok {
+		if len(diags) > 0 {
+			return ExtensionInfo{}, wrapError(ErrCodeInvalidManifest, diags[0].Message, nil)
 		}
 		return ExtensionInfo{}, wrapError(ErrCodeInvalidSource, "extension source does not contain a supported extension", nil)
 	}
@@ -383,6 +376,17 @@ func scopeForPath(path string, m *extensionManager) (ExtensionScope, bool) {
 		}
 	}
 	return "", false
+}
+
+func skillsScopeForExtension(scope ExtensionScope) skillspkg.Scope {
+	switch scope {
+	case ExtensionScopeBuiltin:
+		return skillspkg.ScopeBuiltin
+	case ExtensionScopeUser:
+		return skillspkg.ScopeUser
+	default:
+		return skillspkg.ScopeProject
+	}
 }
 
 func extensionIDForDir(dirName string) string {
