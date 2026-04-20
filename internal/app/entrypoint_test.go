@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,8 +86,13 @@ func TestBootstrapCreatesSessionInWorkspace(t *testing.T) {
 
 func TestBootstrapEntrypointRejectsBroadWorkspaceWithoutOverride(t *testing.T) {
 	workspace := t.TempDir()
+	for i := 0; i < DefaultBroadWorkspaceEntryThreshold; i++ {
+		path := filepath.Join(workspace, fmt.Sprintf("entry-%03d.tmp", i))
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatalf("seed broad workspace entries: %v", err)
+		}
+	}
 	t.Chdir(workspace)
-	t.Setenv("HOME", workspace)
 
 	_, err := BootstrapEntrypoint(EntrypointRequest{
 		RequireAPIKey: false,
