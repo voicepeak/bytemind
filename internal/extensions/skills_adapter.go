@@ -90,7 +90,7 @@ func (a *skillAdapter) FromSkill(skill skillspkg.Skill) ExtensionInfo {
 		manifestRef = filepath.Join(normalized.SourceDir, "skill.json")
 	}
 	return ExtensionInfo{
-		ID:           "skill." + normalized.Name,
+		ID:           SkillExtensionID(normalized.Name),
 		Name:         normalized.Name,
 		Kind:         ExtensionSkill,
 		Version:      strings.TrimSpace(normalized.Version),

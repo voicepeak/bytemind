@@ -387,11 +387,7 @@ func skillsScopeForExtension(scope ExtensionScope) skillspkg.Scope {
 }
 
 func extensionIDForDir(dirName string) string {
-	name := strings.TrimSpace(dirName)
-	if name == "" {
-		return ""
-	}
-	return "skill." + name
+	return SkillExtensionID(dirName)
 }
 
 func fileExists(path string) bool {

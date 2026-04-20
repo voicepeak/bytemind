@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"bytemind/internal/llm"
 	skillspkg "bytemind/internal/skills"
@@ -31,6 +32,21 @@ func TestStableToolKeyAppliesLengthLimit(t *testing.T) {
 	}
 	if len(key) > maxStableToolKeyLength {
 		t.Fatalf("stable key exceeded max length: %d", len(key))
+	}
+}
+
+func TestStableToolKeyTruncationKeepsValidUTF8(t *testing.T) {
+	extensionID := strings.Repeat("技能", 80)
+	toolName := strings.Repeat("工具", 80)
+	key, err := StableToolKey(ExtensionSkill, extensionID, toolName)
+	if err != nil {
+		t.Fatalf("StableToolKey failed: %v", err)
+	}
+	if len(key) > maxStableToolKeyLength {
+		t.Fatalf("stable key exceeded max length: %d", len(key))
+	}
+	if !utf8.ValidString(key) {
+		t.Fatalf("stable key must remain valid UTF-8, got %q", key)
 	}
 }
 

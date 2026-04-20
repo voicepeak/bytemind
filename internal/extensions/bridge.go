@@ -204,13 +204,33 @@ func enforceStableToolKeyLength(stable string) string {
 		if len(suffix) <= maxStableToolKeyLength {
 			return suffix
 		}
-		return suffix[:maxStableToolKeyLength]
+		return truncateUTF8ByBytes(suffix, maxStableToolKeyLength)
 	}
-	prefix := strings.TrimRight(stable[:cut], stableToolKeySeparator)
+	prefix := strings.TrimRight(truncateUTF8ByBytes(stable, cut), stableToolKeySeparator)
 	if prefix == "" {
 		return suffix
 	}
 	return prefix + stableToolKeySeparator + suffix
+}
+
+func truncateUTF8ByBytes(input string, maxBytes int) string {
+	if maxBytes <= 0 || input == "" {
+		return ""
+	}
+	if len(input) <= maxBytes {
+		return input
+	}
+	total := 0
+	var out strings.Builder
+	for _, r := range input {
+		size := len(string(r))
+		if total+size > maxBytes {
+			break
+		}
+		out.WriteRune(r)
+		total += size
+	}
+	return out.String()
 }
 
 type bridgedTool struct {

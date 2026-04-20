@@ -66,6 +66,40 @@ func TestResolveSkillToolSetsMapsActiveSkillPolicyToStableKeys(t *testing.T) {
 	}
 }
 
+func TestResolveSkillToolSetsMapsWhenSkillNameAlreadyHasPrefix(t *testing.T) {
+	registry := &toolspkg.Registry{}
+	if err := registry.Register(skillRuntimeTestTool{name: "skill:skill_skill_review:open_doc"}, toolspkg.RegisterOptions{
+		Source:       toolspkg.RegistrationSourceExtension,
+		ExtensionID:  "skill.skill.review",
+		OriginalName: "open_doc",
+	}); err != nil {
+		t.Fatalf("register extension tool failed: %v", err)
+	}
+
+	active := &activeSkillRuntime{
+		Skill: skillspkg.Skill{
+			Name: "skill.review",
+			ToolPolicy: skillspkg.ToolPolicy{
+				Policy: skillspkg.ToolPolicyAllowlist,
+				Items:  []string{"open_doc"},
+			},
+		},
+	}
+	allow, deny, err := resolveSkillToolSets(active, registry)
+	if err != nil {
+		t.Fatalf("resolveSkillToolSets failed: %v", err)
+	}
+	if deny != nil {
+		t.Fatalf("expected nil deny set, got %#v", deny)
+	}
+	if _, ok := allow["skill:skill_skill_review:open_doc"]; !ok {
+		t.Fatalf("expected stable tool key in allow set, got %#v", allow)
+	}
+	if _, ok := allow["open_doc"]; ok {
+		t.Fatalf("did not expect original tool name in allow set, got %#v", allow)
+	}
+}
+
 func TestResolveSkillToolSetsFallsBackWithoutBridgeBindings(t *testing.T) {
 	active := &activeSkillRuntime{
 		Skill: skillspkg.Skill{

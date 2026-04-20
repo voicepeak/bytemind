@@ -103,14 +103,7 @@ func activeSkillExtensionID(active *activeSkillRuntime) string {
 	if active == nil {
 		return ""
 	}
-	name := strings.TrimSpace(active.Skill.Name)
-	if name == "" {
-		return ""
-	}
-	if strings.HasPrefix(strings.ToLower(name), "skill.") {
-		return name
-	}
-	return "skill." + name
+	return extensionspkg.SkillExtensionID(active.Skill.Name)
 }
 
 func bridgeSourceFromStableKey(stable string) extensionspkg.ExtensionKind {
