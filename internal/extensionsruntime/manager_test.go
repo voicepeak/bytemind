@@ -322,6 +322,89 @@ func TestManagerResolveAllToolsContextErrorAndTestUsesExtensionHealth(t *testing
 	}
 }
 
+func TestManagerLoadDoesNotFailFromOtherServerReloadError(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	writeRuntimeConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": []map[string]any{
+				{
+					"id": "alpha",
+					"transport": map[string]any{
+						"type":    "stdio",
+						"command": "cmd",
+						"args":    []string{"/c", "echo", "ok"},
+					},
+				},
+				{
+					"id": "beta",
+					"transport": map[string]any{
+						"type":    "stdio",
+						"command": "cmd",
+						"args":    []string{"/c", "echo", "ok"},
+					},
+				},
+			},
+		},
+	})
+
+	manager := NewManager(workspace, "", extensionspkg.NopManager{}, loadRuntimeConfig(t, workspace))
+	alpha := manager.entries["mcp.alpha"]
+	beta := manager.entries["mcp.beta"]
+	if alpha == nil || beta == nil {
+		t.Fatalf("expected alpha and beta entries, got alpha=%v beta=%v", alpha != nil, beta != nil)
+	}
+
+	alpha.extension = &fakeMCPRuntimeExtension{
+		info: extensionspkg.ExtensionInfo{
+			ID:     "mcp.alpha",
+			Kind:   extensionspkg.ExtensionMCP,
+			Status: extensionspkg.ExtensionStatusReady,
+			Health: extensionspkg.HealthSnapshot{
+				Status: extensionspkg.ExtensionStatusReady,
+			},
+		},
+	}
+	beta.extension = &fakeMCPRuntimeExtension{
+		info: extensionspkg.ExtensionInfo{
+			ID:     "mcp.beta",
+			Kind:   extensionspkg.ExtensionMCP,
+			Status: extensionspkg.ExtensionStatusReady,
+			Health: extensionspkg.HealthSnapshot{
+				Status: extensionspkg.ExtensionStatusReady,
+			},
+		},
+		reloadErr: errors.New("beta reload failed"),
+	}
+
+	loaded, err := manager.Load(context.Background(), "mcp:alpha")
+	if err != nil {
+		t.Fatalf("expected alpha load to succeed despite beta reload failure, got %v", err)
+	}
+	if loaded.ID != "mcp.alpha" {
+		t.Fatalf("expected loaded extension id mcp.alpha, got %q", loaded.ID)
+	}
+
+	alphaExt, _ := alpha.extension.(*fakeMCPRuntimeExtension)
+	betaExt, _ := beta.extension.(*fakeMCPRuntimeExtension)
+	if alphaExt == nil || betaExt == nil {
+		t.Fatalf("expected fake extensions, got alpha=%T beta=%T", alpha.extension, beta.extension)
+	}
+	if alphaExt.reloadCalls != 1 {
+		t.Fatalf("expected alpha reload once during load, got %d", alphaExt.reloadCalls)
+	}
+	if betaExt.reloadCalls != 0 {
+		t.Fatalf("expected beta reload to be skipped during alpha load, got %d", betaExt.reloadCalls)
+	}
+}
+
 func TestManagerHelperFunctionsAndTransformers(t *testing.T) {
 	now := time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC)
 	server := configpkg.MCPServerConfig{
@@ -454,6 +537,7 @@ type fakeMCPRuntimeExtension struct {
 	resolveErr      error
 	health          extensionspkg.HealthSnapshot
 	healthErr       error
+	reloadErr       error
 	reloadCalls     int
 	invalidateCalls int
 }
@@ -472,7 +556,7 @@ func (f *fakeMCPRuntimeExtension) Health(context.Context) (extensionspkg.HealthS
 
 func (f *fakeMCPRuntimeExtension) Reload(context.Context) error {
 	f.reloadCalls++
-	return nil
+	return f.reloadErr
 }
 
 func (f *fakeMCPRuntimeExtension) Invalidate() {

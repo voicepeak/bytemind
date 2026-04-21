@@ -59,17 +59,37 @@ func (m *Manager) Load(ctx context.Context, source string) (extensionspkg.Extens
 	m.mu.Lock()
 	delete(m.disabledMCP, extensionID)
 	m.mu.Unlock()
-	if err := m.refresh(ctx, true); err != nil {
+	if err := m.refresh(ctx, false); err != nil {
 		return extensionspkg.ExtensionInfo{}, err
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	entry, ok := m.entries[extensionID]
-	if !ok {
+	if !ok || entry == nil {
 		return extensionspkg.ExtensionInfo{}, &extensionspkg.ExtensionError{
 			Code:    extensionspkg.ErrCodeNotFound,
 			Message: fmt.Sprintf("mcp extension %q not found", extensionID),
 		}
+	}
+
+	if reloader, ok := entry.extension.(interface{ Reload(context.Context) error }); ok {
+		if err := reloader.Reload(ctx); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return extensionspkg.ExtensionInfo{}, err
+			}
+			now := time.Now().UTC()
+			entry.info = normalizeMCPInfo(entry.extension.Info(), entry.server, now)
+			entry.lastRefresh = now
+			entry.lastErr = err
+			m.entries[extensionID] = entry
+			return cloneInfo(entry.info), err
+		}
+		now := time.Now().UTC()
+		entry.info = normalizeMCPInfo(entry.extension.Info(), entry.server, now)
+		entry.lastRefresh = now
+		entry.lastErr = nil
+		m.entries[extensionID] = entry
 	}
 	return cloneInfo(entry.info), nil
 }
