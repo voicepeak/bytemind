@@ -98,6 +98,30 @@ func TestStdioClientDiscoverWithStringResponseID(t *testing.T) {
 	}
 }
 
+func TestStdioClientDiscoverRequiresInitializedNotification(t *testing.T) {
+	client := NewStdioClient()
+	cfg := helperServerConfig(t, "require_initialized")
+	snapshot, err := client.Discover(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Discover with required initialized notification failed: %v", err)
+	}
+	if len(snapshot.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(snapshot.Tools))
+	}
+}
+
+func TestStdioClientCallToolRequiresInitializedNotification(t *testing.T) {
+	client := NewStdioClient()
+	cfg := helperServerConfig(t, "require_initialized")
+	output, err := client.CallTool(context.Background(), cfg, "echo", json.RawMessage(`{"message":"hello"}`))
+	if err != nil {
+		t.Fatalf("CallTool with required initialized notification failed: %v", err)
+	}
+	if output != "ok-from-helper" {
+		t.Fatalf("unexpected call output: %q", output)
+	}
+}
+
 func TestMCPHelperProcess(t *testing.T) {
 	if os.Getenv("BYTEMIND_MCP_HELPER") != "1" {
 		return
@@ -109,6 +133,7 @@ func TestMCPHelperProcess(t *testing.T) {
 	}
 	reader := bufio.NewReader(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)
+	initialized := false
 	for {
 		if scenario == "invalid_json_line" {
 			_, _ = os.Stdout.WriteString("not-json\n")
@@ -132,12 +157,41 @@ func TestMCPHelperProcess(t *testing.T) {
 			})
 			continue
 		}
+		if request.Method == "notifications/initialized" {
+			initialized = true
+			continue
+		}
+		requestID, hasRequestID, requestIDErr := normalizeRPCResponseID(request.ID)
+		if requestIDErr != nil {
+			_ = writeRPCResponse(writer, rpcResponse{
+				JSONRPC: "2.0",
+				Error: &rpcError{
+					Code:    -32600,
+					Message: "invalid request id",
+				},
+			})
+			continue
+		}
+		if !hasRequestID {
+			_ = writeRPCResponse(writer, rpcResponse{
+				JSONRPC: "2.0",
+				Error: &rpcError{
+					Code:    -32600,
+					Message: "request id is required for this method",
+				},
+			})
+			continue
+		}
 		responseID := any(request.ID)
 		if scenario == "bad_response_id" {
-			responseID = request.ID + 1
+			if value, err := strconv.Atoi(requestID); err == nil {
+				responseID = value + 1
+			} else {
+				responseID = requestID + "-bad"
+			}
 		}
 		if scenario == "response_id_as_string" {
-			responseID = strconv.Itoa(request.ID)
+			responseID = requestID
 		}
 		if scenario == "non_integer_response_id" {
 			responseID = 1.5
@@ -177,13 +231,23 @@ func TestMCPHelperProcess(t *testing.T) {
 				response.Result = json.RawMessage(`{"serverInfo":{"name":"helper-mcp","version":"1.2.3"}}`)
 			}
 		case "tools/list":
-			if scenario == "discover_invalid_tools_result" {
+			if scenario == "require_initialized" && !initialized {
+				response.Error = &rpcError{
+					Code:    -32000,
+					Message: "server not initialized",
+				}
+			} else if scenario == "discover_invalid_tools_result" {
 				response.Result = json.RawMessage(`"oops"`)
 			} else {
 				response.Result = json.RawMessage(`{"tools":[{"name":"echo","description":"echo text","inputSchema":{"type":"object","properties":{"message":{"type":"string"}}}}]}`)
 			}
 		case "tools/call":
-			if scenario == "call_fail" {
+			if scenario == "require_initialized" && !initialized {
+				response.Error = &rpcError{
+					Code:    -32000,
+					Message: "server not initialized",
+				}
+			} else if scenario == "call_fail" {
 				response.Error = &rpcError{
 					Code:    -32000,
 					Message: "call failed",

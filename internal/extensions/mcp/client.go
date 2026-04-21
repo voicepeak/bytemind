@@ -136,6 +136,7 @@ func (c *StdioClient) Discover(ctx context.Context, cfg ServerConfig) (ServerSna
 	responses, err := c.runWithProtocolFallback(callCtx, cfg, func(protocolVersion string) []rpcRequest {
 		return []rpcRequest{
 			newRPCRequest(1, "initialize", initializeParams(protocolVersion)),
+			newRPCNotification("notifications/initialized", map[string]any{}),
 			newRPCRequest(2, "tools/list", map[string]any{}),
 		}
 	})
@@ -220,6 +221,7 @@ func (c *StdioClient) CallTool(ctx context.Context, cfg ServerConfig, toolName s
 	responses, err := c.runWithProtocolFallback(callCtx, cfg, func(protocolVersion string) []rpcRequest {
 		return []rpcRequest{
 			newRPCRequest(1, "initialize", initializeParams(protocolVersion)),
+			newRPCNotification("notifications/initialized", map[string]any{}),
 			newRPCRequest(2, "tools/call", map[string]any{
 				"name":      toolName,
 				"arguments": args,
@@ -298,7 +300,14 @@ func (c *StdioClient) runRPC(ctx context.Context, cfg ServerConfig, requests []r
 		if err := writeRPCRequest(writer, request); err != nil {
 			return nil, newClientError(ClientErrorTransport, "failed to write mcp request", err)
 		}
-		expectedID := strconv.Itoa(request.ID)
+		expectedID, hasRequestID, requestIDErr := normalizeRPCResponseID(request.ID)
+		if requestIDErr != nil {
+			return nil, newClientError(ClientErrorProtocol, "failed to encode mcp request id", requestIDErr)
+		}
+		if !hasRequestID {
+			// Notifications do not have ids and do not produce responses.
+			continue
+		}
 		for {
 			response, err := readRPCResponse(reader)
 			if err != nil {
@@ -465,7 +474,7 @@ func stopCommand(cmd *exec.Cmd, stdin io.WriteCloser) {
 
 type rpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`
-	ID      int    `json:"id"`
+	ID      any    `json:"id,omitempty"`
 	Method  string `json:"method"`
 	Params  any    `json:"params,omitempty"`
 }
@@ -487,6 +496,14 @@ func newRPCRequest(id int, method string, params any) rpcRequest {
 	return rpcRequest{
 		JSONRPC: "2.0",
 		ID:      id,
+		Method:  method,
+		Params:  params,
+	}
+}
+
+func newRPCNotification(method string, params any) rpcRequest {
+	return rpcRequest{
+		JSONRPC: "2.0",
 		Method:  method,
 		Params:  params,
 	}

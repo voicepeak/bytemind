@@ -266,8 +266,25 @@ func TestWriteRPCRequestAndReadRPCResponseErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readRPCRequest failed: %v", err)
 	}
-	if decodedRequest.ID != 9 || decodedRequest.Method != "tools/list" {
+	decodedRequestID, hasDecodedRequestID, err := normalizeRPCResponseID(decodedRequest.ID)
+	if err != nil {
+		t.Fatalf("normalizeRPCResponseID(decoded request) failed: %v", err)
+	}
+	if !hasDecodedRequestID || decodedRequestID != "9" || decodedRequest.Method != "tools/list" {
 		t.Fatalf("unexpected decoded request: %#v", decodedRequest)
+	}
+
+	notificationRoundtrip := &strings.Builder{}
+	notificationWriter := bufio.NewWriter(notificationRoundtrip)
+	if err := writeRPCRequest(notificationWriter, newRPCNotification("notifications/initialized", map[string]any{})); err != nil {
+		t.Fatalf("writeRPCRequest for notification failed: %v", err)
+	}
+	decodedNotification, err := readRPCRequest(bufio.NewReader(strings.NewReader(notificationRoundtrip.String())))
+	if err != nil {
+		t.Fatalf("readRPCRequest for notification failed: %v", err)
+	}
+	if decodedNotification.ID != nil || decodedNotification.Method != "notifications/initialized" {
+		t.Fatalf("unexpected decoded notification: %#v", decodedNotification)
 	}
 }
 
