@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +62,42 @@ func TestStdioClientCallToolWithHelperServer(t *testing.T) {
 	}
 }
 
+func TestStdioClientHandlesNotificationBeforeResponse(t *testing.T) {
+	client := NewStdioClient()
+	cfg := helperServerConfig(t, "notification_before_response")
+	output, err := client.CallTool(context.Background(), cfg, "echo", json.RawMessage(`{"message":"hello"}`))
+	if err != nil {
+		t.Fatalf("CallTool with notification-before-response failed: %v", err)
+	}
+	if output != "ok-from-helper" {
+		t.Fatalf("unexpected call output: %q", output)
+	}
+}
+
+func TestStdioClientProtocolFallbackWithHelperServer(t *testing.T) {
+	client := NewStdioClient()
+	cfg := helperServerConfig(t, "protocol_fallback")
+	snapshot, err := client.Discover(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Discover with protocol fallback failed: %v", err)
+	}
+	if snapshot.Name != "helper-mcp" {
+		t.Fatalf("unexpected server name: %q", snapshot.Name)
+	}
+}
+
+func TestStdioClientDiscoverWithStringResponseID(t *testing.T) {
+	client := NewStdioClient()
+	cfg := helperServerConfig(t, "response_id_as_string")
+	snapshot, err := client.Discover(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Discover with string response id failed: %v", err)
+	}
+	if len(snapshot.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(snapshot.Tools))
+	}
+}
+
 func TestMCPHelperProcess(t *testing.T) {
 	if os.Getenv("BYTEMIND_MCP_HELPER") != "1" {
 		return
@@ -95,13 +132,25 @@ func TestMCPHelperProcess(t *testing.T) {
 			})
 			continue
 		}
-		responseID := request.ID
+		responseID := any(request.ID)
 		if scenario == "bad_response_id" {
-			responseID++
+			responseID = request.ID + 1
+		}
+		if scenario == "response_id_as_string" {
+			responseID = strconv.Itoa(request.ID)
+		}
+		if scenario == "non_integer_response_id" {
+			responseID = 1.5
 		}
 		response := rpcResponse{
 			JSONRPC: "2.0",
 			ID:      responseID,
+		}
+		if scenario == "notification_before_response" {
+			_ = writeRPCResponse(writer, rpcResponse{
+				JSONRPC: "2.0",
+				Method:  "notifications/progress",
+			})
 		}
 		switch request.Method {
 		case "initialize":
@@ -109,6 +158,16 @@ func TestMCPHelperProcess(t *testing.T) {
 				response.Error = &rpcError{
 					Code:    -32000,
 					Message: "handshake failed",
+				}
+			} else if scenario == "protocol_fallback" {
+				version := protocolVersionFromRequest(request)
+				if version == "2026-04-01" {
+					response.Error = &rpcError{
+						Code:    -32000,
+						Message: "unsupported protocol version",
+					}
+				} else {
+					response.Result = json.RawMessage(`{"serverInfo":{"name":"helper-mcp","version":"1.2.3"}}`)
 				}
 			} else if scenario == "discover_invalid_initialize_result" {
 				response.Result = json.RawMessage(`"oops"`)
@@ -145,6 +204,15 @@ func TestMCPHelperProcess(t *testing.T) {
 		_ = writeRPCResponse(writer, response)
 	}
 	os.Exit(0)
+}
+
+func protocolVersionFromRequest(request rpcRequest) string {
+	params, ok := request.Params.(map[string]any)
+	if !ok || params == nil {
+		return ""
+	}
+	protocolVersion, _ := params["protocolVersion"].(string)
+	return strings.TrimSpace(protocolVersion)
 }
 
 func helperServerConfig(t *testing.T, scenario string) ServerConfig {

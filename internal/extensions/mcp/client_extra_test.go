@@ -213,7 +213,11 @@ func TestWriteRPCRequestAndReadRPCResponseErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readRPCResponse roundtrip failed: %v", err)
 	}
-	if response.ID != 1 {
+	id, hasID, err := normalizeRPCResponseID(response.ID)
+	if err != nil {
+		t.Fatalf("normalizeRPCResponseID failed: %v", err)
+	}
+	if !hasID || id != "1" {
 		t.Fatalf("unexpected response id: %#v", response)
 	}
 
@@ -245,7 +249,11 @@ func TestWriteRPCRequestAndReadRPCResponseErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readRPCResponse for framed response failed: %v", err)
 	}
-	if decodedResponse.ID != 2 {
+	decodedID, hasDecodedID, err := normalizeRPCResponseID(decodedResponse.ID)
+	if err != nil {
+		t.Fatalf("normalizeRPCResponseID(decoded) failed: %v", err)
+	}
+	if !hasDecodedID || decodedID != "2" {
 		t.Fatalf("unexpected decoded response id: %#v", decodedResponse)
 	}
 
@@ -320,6 +328,10 @@ func TestCallToolErrorAndFallbackPaths(t *testing.T) {
 	_, err = client.CallTool(context.Background(), cfg, "echo", json.RawMessage(`{}`))
 	assertClientErrorCode(t, err, ClientErrorProtocol)
 
+	cfg = helperServerConfig(t, "non_integer_response_id")
+	_, err = client.CallTool(context.Background(), cfg, "echo", json.RawMessage(`{}`))
+	assertClientErrorCode(t, err, ClientErrorProtocol)
+
 	cfg = helperServerConfig(t, "invalid_json_line")
 	_, err = client.CallTool(context.Background(), cfg, "echo", json.RawMessage(`{}`))
 	assertClientErrorCode(t, err, ClientErrorProtocol)
@@ -385,6 +397,9 @@ func TestNormalizeIDAndCloneMapHelpers(t *testing.T) {
 	if cloneStringMap(nil) != nil {
 		t.Fatal("expected nil clone for nil string map")
 	}
+	if cloneStringSlice(nil) != nil {
+		t.Fatal("expected nil clone for nil string slice")
+	}
 
 	source := map[string]any{"a": 1}
 	cloned := cloneMap(source)
@@ -399,6 +414,12 @@ func TestNormalizeIDAndCloneMapHelpers(t *testing.T) {
 	if sourceEnv["A"] != "1" {
 		t.Fatal("cloneStringMap should not mutate source map")
 	}
+	protocolVersions := []string{"2026-04-01", "2025-03-26"}
+	clonedVersions := cloneStringSlice(protocolVersions)
+	clonedVersions[0] = "2024-11-05"
+	if protocolVersions[0] != "2026-04-01" {
+		t.Fatal("cloneStringSlice should not mutate source slice")
+	}
 
 	t.Setenv("BYTEMIND_MCP_SECRET", "top-secret")
 	envMap := envListToMap(mergeCommandEnv(nil))
@@ -411,6 +432,70 @@ func TestNormalizeIDAndCloneMapHelpers(t *testing.T) {
 	}))
 	if envMap["BYTEMIND_MCP_SECRET"] != "explicit" {
 		t.Fatalf("expected explicit env injection, got %#v", envMap["BYTEMIND_MCP_SECRET"])
+	}
+}
+
+func TestNormalizeProtocolVersions(t *testing.T) {
+	versions := normalizeProtocolVersions(" 2026-04-01 ", []string{"2025-03-26", "2026-04-01", "", "2024-11-05"})
+	expected := []string{"2026-04-01", "2025-03-26", "2024-11-05"}
+	if len(versions) != len(expected) {
+		t.Fatalf("unexpected protocol version count: got %d want %d", len(versions), len(expected))
+	}
+	for i := range expected {
+		if versions[i] != expected[i] {
+			t.Fatalf("unexpected version at %d: got %q want %q", i, versions[i], expected[i])
+		}
+	}
+
+	defaults := normalizeProtocolVersions("", nil)
+	if len(defaults) != len(defaultProtocolVersions) {
+		t.Fatalf("expected default protocol versions, got %#v", defaults)
+	}
+}
+
+func TestNormalizeRPCResponseID(t *testing.T) {
+	cases := []struct {
+		name    string
+		id      any
+		wantID  string
+		wantHas bool
+		wantErr bool
+	}{
+		{name: "nil", id: nil, wantID: "", wantHas: false, wantErr: false},
+		{name: "int", id: 2, wantID: "2", wantHas: true, wantErr: false},
+		{name: "string", id: " 3 ", wantID: "3", wantHas: true, wantErr: false},
+		{name: "json number", id: json.Number("4"), wantID: "4", wantHas: true, wantErr: false},
+		{name: "decimal number", id: json.Number("1.5"), wantID: "", wantHas: true, wantErr: true},
+		{name: "unsupported", id: true, wantID: "", wantHas: true, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotID, gotHas, err := normalizeRPCResponseID(tc.id)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("did not expect error, got %v", err)
+			}
+			if gotHas != tc.wantHas {
+				t.Fatalf("unexpected has-id value: got %v want %v", gotHas, tc.wantHas)
+			}
+			if gotID != tc.wantID {
+				t.Fatalf("unexpected id: got %q want %q", gotID, tc.wantID)
+			}
+		})
+	}
+}
+
+func TestIsClientErrorCode(t *testing.T) {
+	if isClientErrorCode(nil, ClientErrorProtocol) {
+		t.Fatal("nil error should not match client error code")
+	}
+	if isClientErrorCode(errors.New("boom"), ClientErrorProtocol) {
+		t.Fatal("non-client error should not match client error code")
+	}
+	if !isClientErrorCode(newClientError(ClientErrorProtocol, "x", nil), ClientErrorProtocol) {
+		t.Fatal("expected client error code match")
 	}
 }
 

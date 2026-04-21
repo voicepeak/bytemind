@@ -20,6 +20,12 @@ const (
 	defaultCallTimeout    = 30 * time.Second
 )
 
+var defaultProtocolVersions = []string{
+	"2026-04-01",
+	"2025-03-26",
+	"2024-11-05",
+}
+
 var defaultEnvWhitelist = []string{
 	"PATH",
 	"Path",
@@ -36,15 +42,17 @@ var defaultEnvWhitelist = []string{
 }
 
 type ServerConfig struct {
-	ID             string
-	Name           string
-	Version        string
-	Command        string
-	Args           []string
-	Env            map[string]string
-	CWD            string
-	StartupTimeout time.Duration
-	CallTimeout    time.Duration
+	ID               string
+	Name             string
+	Version          string
+	ProtocolVersion  string
+	ProtocolVersions []string
+	Command          string
+	Args             []string
+	Env              map[string]string
+	CWD              string
+	StartupTimeout   time.Duration
+	CallTimeout      time.Duration
 }
 
 type ToolDescriptor struct {
@@ -125,15 +133,11 @@ func (c *StdioClient) Discover(ctx context.Context, cfg ServerConfig) (ServerSna
 	callCtx, cancel := withTimeoutIfMissing(ctx, cfg.StartupTimeout)
 	defer cancel()
 
-	responses, err := c.runRPC(callCtx, cfg, []rpcRequest{
-		newRPCRequest(1, "initialize", map[string]any{
-			"protocolVersion": "2026-04-01",
-			"clientInfo": map[string]any{
-				"name":    "bytemind",
-				"version": "dev",
-			},
-		}),
-		newRPCRequest(2, "tools/list", map[string]any{}),
+	responses, err := c.runWithProtocolFallback(callCtx, cfg, func(protocolVersion string) []rpcRequest {
+		return []rpcRequest{
+			newRPCRequest(1, "initialize", initializeParams(protocolVersion)),
+			newRPCRequest(2, "tools/list", map[string]any{}),
+		}
 	})
 	if err != nil {
 		return ServerSnapshot{}, err
@@ -213,18 +217,14 @@ func (c *StdioClient) CallTool(ctx context.Context, cfg ServerConfig, toolName s
 	callCtx, cancel := withTimeoutIfMissing(ctx, cfg.CallTimeout)
 	defer cancel()
 
-	responses, err := c.runRPC(callCtx, cfg, []rpcRequest{
-		newRPCRequest(1, "initialize", map[string]any{
-			"protocolVersion": "2026-04-01",
-			"clientInfo": map[string]any{
-				"name":    "bytemind",
-				"version": "dev",
-			},
-		}),
-		newRPCRequest(2, "tools/call", map[string]any{
-			"name":      toolName,
-			"arguments": args,
-		}),
+	responses, err := c.runWithProtocolFallback(callCtx, cfg, func(protocolVersion string) []rpcRequest {
+		return []rpcRequest{
+			newRPCRequest(1, "initialize", initializeParams(protocolVersion)),
+			newRPCRequest(2, "tools/call", map[string]any{
+				"name":      toolName,
+				"arguments": args,
+			}),
+		}
 	})
 	if err != nil {
 		return "", err
@@ -298,35 +298,81 @@ func (c *StdioClient) runRPC(ctx context.Context, cfg ServerConfig, requests []r
 		if err := writeRPCRequest(writer, request); err != nil {
 			return nil, newClientError(ClientErrorTransport, "failed to write mcp request", err)
 		}
-		response, err := readRPCResponse(reader)
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return nil, newClientError(ClientErrorTimeout, "mcp request timed out", err)
-			}
-			if errors.Is(err, io.EOF) {
-				message := "mcp server closed stdout before replying"
-				if trimmed := strings.TrimSpace(stderr.String()); trimmed != "" {
-					message = fmt.Sprintf("%s: %s", message, trimmed)
+		expectedID := strconv.Itoa(request.ID)
+		for {
+			response, err := readRPCResponse(reader)
+			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					return nil, newClientError(ClientErrorTimeout, "mcp request timed out", err)
 				}
-				return nil, newClientError(ClientErrorTransport, message, err)
+				if errors.Is(err, io.EOF) {
+					message := "mcp server closed stdout before replying"
+					if trimmed := strings.TrimSpace(stderr.String()); trimmed != "" {
+						message = fmt.Sprintf("%s: %s", message, trimmed)
+					}
+					return nil, newClientError(ClientErrorTransport, message, err)
+				}
+				return nil, newClientError(ClientErrorProtocol, "failed to read mcp response", err)
 			}
-			return nil, newClientError(ClientErrorProtocol, "failed to read mcp response", err)
+
+			actualID, hasID, idErr := normalizeRPCResponseID(response.ID)
+			if idErr != nil {
+				return nil, newClientError(ClientErrorProtocol, "failed to decode mcp response id", idErr)
+			}
+			if !hasID {
+				// MCP servers may emit notifications before the response.
+				if strings.TrimSpace(response.Method) != "" {
+					continue
+				}
+				return nil, newClientError(ClientErrorProtocol, "mcp response missing id", nil)
+			}
+			if actualID != expectedID {
+				return nil, newClientError(ClientErrorProtocol, "mcp response id mismatch", nil)
+			}
+			if response.Error != nil {
+				return nil, mapRPCError(request.Method, response.Error)
+			}
+			responses = append(responses, response)
+			break
 		}
-		if response.ID != request.ID {
-			return nil, newClientError(ClientErrorProtocol, "mcp response id mismatch", nil)
-		}
-		if response.Error != nil {
-			return nil, mapRPCError(request.Method, response.Error)
-		}
-		responses = append(responses, response)
 	}
 	return responses, nil
+}
+
+func (c *StdioClient) runWithProtocolFallback(
+	ctx context.Context,
+	cfg ServerConfig,
+	buildRequests func(protocolVersion string) []rpcRequest,
+) ([]rpcResponse, error) {
+	protocolVersions := cloneStringSlice(cfg.ProtocolVersions)
+	if len(protocolVersions) == 0 {
+		protocolVersions = cloneStringSlice(defaultProtocolVersions)
+	}
+
+	for index, protocolVersion := range protocolVersions {
+		responses, err := c.runRPC(ctx, cfg, buildRequests(protocolVersion))
+		if err == nil {
+			return responses, nil
+		}
+		if isClientErrorCode(err, ClientErrorHandshakeFailed) && index < len(protocolVersions)-1 {
+			continue
+		}
+		if isClientErrorCode(err, ClientErrorHandshakeFailed) && len(protocolVersions) > 1 {
+			message := fmt.Sprintf("mcp initialize failed for protocol versions: %s", strings.Join(protocolVersions, ", "))
+			return nil, newClientError(ClientErrorHandshakeFailed, message, err)
+		}
+		return nil, err
+	}
+
+	message := fmt.Sprintf("mcp initialize failed for protocol versions: %s", strings.Join(protocolVersions, ", "))
+	return nil, newClientError(ClientErrorHandshakeFailed, message, nil)
 }
 
 func normalizeServerConfig(cfg ServerConfig) ServerConfig {
 	cfg.ID = normalizeID(cfg.ID)
 	cfg.Name = strings.TrimSpace(cfg.Name)
 	cfg.Version = strings.TrimSpace(cfg.Version)
+	cfg.ProtocolVersion = strings.TrimSpace(cfg.ProtocolVersion)
 	cfg.Command = strings.TrimSpace(cfg.Command)
 	cfg.CWD = strings.TrimSpace(cfg.CWD)
 	if cfg.Name == "" {
@@ -341,6 +387,7 @@ func normalizeServerConfig(cfg ServerConfig) ServerConfig {
 	if cfg.Args == nil {
 		cfg.Args = []string{}
 	}
+	cfg.ProtocolVersions = normalizeProtocolVersions(cfg.ProtocolVersion, cfg.ProtocolVersions)
 	cfg.Env = cloneStringMap(cfg.Env)
 	return cfg
 }
@@ -425,7 +472,8 @@ type rpcRequest struct {
 
 type rpcResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      int             `json:"id"`
+	ID      any             `json:"id,omitempty"`
+	Method  string          `json:"method,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *rpcError       `json:"error,omitempty"`
 }
@@ -444,6 +492,97 @@ func newRPCRequest(id int, method string, params any) rpcRequest {
 	}
 }
 
+func initializeParams(protocolVersion string) map[string]any {
+	return map[string]any{
+		"protocolVersion": strings.TrimSpace(protocolVersion),
+		"clientInfo": map[string]any{
+			"name":    "bytemind",
+			"version": "dev",
+		},
+	}
+}
+
+func isClientErrorCode(err error, code ClientErrorCode) bool {
+	if err == nil {
+		return false
+	}
+	var clientErr *ClientError
+	if !errors.As(err, &clientErr) {
+		return false
+	}
+	return clientErr.Code == code
+}
+
+func normalizeProtocolVersions(primary string, extras []string) []string {
+	versions := make([]string, 0, 1+len(extras))
+	if strings.TrimSpace(primary) != "" {
+		versions = append(versions, primary)
+	}
+	versions = append(versions, extras...)
+
+	seen := map[string]struct{}{}
+	normalized := make([]string, 0, len(versions))
+	for _, version := range versions {
+		version = strings.TrimSpace(version)
+		if version == "" {
+			continue
+		}
+		if _, ok := seen[version]; ok {
+			continue
+		}
+		seen[version] = struct{}{}
+		normalized = append(normalized, version)
+	}
+	if len(normalized) > 0 {
+		return normalized
+	}
+	return cloneStringSlice(defaultProtocolVersions)
+}
+
+func normalizeRPCResponseID(id any) (string, bool, error) {
+	switch value := id.(type) {
+	case nil:
+		return "", false, nil
+	case int:
+		return strconv.Itoa(value), true, nil
+	case int8:
+		return strconv.Itoa(int(value)), true, nil
+	case int16:
+		return strconv.Itoa(int(value)), true, nil
+	case int32:
+		return strconv.Itoa(int(value)), true, nil
+	case int64:
+		return strconv.FormatInt(value, 10), true, nil
+	case uint:
+		return strconv.FormatUint(uint64(value), 10), true, nil
+	case uint8:
+		return strconv.FormatUint(uint64(value), 10), true, nil
+	case uint16:
+		return strconv.FormatUint(uint64(value), 10), true, nil
+	case uint32:
+		return strconv.FormatUint(uint64(value), 10), true, nil
+	case uint64:
+		return strconv.FormatUint(value, 10), true, nil
+	case json.Number:
+		if integer, err := value.Int64(); err == nil {
+			return strconv.FormatInt(integer, 10), true, nil
+		}
+		if _, err := value.Float64(); err == nil {
+			return "", true, fmt.Errorf("response id must be an integer, got %q", value.String())
+		}
+		return "", true, fmt.Errorf("invalid numeric response id %q", value.String())
+	case float64:
+		if value != float64(int64(value)) {
+			return "", true, fmt.Errorf("response id must be an integer, got %v", value)
+		}
+		return strconv.FormatInt(int64(value), 10), true, nil
+	case string:
+		return strings.TrimSpace(value), true, nil
+	default:
+		return "", true, fmt.Errorf("unsupported response id type %T", id)
+	}
+}
+
 func writeRPCRequest(writer *bufio.Writer, request rpcRequest) error {
 	data, err := json.Marshal(request)
 	if err != nil {
@@ -458,7 +597,9 @@ func readRPCResponse(reader *bufio.Reader) (rpcResponse, error) {
 		return rpcResponse{}, err
 	}
 	var response rpcResponse
-	if err := json.Unmarshal(payload, &response); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&response); err != nil {
 		return rpcResponse{}, err
 	}
 	return response, nil
@@ -577,6 +718,15 @@ func cloneMap(input map[string]any) map[string]any {
 	for key, value := range input {
 		out[key] = value
 	}
+	return out
+}
+
+func cloneStringSlice(input []string) []string {
+	if input == nil {
+		return nil
+	}
+	out := make([]string, len(input))
+	copy(out, input)
 	return out
 }
 
