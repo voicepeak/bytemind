@@ -33,22 +33,10 @@ type ExecutionContext struct {
 	NetworkAllowlist          []sandboxpkg.NetworkRule
 	Lease                     *sandboxpkg.Lease
 	LeaseKeyring              map[string][]byte
-	Approval                  ApprovalHandler
-	Session                   *session.Session
-	TaskManager               runtimepkg.TaskManager
-	Extensions                extensionspkg.Manager
-	Mode                      planpkg.AgentMode
-	Stdin                     io.Reader
-	Stdout                    io.Writer
-	AllowedTools              map[string]struct{}
-	DeniedTools               map[string]struct{}
-	Workspace                 string
-	ApprovalPolicy            string
-	ApprovalMode              string
-	AwayPolicy                string
-	Approval                  ApprovalHandler
-	Session                   *session.Session
-	TaskManager               runtimepkg.TaskManager
+
+	Approval    ApprovalHandler
+	Session     *session.Session
+	TaskManager runtimepkg.TaskManager
 	// Extensions is an optional passthrough hook for callers that need extension context.
 	// It stays untyped here to keep tools/extension packages decoupled.
 	Extensions   any
