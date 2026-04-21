@@ -22,6 +22,7 @@ func (m *model) beginRun(prompt, mode, note string) tea.Cmd {
 }
 
 func (m *model) beginRunWithInput(promptInput RunPromptInput, mode, note string) tea.Cmd {
+	m.installApprovalBridge()
 	runCtx, cancel := context.WithCancel(context.Background())
 	m.runSeq++
 	runID := m.runSeq

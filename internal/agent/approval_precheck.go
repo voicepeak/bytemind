@@ -34,8 +34,12 @@ func (g runApprovalGrants) hasAny() bool {
 }
 
 func (r *Runner) prepareRunApprovalHandler(setup runPromptSetup, out io.Writer) tools.ApprovalHandler {
-	base := r.resolveRunApprovalBaseHandler()
+	base, approvalChannelAvailable := r.resolveRunApprovalBaseHandler()
 	r.renderApprovalPrecheck(out, setup)
+	if !approvalChannelAvailable {
+		writeApprovalChannelUnavailableNotice(out, r.config.ApprovalPolicy, r.config.ApprovalMode)
+		return base
+	}
 	if !shouldAttemptPreapproval(r, setup, base) {
 		return base
 	}
@@ -94,15 +98,15 @@ func (r *Runner) prepareRunApprovalHandler(setup runPromptSetup, out io.Writer) 
 	}
 }
 
-func (r *Runner) resolveRunApprovalBaseHandler() tools.ApprovalHandler {
+func (r *Runner) resolveRunApprovalBaseHandler() (tools.ApprovalHandler, bool) {
 	if r == nil {
-		return nil
+		return nil, false
 	}
 	if r.approval != nil {
-		return r.approval
+		return r.approval, true
 	}
 	if r.stdin == nil {
-		return nil
+		return unavailableRunApprovalHandler(), false
 	}
 	reader := bufio.NewReader(r.stdin)
 	return func(req tools.ApprovalRequest) (bool, error) {
@@ -124,7 +128,35 @@ func (r *Runner) resolveRunApprovalBaseHandler() tools.ApprovalHandler {
 		}
 		answer := strings.ToLower(strings.TrimSpace(line))
 		return answer == "y" || answer == "yes", nil
+	}, true
+}
+
+func unavailableRunApprovalHandler() tools.ApprovalHandler {
+	return func(req tools.ApprovalRequest) (bool, error) {
+		command := strings.TrimSpace(req.Command)
+		if command == "" {
+			command = "unknown action"
+		}
+		return false, fmt.Errorf("approval channel unavailable for %q: missing TUI approval bridge and stdin fallback", command)
 	}
+}
+
+func writeApprovalChannelUnavailableNotice(out io.Writer, approvalPolicy, approvalMode string) {
+	if out == nil {
+		return
+	}
+	policy := strings.ToLower(strings.TrimSpace(approvalPolicy))
+	if policy == "" {
+		policy = "on-request"
+	}
+	mode := strings.ToLower(strings.TrimSpace(approvalMode))
+	if mode == "" {
+		mode = "interactive"
+	}
+	if policy == "never" || mode == approvalModeAway {
+		return
+	}
+	_, _ = io.WriteString(out, fmt.Sprintf("%sapproval channel unavailable%s interactive approvals cannot be prompted in this run; approval-required actions will be denied\n", ansiYellow, ansiReset))
 }
 
 func (r *Runner) renderApprovalPrecheck(out io.Writer, setup runPromptSetup) {

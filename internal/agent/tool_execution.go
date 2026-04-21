@@ -8,10 +8,12 @@ import (
 	"strings"
 	"time"
 
+	configpkg "bytemind/internal/config"
 	corepkg "bytemind/internal/core"
 	"bytemind/internal/llm"
 	planpkg "bytemind/internal/plan"
 	runtimepkg "bytemind/internal/runtime"
+	sandboxpkg "bytemind/internal/sandbox"
 	"bytemind/internal/session"
 	storagepkg "bytemind/internal/storage"
 	"bytemind/internal/tools"
@@ -97,20 +99,29 @@ func (e *defaultEngine) executeToolCall(
 			"tool_name": call.Function.Name,
 		},
 		Execute: func(execCtx context.Context) ([]byte, error) {
+			sandboxRoots := buildSandboxRoots(runner.workspace, runner.config.WritableRoots)
 			output, err := runner.executor.ExecuteForMode(execCtx, runMode, call.Function.Name, call.Function.Arguments, &tools.ExecutionContext{
-				Workspace:      runner.workspace,
-				ApprovalPolicy: runner.config.ApprovalPolicy,
-				ApprovalMode:   runner.config.ApprovalMode,
-				AwayPolicy:     runner.config.AwayPolicy,
-				Approval:       approval,
-				Session:        sess,
-				TaskManager:    runner.taskManager,
-				Extensions:     runner.extensions,
-				Mode:           runMode,
-				Stdin:          runner.stdin,
-				Stdout:         runner.stdout,
-				AllowedTools:   allowedTools,
-				DeniedTools:    deniedTools,
+				Workspace:        runner.workspace,
+				WritableRoots:    runner.config.WritableRoots,
+				ApprovalPolicy:   runner.config.ApprovalPolicy,
+				ApprovalMode:     runner.config.ApprovalMode,
+				AwayPolicy:       runner.config.AwayPolicy,
+				SandboxEnabled:   runner.config.SandboxEnabled,
+				LeaseID:          fmt.Sprintf("session-%s", sess.ID),
+				RunID:            fmt.Sprintf("trace-%s", traceID),
+				FSRead:           append([]string(nil), sandboxRoots...),
+				FSWrite:          append([]string(nil), sandboxRoots...),
+				ExecAllowlist:    toSandboxExecRules(runner.config.ExecAllowlist),
+				NetworkAllowlist: toSandboxNetworkRules(runner.config.NetworkAllowlist),
+				Approval:         approval,
+				Session:          sess,
+				TaskManager:      runner.taskManager,
+				Extensions:       runner.extensions,
+				Mode:             runMode,
+				Stdin:            runner.stdin,
+				Stdout:           runner.stdout,
+				AllowedTools:     allowedTools,
+				DeniedTools:      deniedTools,
 			})
 			return []byte(output), err
 		},
@@ -353,4 +364,54 @@ func classifyToolExecutionError(err error) (status, reasonCode string) {
 		}
 	}
 	return status, reasonCode
+}
+
+func toSandboxExecRules(rules []configpkg.ExecAllowRule) []sandboxpkg.ExecRule {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]sandboxpkg.ExecRule, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, sandboxpkg.ExecRule{
+			Command:     rule.Command,
+			ArgsPattern: append([]string(nil), rule.ArgsPattern...),
+		})
+	}
+	return out
+}
+
+func buildSandboxRoots(workspace string, writableRoots []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(writableRoots)+1)
+	appendRoot := func(root string) {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			return
+		}
+		if _, exists := seen[root]; exists {
+			return
+		}
+		seen[root] = struct{}{}
+		out = append(out, root)
+	}
+	appendRoot(workspace)
+	for _, root := range writableRoots {
+		appendRoot(root)
+	}
+	return out
+}
+
+func toSandboxNetworkRules(rules []configpkg.NetworkAllowRule) []sandboxpkg.NetworkRule {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]sandboxpkg.NetworkRule, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, sandboxpkg.NetworkRule{
+			Host:   rule.Host,
+			Port:   rule.Port,
+			Scheme: rule.Scheme,
+		})
+	}
+	return out
 }

@@ -113,6 +113,9 @@ func (RunShellTool) Run(ctx context.Context, raw json.RawMessage, execCtx *Execu
 }
 
 func requireApproval(command string, execCtx *ExecutionContext) error {
+	if execCtx != nil && execCtx.SkipShellApproval {
+		return nil
+	}
 	mode := planpkg.ModeBuild
 	approvalPolicy := ""
 	if execCtx != nil {
@@ -153,7 +156,7 @@ func promptForApproval(command, reason string, execCtx *ExecutionContext) error 
 		return awayModeApprovalDeniedError("shell command", command, execCtx)
 	}
 	if execCtx == nil {
-		return errors.New("shell command requires approval but no execution context is available")
+		return approvalChannelUnavailableError("shell command", command)
 	}
 	if execCtx.Approval != nil {
 		approved, err := execCtx.Approval(ApprovalRequest{
@@ -169,7 +172,7 @@ func promptForApproval(command, reason string, execCtx *ExecutionContext) error 
 		return nil
 	}
 	if execCtx.Stdin == nil {
-		return errors.New("shell command requires approval but no stdin is available")
+		return approvalChannelUnavailableError("shell command", command)
 	}
 	if execCtx.Stdout != nil {
 		if strings.TrimSpace(reason) != "" {

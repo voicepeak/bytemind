@@ -79,6 +79,22 @@ func TestRequireApprovalOnRequestAllowsReadOnlyWithoutPrompt(t *testing.T) {
 	}
 }
 
+func TestRequireApprovalSkipsWhenPreApprovedByParentWorker(t *testing.T) {
+	var out bytes.Buffer
+	err := requireApproval("go test ./...", &ExecutionContext{
+		ApprovalPolicy:    "on-request",
+		SkipShellApproval: true,
+		Stdin:             strings.NewReader(""),
+		Stdout:            &out,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("expected no prompt when shell approval is pre-approved, got %q", out.String())
+	}
+}
+
 func TestRequireApprovalOnRequestPromptsForRiskyCommand(t *testing.T) {
 	var out bytes.Buffer
 	err := requireApproval("go test ./...", &ExecutionContext{
@@ -139,7 +155,7 @@ func TestRequireApprovalNeedsStdinWhenPrompting(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected missing stdin error")
 	}
-	if !strings.Contains(err.Error(), "no stdin") {
+	if !strings.Contains(err.Error(), "approval channel is unavailable") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
