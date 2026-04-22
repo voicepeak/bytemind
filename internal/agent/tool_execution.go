@@ -48,6 +48,11 @@ func (e *defaultEngine) executeToolCall(
 
 	traceID := buildToolTraceID(call)
 	sessionID := corepkg.SessionID(sess.ID)
+	systemSandboxMode := strings.TrimSpace(runner.config.SystemSandboxMode)
+	if systemSandboxMode == "" {
+		systemSandboxMode = "off"
+	}
+	sandboxEnabledText := strconv.FormatBool(runner.config.SandboxEnabled)
 
 	decision, err := runner.policyGateway.DecideTool(ctx, ToolDecisionInput{
 		ToolName:       call.Function.Name,
@@ -68,8 +73,10 @@ func (e *defaultEngine) executeToolCall(
 		ReasonCode: decision.ReasonCode,
 		RiskLevel:  decision.RiskLevel,
 		Metadata: map[string]string{
-			"tool_name": call.Function.Name,
-			"reason":    decision.Reason,
+			"tool_name":       call.Function.Name,
+			"reason":          decision.Reason,
+			"sandbox_enabled": sandboxEnabledText,
+			"sandbox_mode":    systemSandboxMode,
 		},
 	})
 
@@ -85,11 +92,6 @@ func (e *defaultEngine) executeToolCall(
 	})
 	sandboxLeaseID := fmt.Sprintf("session-%s", sess.ID)
 	sandboxRunID := fmt.Sprintf("trace-%s", traceID)
-	systemSandboxMode := strings.TrimSpace(runner.config.SystemSandboxMode)
-	if systemSandboxMode == "" {
-		systemSandboxMode = "off"
-	}
-	sandboxEnabledText := strconv.FormatBool(runner.config.SandboxEnabled)
 	runner.appendAudit(ctx, storagepkg.AuditEvent{
 		SessionID: sessionID,
 		TraceID:   traceID,
@@ -284,6 +286,10 @@ func (e *defaultEngine) handleRejectedToolCall(
 		return fmt.Errorf("agent engine is unavailable")
 	}
 	runner := e.runner
+	systemSandboxMode := strings.TrimSpace(runner.config.SystemSandboxMode)
+	if systemSandboxMode == "" {
+		systemSandboxMode = "off"
+	}
 
 	errorText := fmt.Sprintf("tool %q blocked by policy (%s): %s", call.Function.Name, decision.ReasonCode, decision.Reason)
 	if decision.ReasonCode == policyReasonExplicitDeny {
@@ -324,9 +330,11 @@ func (e *defaultEngine) handleRejectedToolCall(
 		Action:    "tool_execute_result",
 		Result:    "denied",
 		Metadata: map[string]string{
-			"tool_name": call.Function.Name,
-			"error":     errorText,
-			"decision":  string(decision.Decision),
+			"tool_name":       call.Function.Name,
+			"error":           errorText,
+			"decision":        string(decision.Decision),
+			"sandbox_enabled": strconv.FormatBool(runner.config.SandboxEnabled),
+			"sandbox_mode":    systemSandboxMode,
 		},
 	})
 
