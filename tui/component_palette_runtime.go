@@ -54,6 +54,9 @@ func (m model) handlePromptSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.closePromptSearch(true)
 		m.statusNote = "Prompt search canceled."
 		return m, nil
+	case "ctrl+f":
+		m.stepPromptSearch(1)
+		return m, nil
 	case "enter":
 		selected, ok := m.selectedPromptSearchEntry()
 		if ok {

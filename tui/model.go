@@ -1807,9 +1807,12 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			EndLine   int    `json:"end_line"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
+			path := compactDisplayPath(result.Path)
 			summary := "Read " + filepath.Base(result.Path)
-			// 只显示文件名，不显示行范围和路径
-			return summary, []string{}, "done"
+			return summary, []string{
+				fmt.Sprintf("range: %d-%d", result.StartLine, result.EndLine),
+				"path: " + path,
+			}, "done"
 		}
 	case "search_text":
 		var result struct {

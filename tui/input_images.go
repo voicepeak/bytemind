@@ -395,7 +395,8 @@ func (m *model) applyWholeInputImagePathFallback(text, source string) (string, s
 	}
 	pasteLike := isCtrlVKey(source) || strings.Contains(strings.ToLower(source), "paste")
 	if !pasteLike {
-		if m.lastPasteAt.IsZero() || time.Since(m.lastPasteAt) > 2*pasteSubmitGuard {
+		if (m.lastPasteAt.IsZero() || time.Since(m.lastPasteAt) > 2*pasteSubmitGuard) &&
+			!(m.inputBurstSize >= 4 && isLikelyPathInput(strings.TrimSpace(text))) {
 			return text, ""
 		}
 	}
