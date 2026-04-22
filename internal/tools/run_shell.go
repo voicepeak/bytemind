@@ -116,11 +116,31 @@ func (RunShellTool) Run(ctx context.Context, raw json.RawMessage, execCtx *Execu
 	}
 
 	return toJSON(map[string]any{
-		"ok":        exitCode == 0,
-		"exit_code": exitCode,
-		"stdout":    stdout.String(),
-		"stderr":    stderr.String(),
+		"ok":             exitCode == 0,
+		"exit_code":      exitCode,
+		"stdout":         stdout.String(),
+		"stderr":         stderr.String(),
+		"system_sandbox": buildSystemSandboxExecutionMetadata(sandboxMode, backendName),
 	})
+}
+
+func buildSystemSandboxExecutionMetadata(mode, backendName string) map[string]any {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = systemSandboxModeOff
+	}
+	backend := strings.TrimSpace(backendName)
+	active := backend != ""
+	if !active {
+		backend = "none"
+	}
+	fallback := mode != systemSandboxModeOff && !active
+	return map[string]any{
+		"mode":     mode,
+		"backend":  backend,
+		"active":   active,
+		"fallback": fallback,
+	}
 }
 
 func requireApproval(command string, execCtx *ExecutionContext) error {

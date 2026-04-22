@@ -3,6 +3,7 @@ package tools
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -372,6 +373,75 @@ func TestRunShellToolReturnsTimeoutError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildSystemSandboxExecutionMetadataDefaults(t *testing.T) {
+	meta := buildSystemSandboxExecutionMetadata("", "")
+	if got := meta["mode"]; got != systemSandboxModeOff {
+		t.Fatalf("expected default mode off, got %#v", meta)
+	}
+	if got := meta["backend"]; got != "none" {
+		t.Fatalf("expected backend none, got %#v", meta)
+	}
+	if got := meta["active"]; got != false {
+		t.Fatalf("expected active=false, got %#v", meta)
+	}
+	if got := meta["fallback"]; got != false {
+		t.Fatalf("expected fallback=false, got %#v", meta)
+	}
+}
+
+func TestBuildSystemSandboxExecutionMetadataFallback(t *testing.T) {
+	meta := buildSystemSandboxExecutionMetadata(systemSandboxModeBestEffort, "")
+	if got := meta["fallback"]; got != true {
+		t.Fatalf("expected fallback=true for best_effort without backend, got %#v", meta)
+	}
+	if got := meta["active"]; got != false {
+		t.Fatalf("expected active=false without backend, got %#v", meta)
+	}
+}
+
+func TestRunShellToolResultIncludesSandboxMetadata(t *testing.T) {
+	tool := RunShellTool{}
+	command := "echo ok"
+	if runtime.GOOS == "windows" {
+		command = "Write-Output ok"
+	}
+	raw, err := tool.Run(context.Background(), []byte(`{"command":"`+command+`"}`), &ExecutionContext{
+		Workspace:         t.TempDir(),
+		ApprovalPolicy:    "never",
+		SystemSandboxMode: "off",
+		Stdin:             strings.NewReader(""),
+		Stdout:            &bytes.Buffer{},
+	})
+	if err != nil {
+		t.Fatalf("run shell: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("unmarshal run_shell result: %v", err)
+	}
+	metadataRaw, ok := payload["system_sandbox"]
+	if !ok {
+		t.Fatalf("expected system_sandbox metadata, got %#v", payload)
+	}
+	metadata, ok := metadataRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected system_sandbox object, got %#v", metadataRaw)
+	}
+	if got := metadata["mode"]; got != systemSandboxModeOff {
+		t.Fatalf("expected mode off, got %#v", metadata)
+	}
+	if got := metadata["backend"]; got != "none" {
+		t.Fatalf("expected backend none, got %#v", metadata)
+	}
+	if got := metadata["active"]; got != false {
+		t.Fatalf("expected active=false, got %#v", metadata)
+	}
+	if got := metadata["fallback"]; got != false {
+		t.Fatalf("expected fallback=false, got %#v", metadata)
 	}
 }
 
