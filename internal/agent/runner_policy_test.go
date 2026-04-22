@@ -289,6 +289,12 @@ func TestRunPromptPolicyGatewayAskRequestsApprovalAndExecutesTool(t *testing.T) 
 		}
 		if event.Action == "tool_execute_result" && event.Metadata["tool_name"] == "ask_tool" && event.Result == "ok" {
 			foundExecuteResult = true
+			if got := event.Metadata["sandbox_enabled"]; got != "true" {
+				t.Fatalf("expected ask tool_execute_result sandbox_enabled=true, got %q", got)
+			}
+			if got := event.Metadata["sandbox_mode"]; got != "best_effort" {
+				t.Fatalf("expected ask tool_execute_result sandbox_mode=best_effort, got %q", got)
+			}
 		}
 	}
 	if !foundPermissionDecisionAsk {

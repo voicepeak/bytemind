@@ -219,6 +219,8 @@ func (e *defaultEngine) executeToolCall(
 		"error":            errText,
 		"sandbox_lease_id": sandboxLeaseID,
 		"sandbox_run_id":   sandboxRunID,
+		"sandbox_enabled":  sandboxEnabledText,
+		"sandbox_mode":     systemSandboxMode,
 	}
 	if execution.Result.ErrorCode != "" {
 		metadata["error_code"] = execution.Result.ErrorCode
