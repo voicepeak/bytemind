@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -24,17 +26,21 @@ const (
 )
 
 type Config struct {
-	Provider        ProviderConfig        `json:"provider"`
-	ProviderRuntime ProviderRuntimeConfig `json:"provider_runtime"`
-	ApprovalPolicy  string                `json:"approval_policy"`
-	ApprovalMode    string                `json:"approval_mode"`
-	AwayPolicy      string                `json:"away_policy"`
-	MaxIterations   int                   `json:"max_iterations"`
-	Stream          bool                  `json:"stream"`
-	UpdateCheck     UpdateCheckConfig     `json:"update_check"`
-	TokenQuota      int                   `json:"token_quota"`
-	TokenUsage      TokenUsageConfig      `json:"token_usage"`
-	ContextBudget   ContextBudgetConfig   `json:"context_budget"`
+	Provider         ProviderConfig        `json:"provider"`
+	ProviderRuntime  ProviderRuntimeConfig `json:"provider_runtime"`
+	ApprovalPolicy   string                `json:"approval_policy"`
+	ApprovalMode     string                `json:"approval_mode"`
+	AwayPolicy       string                `json:"away_policy"`
+	SandboxEnabled   bool                  `json:"sandbox_enabled"`
+	WritableRoots    []string              `json:"writable_roots"`
+	ExecAllowlist    []ExecAllowRule       `json:"exec_allowlist"`
+	NetworkAllowlist []NetworkAllowRule    `json:"network_allowlist"`
+	MaxIterations    int                   `json:"max_iterations"`
+	Stream           bool                  `json:"stream"`
+	UpdateCheck      UpdateCheckConfig     `json:"update_check"`
+	TokenQuota       int                   `json:"token_quota"`
+	TokenUsage       TokenUsageConfig      `json:"token_usage"`
+	ContextBudget    ContextBudgetConfig   `json:"context_budget"`
 }
 
 type UpdateCheckConfig struct {
@@ -73,6 +79,17 @@ type ContextBudgetConfig struct {
 	MaxReactiveRetry int     `json:"max_reactive_retry"`
 }
 
+type ExecAllowRule struct {
+	Command     string   `json:"command"`
+	ArgsPattern []string `json:"args_pattern"`
+}
+
+type NetworkAllowRule struct {
+	Host   string `json:"host"`
+	Port   int    `json:"port"`
+	Scheme string `json:"scheme"`
+}
+
 func Default(workspace string) Config {
 	return Config{
 		Provider: ProviderConfig{
@@ -81,11 +98,15 @@ func Default(workspace string) Config {
 			Model:     defaultModelID,
 			APIKeyEnv: "BYTEMIND_API_KEY",
 		},
-		ApprovalPolicy: "on-request",
-		ApprovalMode:   "interactive",
-		AwayPolicy:     "auto_deny_continue",
-		MaxIterations:  32,
-		Stream:         true,
+		ApprovalPolicy:   "on-request",
+		ApprovalMode:     "interactive",
+		AwayPolicy:       "auto_deny_continue",
+		SandboxEnabled:   false,
+		WritableRoots:    []string{},
+		ExecAllowlist:    []ExecAllowRule{},
+		NetworkAllowlist: []NetworkAllowRule{},
+		MaxIterations:    32,
+		Stream:           true,
 		UpdateCheck: UpdateCheckConfig{
 			Enabled: true,
 		},
@@ -138,6 +159,9 @@ func Load(workspace, configPath string) (Config, error) {
 
 	applyEnv(&cfg)
 	if err := normalize(&cfg); err != nil {
+		return cfg, err
+	}
+	if err := normalizeWritableRoots(workspace, &cfg); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
@@ -209,11 +233,15 @@ func ensureDefaultConfigFile(home string) error {
 			APIKeyEnv:        "BYTEMIND_API_KEY",
 			AnthropicVersion: "2023-06-01",
 		},
-		ApprovalPolicy: "on-request",
-		ApprovalMode:   "interactive",
-		AwayPolicy:     "auto_deny_continue",
-		MaxIterations:  32,
-		Stream:         true,
+		ApprovalPolicy:   "on-request",
+		ApprovalMode:     "interactive",
+		AwayPolicy:       "auto_deny_continue",
+		SandboxEnabled:   false,
+		WritableRoots:    []string{},
+		ExecAllowlist:    []ExecAllowRule{},
+		NetworkAllowlist: []NetworkAllowRule{},
+		MaxIterations:    32,
+		Stream:           true,
 		UpdateCheck: UpdateCheckConfig{
 			Enabled: true,
 		},
@@ -322,6 +350,14 @@ func applyEnv(cfg *Config) {
 	}
 	if value := strings.TrimSpace(os.Getenv("BYTEMIND_AWAY_POLICY")); value != "" {
 		cfg.AwayPolicy = value
+	}
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_SANDBOX_ENABLED")); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			cfg.SandboxEnabled = parsed
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("BYTEMIND_WRITABLE_ROOTS")); value != "" {
+		cfg.WritableRoots = splitPathList(value)
 	}
 	if value := strings.TrimSpace(os.Getenv("BYTEMIND_STREAM")); value != "" {
 		if parsed, err := strconv.ParseBool(value); err == nil {
@@ -477,6 +513,9 @@ func normalize(cfg *Config) error {
 	default:
 		return errors.New("away_policy must be one of auto_deny_continue, fail_fast")
 	}
+	if err := normalizeSandboxPolicy(cfg); err != nil {
+		return err
+	}
 	if cfg.TokenQuota < 1 {
 		cfg.TokenQuota = DefaultTokenQuota
 	}
@@ -517,6 +556,166 @@ func normalize(cfg *Config) error {
 		return errors.New("context_budget.max_reactive_retry must be >= 0")
 	}
 	return nil
+}
+
+func normalizeWritableRoots(workspace string, cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	absWorkspace, err := filepath.Abs(strings.TrimSpace(workspace))
+	if err != nil {
+		return err
+	}
+	absWorkspace = filepath.Clean(absWorkspace)
+	workspaceKey := normalizePathKey(absWorkspace)
+
+	if len(cfg.WritableRoots) == 0 {
+		cfg.WritableRoots = []string{}
+		return nil
+	}
+	seen := map[string]struct{}{workspaceKey: {}}
+	normalized := make([]string, 0, len(cfg.WritableRoots))
+	for _, root := range cfg.WritableRoots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		if !filepath.IsAbs(root) {
+			root = filepath.Join(absWorkspace, root)
+		}
+		absRoot, err := filepath.Abs(root)
+		if err != nil {
+			return err
+		}
+		absRoot = filepath.Clean(absRoot)
+		key := normalizePathKey(absRoot)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, absRoot)
+	}
+	cfg.WritableRoots = normalized
+	return nil
+}
+
+func normalizeSandboxPolicy(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+
+	normalizedExec := make([]ExecAllowRule, 0, len(cfg.ExecAllowlist))
+	seenExec := make(map[string]struct{}, len(cfg.ExecAllowlist))
+	for _, rule := range cfg.ExecAllowlist {
+		commandTokens := strings.Fields(strings.TrimSpace(rule.Command))
+		if len(commandTokens) == 0 {
+			return errors.New("exec_allowlist.command cannot be empty")
+		}
+		command := commandTokens[0]
+		patternInputs := make([]string, 0, len(commandTokens)-1+len(rule.ArgsPattern))
+		if len(commandTokens) > 1 {
+			patternInputs = append(patternInputs, commandTokens[1:]...)
+		}
+		patternInputs = append(patternInputs, rule.ArgsPattern...)
+		patterns := normalizeStringList(patternInputs)
+		key := strings.ToLower(command) + "\x00" + strings.Join(patterns, "\x00")
+		if _, exists := seenExec[key]; exists {
+			continue
+		}
+		seenExec[key] = struct{}{}
+		normalizedExec = append(normalizedExec, ExecAllowRule{
+			Command:     command,
+			ArgsPattern: patterns,
+		})
+	}
+	sort.Slice(normalizedExec, func(i, j int) bool {
+		a := strings.ToLower(normalizedExec[i].Command)
+		b := strings.ToLower(normalizedExec[j].Command)
+		if a != b {
+			return a < b
+		}
+		return strings.Join(normalizedExec[i].ArgsPattern, "\x00") < strings.Join(normalizedExec[j].ArgsPattern, "\x00")
+	})
+	cfg.ExecAllowlist = normalizedExec
+
+	normalizedNetwork := make([]NetworkAllowRule, 0, len(cfg.NetworkAllowlist))
+	seenNetwork := make(map[string]struct{}, len(cfg.NetworkAllowlist))
+	for _, rule := range cfg.NetworkAllowlist {
+		host := strings.ToLower(strings.TrimSpace(rule.Host))
+		scheme := strings.ToLower(strings.TrimSpace(rule.Scheme))
+		if host == "" {
+			return errors.New("network_allowlist.host cannot be empty")
+		}
+		if scheme == "" {
+			return errors.New("network_allowlist.scheme cannot be empty")
+		}
+		if rule.Port < 1 || rule.Port > 65535 {
+			return errors.New("network_allowlist.port must be between 1 and 65535")
+		}
+		key := host + "\x00" + strconv.Itoa(rule.Port) + "\x00" + scheme
+		if _, exists := seenNetwork[key]; exists {
+			continue
+		}
+		seenNetwork[key] = struct{}{}
+		normalizedNetwork = append(normalizedNetwork, NetworkAllowRule{
+			Host:   host,
+			Port:   rule.Port,
+			Scheme: scheme,
+		})
+	}
+	sort.Slice(normalizedNetwork, func(i, j int) bool {
+		a := normalizedNetwork[i]
+		b := normalizedNetwork[j]
+		if a.Host != b.Host {
+			return a.Host < b.Host
+		}
+		if a.Port != b.Port {
+			return a.Port < b.Port
+		}
+		return a.Scheme < b.Scheme
+	})
+	cfg.NetworkAllowlist = normalizedNetwork
+	return nil
+}
+
+func normalizeStringList(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+func splitPathList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, string(os.PathListSeparator))
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		result = append(result, part)
+	}
+	return result
+}
+
+func normalizePathKey(path string) string {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(path)
+	}
+	return path
 }
 
 func normalizeProviderType(value string) string {

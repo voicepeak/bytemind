@@ -296,6 +296,9 @@ func TestExecutorRequiresApprovalForDestructiveToolsByDefault(t *testing.T) {
 	if execErr.Code != ToolErrorPermissionDenied {
 		t.Fatalf("unexpected code: %s", execErr.Code)
 	}
+	if !strings.Contains(execErr.Error(), "approval channel is unavailable") {
+		t.Fatalf("expected explicit approval channel unavailable reason, got %v", execErr)
+	}
 }
 
 func TestExecutorRequiresApprovalForDestructiveToolsWhenContextMissing(t *testing.T) {

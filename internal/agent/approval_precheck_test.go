@@ -427,3 +427,41 @@ func TestPrepareRunApprovalHandlerLearnsRuntimeApprovalsWithinRun(t *testing.T) 
 		t.Fatalf("expected learned destructive approval not to reprompt, got %d requests", len(requests))
 	}
 }
+
+func TestPrepareRunApprovalHandlerReportsUnavailableApprovalChannel(t *testing.T) {
+	var out bytes.Buffer
+	runner := &Runner{
+		config: config.Config{
+			ApprovalPolicy: "on-request",
+			ApprovalMode:   "interactive",
+		},
+		registry: tools.DefaultRegistry(),
+		stdin:    nil,
+		stdout:   io.Discard,
+	}
+
+	handler := runner.prepareRunApprovalHandler(runPromptSetup{
+		RunMode:   planpkg.ModeBuild,
+		UserInput: "create and write files",
+	}, &out)
+	if handler == nil {
+		t.Fatal("expected fallback approval handler when channel is unavailable")
+	}
+
+	approved, err := handler(tools.ApprovalRequest{
+		Command: "write_file",
+		Reason:  "destructive tool may modify workspace files: write_file",
+	})
+	if err == nil {
+		t.Fatal("expected unavailable approval channel error")
+	}
+	if approved {
+		t.Fatal("expected approval to be denied when channel is unavailable")
+	}
+	if !strings.Contains(err.Error(), "approval channel unavailable") {
+		t.Fatalf("expected explicit channel unavailable error, got %v", err)
+	}
+	if !strings.Contains(out.String(), "approval channel unavailable") {
+		t.Fatalf("expected precheck notice to mention unavailable channel, got %q", out.String())
+	}
+}
