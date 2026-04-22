@@ -34,8 +34,10 @@ This document defines the minimum acceptance checks for the current sandbox impl
 | `away` + operation needs approval | Operation is denied immediately, no approval prompt. |
 | Subprocess worker unavailable while sandbox enabled | Fail closed with internal sandbox worker error. |
 | `system_sandbox_mode=required` + OS backend unavailable | Fail closed before worker execution. |
-| `system_sandbox_mode=best_effort` + OS backend unavailable | Fallback to normal worker launch. |
+| `system_sandbox_mode=best_effort` + OS backend unavailable | Fallback to normal worker launch with explicit fallback reason in startup status/log. |
 | Linux + `system_sandbox_mode=required` + shell command writes outside writable roots | Write fails from read-only filesystem enforcement. |
+| macOS + `system_sandbox_mode=best_effort` + `sandbox-exec` available | Uses `sandbox-exec` profile-based launch with writable roots and explicit fallback reason when probe fails. |
+| Windows + `system_sandbox_mode=best_effort` | Uses Job Object process isolation backend (no startup fallback). |
 
 ## Automated Checks
 

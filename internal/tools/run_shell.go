@@ -90,7 +90,7 @@ func (RunShellTool) Run(ctx context.Context, raw json.RawMessage, execCtx *Execu
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd, err := shellCommand(runCtx, args.Command, execCtx)
+	cmd, backendName, sandboxMode, err := shellCommand(runCtx, args.Command, execCtx)
 	if err != nil {
 		return "", err
 	}
@@ -101,7 +101,7 @@ func (RunShellTool) Run(ctx context.Context, raw json.RawMessage, execCtx *Execu
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	err = runCommandWithSystemSandbox(cmd, backendName, sandboxMode)
 	exitCode := 0
 	if err != nil {
 		if runCtx.Err() == context.DeadlineExceeded {
@@ -208,24 +208,37 @@ func assessShellCommand(command string) shellAssessment {
 	return policypkg.AssessShellCommand(command)
 }
 
-func shellCommand(ctx context.Context, command string, execCtx *ExecutionContext) (*exec.Cmd, error) {
+func shellCommand(ctx context.Context, command string, execCtx *ExecutionContext) (*exec.Cmd, string, string, error) {
 	mode := normalizeSystemSandboxMode(execCtx)
 	backend, err := resolveSystemSandboxRuntimeBackend(mode, runtime.GOOS, runShellLookPath)
 	if err != nil {
-		return nil, err
+		return nil, "", mode, err
 	}
 	var cmd *exec.Cmd
 	if backend.Enabled {
 		execCommand := strings.TrimSpace(command)
-		if mode == systemSandboxModeRequired && runtime.GOOS == "linux" {
-			wrapped, err := buildRequiredLinuxShellCommand(execCommand, execCtx)
+		switch strings.TrimSpace(backend.Name) {
+		case "darwin_sandbox_exec":
+			allowNetwork := mode != systemSandboxModeRequired
+			profile, err := buildDarwinSandboxProfile(execCtx, allowNetwork)
 			if err != nil {
-				return nil, err
+				return nil, backend.Name, mode, err
 			}
-			execCommand = wrapped
+			cmd = exec.CommandContext(ctx, backend.Runner, buildDarwinSandboxShellArgs(profile, execCommand)...)
+		case "windows_job_object":
+			executable := resolveWindowsShellExecutable(exec.LookPath, os.Stat, os.Getenv)
+			cmd = exec.CommandContext(ctx, executable, "-NoProfile", "-Command", command)
+		default:
+			if mode == systemSandboxModeRequired && runtime.GOOS == "linux" {
+				wrapped, err := buildRequiredLinuxShellCommand(execCommand, execCtx)
+				if err != nil {
+					return nil, backend.Name, mode, err
+				}
+				execCommand = wrapped
+			}
+			args := append(append([]string(nil), backend.Shell.ArgPrefix...), execCommand)
+			cmd = exec.CommandContext(ctx, backend.Runner, args...)
 		}
-		args := append(append([]string(nil), backend.Shell.ArgPrefix...), execCommand)
-		cmd = exec.CommandContext(ctx, backend.Runner, args...)
 	} else if runtime.GOOS == "windows" {
 		executable := resolveWindowsShellExecutable(exec.LookPath, os.Stat, os.Getenv)
 		cmd = exec.CommandContext(ctx, executable, "-NoProfile", "-Command", command)
@@ -249,7 +262,7 @@ func shellCommand(ctx context.Context, command string, execCtx *ExecutionContext
 			ForceSet:      forced,
 		})
 	}
-	return cmd, nil
+	return cmd, backend.Name, mode, nil
 }
 
 func withRequiredLinuxShellLimits(command string) string {

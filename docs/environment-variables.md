@@ -19,5 +19,8 @@ ByteMind TUI supports the following runtime environment variables:
 - `BYTEMIND_MOUSE_Y_OFFSET` is clamped to `[-10, 10]`.
 - Explicitly setting `BYTEMIND_MOUSE_Y_OFFSET` disables auto-offset detection.
 - `BYTEMIND_SANDBOX_WORKER` is reserved for the worker subprocess bootstrap path.
-- Current backend support is Linux (`unshare`). On unsupported OSes, `best_effort` degrades to normal execution; `required` exits early.
+- Current backend support:
+  - Linux: `unshare`
+  - macOS: `sandbox-exec` (when available in `PATH`)
+  - Windows: Job Object process isolation (file/network isolation still policy-level)
 - See [Sandbox Acceptance Checklist](./sandbox-acceptance.md) for validation matrix and test commands.

@@ -77,7 +77,11 @@ func resolveSystemSandboxRuntimeStatusWith(
 	}
 	if status.Mode == systemSandboxModeBestEffort {
 		status.Fallback = true
-		status.Message = fmt.Sprintf("system sandbox best_effort fallback: no backend available on %s", status.GOOS)
+		reason := strings.TrimSpace(backend.UnavailableReason)
+		if reason == "" {
+			reason = fmt.Sprintf("no backend available on %s", status.GOOS)
+		}
+		status.Message = fmt.Sprintf("system sandbox best_effort fallback: %s", reason)
 		return status, nil
 	}
 	status.Message = "system sandbox backend is inactive"

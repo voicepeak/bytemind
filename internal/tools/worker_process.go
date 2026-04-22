@@ -155,7 +155,7 @@ func (i osExecWorkerInvoker) Invoke(ctx context.Context, req workerRPCRequest) (
 	cmd.Stdout = &stdoutBuffer
 	cmd.Stderr = &stderrBuffer
 
-	if err := cmd.Run(); err != nil {
+	if err := runCommandWithSystemSandbox(cmd, launch.SystemSandboxBackendName, launch.SystemSandboxMode); err != nil {
 		return workerRPCResponse{}, stderrBuffer.String(), err
 	}
 
@@ -167,10 +167,12 @@ func (i osExecWorkerInvoker) Invoke(ctx context.Context, req workerRPCRequest) (
 }
 
 type workerProcessLaunch struct {
-	Path string
-	Args []string
-	Dir  string
-	Env  []string
+	Path                     string
+	Args                     []string
+	Dir                      string
+	Env                      []string
+	SystemSandboxBackendName string
+	SystemSandboxMode        string
 }
 
 func (i osExecWorkerInvoker) resolveLaunch(req workerRPCRequest) (workerProcessLaunch, error) {
@@ -195,26 +197,46 @@ func (i osExecWorkerInvoker) resolveLaunch(req workerRPCRequest) (workerProcessL
 
 	path := executablePath
 	args := []string{executablePath, sandboxWorkerSubcommand, sandboxWorkerStdioFlag}
+	backendName := ""
 	if backend.Enabled {
-		path = backend.Runner
-		backendArgs := append([]string(nil), backend.Worker.ArgPrefix...)
-		if strings.EqualFold(mode, systemSandboxModeRequired) && strings.EqualFold(goos, "linux") {
-			wrapped, wrapErr := buildRequiredLinuxWorkerCommand(executablePath, req.Execution)
-			if wrapErr != nil {
-				return workerProcessLaunch{}, wrapErr
+		backendName = strings.TrimSpace(backend.Name)
+		switch strings.TrimSpace(backend.Name) {
+		case "windows_job_object":
+			// Keep direct executable path. Windows process isolation is applied
+			// by runCommandWithSystemSandbox when launching this process.
+		case "darwin_sandbox_exec":
+			path = backend.Runner
+			profile, profileErr := buildDarwinSandboxProfile(&ExecutionContext{
+				Workspace:     req.Execution.Workspace,
+				WritableRoots: append([]string(nil), req.Execution.WritableRoots...),
+			}, false)
+			if profileErr != nil {
+				return workerProcessLaunch{}, profileErr
 			}
-			backendArgs = append(backendArgs, "sh", "-lc", wrapped)
-		} else {
-			backendArgs = append(backendArgs, executablePath, sandboxWorkerSubcommand, sandboxWorkerStdioFlag)
+			args = append([]string{backend.Runner}, buildDarwinSandboxWorkerArgs(profile, executablePath)...)
+		default:
+			path = backend.Runner
+			backendArgs := append([]string(nil), backend.Worker.ArgPrefix...)
+			if strings.EqualFold(mode, systemSandboxModeRequired) && strings.EqualFold(goos, "linux") {
+				wrapped, wrapErr := buildRequiredLinuxWorkerCommand(executablePath, req.Execution)
+				if wrapErr != nil {
+					return workerProcessLaunch{}, wrapErr
+				}
+				backendArgs = append(backendArgs, "sh", "-lc", wrapped)
+			} else {
+				backendArgs = append(backendArgs, executablePath, sandboxWorkerSubcommand, sandboxWorkerStdioFlag)
+			}
+			args = append([]string{backend.Runner}, backendArgs...)
 		}
-		args = append([]string{backend.Runner}, backendArgs...)
 	}
 
 	return workerProcessLaunch{
-		Path: path,
-		Args: args,
-		Dir:  strings.TrimSpace(req.Execution.Workspace),
-		Env:  buildWorkerProcessEnv(os.Environ(), mode, goos),
+		Path:                     path,
+		Args:                     args,
+		Dir:                      strings.TrimSpace(req.Execution.Workspace),
+		Env:                      buildWorkerProcessEnv(os.Environ(), mode, goos),
+		SystemSandboxBackendName: backendName,
+		SystemSandboxMode:        mode,
 	}, nil
 }
 

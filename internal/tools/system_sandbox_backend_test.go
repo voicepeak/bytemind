@@ -7,7 +7,7 @@ import (
 )
 
 func TestResolveSystemSandboxRuntimeBackendRequiredFailsOnUnsupportedOS(t *testing.T) {
-	_, err := resolveSystemSandboxRuntimeBackend(systemSandboxModeRequired, "windows", func(string) (string, error) {
+	_, err := resolveSystemSandboxRuntimeBackend(systemSandboxModeRequired, "freebsd", func(string) (string, error) {
 		t.Fatal("lookPath should not be called for unsupported OS")
 		return "", nil
 	})
@@ -28,6 +28,73 @@ func TestResolveSystemSandboxRuntimeBackendBestEffortFallsBackWhenLinuxBackendMi
 	}
 	if backend.Enabled {
 		t.Fatalf("expected disabled backend when probe fails in best_effort, got %#v", backend)
+	}
+	if !strings.Contains(strings.ToLower(backend.UnavailableReason), "unavailable") {
+		t.Fatalf("expected unavailable reason to include probe error, got %#v", backend)
+	}
+}
+
+func TestResolveSystemSandboxRuntimeBackendWindowsBackendActive(t *testing.T) {
+	backend, err := resolveSystemSandboxRuntimeBackend(systemSandboxModeBestEffort, "windows", func(string) (string, error) {
+		t.Fatal("lookPath should not be called for windows job-object backend")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("expected windows backend to resolve, got %v", err)
+	}
+	if !backend.Enabled {
+		t.Fatalf("expected backend enabled for windows job-object backend, got %#v", backend)
+	}
+	if backend.Name != "windows_job_object" {
+		t.Fatalf("expected windows_job_object backend name, got %#v", backend)
+	}
+	if strings.TrimSpace(backend.Runner) == "" {
+		t.Fatalf("expected non-empty backend runner marker, got %#v", backend)
+	}
+	if !backend.Shell.Policy.ProcessIsolation || !backend.Worker.Policy.ProcessIsolation {
+		t.Fatalf("expected process isolation policy in windows backend, got %#v", backend)
+	}
+	if backend.Shell.Policy.FileIsolation || backend.Worker.Policy.FileIsolation {
+		t.Fatalf("expected file isolation to remain disabled on windows backend, got %#v", backend)
+	}
+}
+
+func TestResolveSystemSandboxRuntimeBackendBestEffortFallbackIncludesPendingDarwinReason(t *testing.T) {
+	backend, err := resolveSystemSandboxRuntimeBackend(systemSandboxModeRequired, "darwin", func(name string) (string, error) {
+		if name != "sandbox-exec" {
+			t.Fatalf("unexpected binary lookup: %q", name)
+		}
+		return "/usr/bin/sandbox-exec", nil
+	})
+	if err != nil {
+		t.Fatalf("expected darwin required backend to pass, got %v", err)
+	}
+	if !backend.Enabled {
+		t.Fatalf("expected backend enabled for darwin sandbox-exec, got %#v", backend)
+	}
+	if backend.Name != "darwin_sandbox_exec" {
+		t.Fatalf("expected darwin_sandbox_exec backend name, got %#v", backend)
+	}
+	if backend.Runner != "/usr/bin/sandbox-exec" {
+		t.Fatalf("unexpected runner: %#v", backend)
+	}
+}
+
+func TestResolveSystemSandboxRuntimeBackendBestEffortFallbackIncludesDarwinProbeReason(t *testing.T) {
+	backend, err := resolveSystemSandboxRuntimeBackend(systemSandboxModeBestEffort, "darwin", func(string) (string, error) {
+		return "", errors.New("missing sandbox-exec")
+	})
+	if err != nil {
+		t.Fatalf("expected darwin best_effort fallback, got %v", err)
+	}
+	if backend.Enabled {
+		t.Fatalf("expected backend disabled for missing darwin backend, got %#v", backend)
+	}
+	if backend.Name != "darwin_sandbox_exec" {
+		t.Fatalf("expected darwin_sandbox_exec backend name, got %#v", backend)
+	}
+	if !strings.Contains(strings.ToLower(backend.UnavailableReason), "sandbox-exec") {
+		t.Fatalf("expected sandbox-exec probe reason, got %#v", backend)
 	}
 }
 

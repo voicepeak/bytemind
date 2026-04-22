@@ -25,7 +25,7 @@ func TestValidateSystemSandboxRuntimeWithSkipsWhenModeOff(t *testing.T) {
 }
 
 func TestValidateSystemSandboxRuntimeWithFailsClosedForRequiredModeWithoutBackend(t *testing.T) {
-	err := validateSystemSandboxRuntimeWith(true, "required", "windows", func(string) (string, error) {
+	err := validateSystemSandboxRuntimeWith(true, "required", "freebsd", func(string) (string, error) {
 		t.Fatal("lookPath should not be called on unsupported OS")
 		return "", nil
 	})
@@ -59,8 +59,8 @@ func TestValidateSystemSandboxRuntimeWithRequiredPassesWhenBackendAvailable(t *t
 }
 
 func TestResolveSystemSandboxRuntimeStatusWithBestEffortFallback(t *testing.T) {
-	status, err := resolveSystemSandboxRuntimeStatusWith(true, "best_effort", "windows", func(string) (string, error) {
-		t.Fatal("lookPath should not be called for unsupported OS")
+	status, err := resolveSystemSandboxRuntimeStatusWith(true, "best_effort", "freebsd", func(string) (string, error) {
+		t.Fatal("lookPath should not be called for unsupported OS backend")
 		return "", nil
 	})
 	if err != nil {
@@ -77,6 +77,25 @@ func TestResolveSystemSandboxRuntimeStatusWithBestEffortFallback(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(status.Message), "fallback") {
 		t.Fatalf("expected fallback message, got %#v", status)
+	}
+}
+
+func TestResolveSystemSandboxRuntimeStatusWithWindowsBackendActive(t *testing.T) {
+	status, err := resolveSystemSandboxRuntimeStatusWith(true, "best_effort", "windows", func(string) (string, error) {
+		t.Fatal("lookPath should not be called for windows job-object backend")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("resolve status: %v", err)
+	}
+	if !status.BackendEnabled {
+		t.Fatalf("expected windows backend enabled, got %#v", status)
+	}
+	if status.BackendName != "windows_job_object" {
+		t.Fatalf("expected windows_job_object backend, got %#v", status)
+	}
+	if status.Fallback {
+		t.Fatalf("expected fallback=false for windows backend, got %#v", status)
 	}
 }
 

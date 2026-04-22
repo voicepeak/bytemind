@@ -277,7 +277,7 @@ func TestNormalizeSystemSandboxModeDefaultsOff(t *testing.T) {
 }
 
 func TestResolveSystemSandboxBackendRequiredFailsOnUnsupportedOS(t *testing.T) {
-	_, err := resolveSystemSandboxBackend(systemSandboxModeRequired, "windows", func(string) (string, error) {
+	_, err := resolveSystemSandboxBackend(systemSandboxModeRequired, "freebsd", func(string) (string, error) {
 		return "", errors.New("not found")
 	})
 	if err == nil {
