@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -51,6 +52,7 @@ const (
 	inputEditorZoneID          = "bytemind:input:editor"
 	thinkingSpinnerFPS         = 80 * time.Millisecond
 	pasteAggregateDebounce     = 120 * time.Millisecond
+	pasteBurstSettleDelay      = 120 * time.Millisecond
 )
 
 type footerShortcutHint struct {
@@ -223,6 +225,10 @@ type pasteFinalizeMsg struct {
 	ID int
 }
 
+type pasteBurstSettleMsg struct {
+	Generation int
+}
+
 type pasteSessionState struct {
 	active       bool
 	startedAt    time.Time
@@ -232,6 +238,15 @@ type pasteSessionState struct {
 	bufferedText string
 	sawMultiline bool
 	finalizeID   int
+}
+
+type pasteBurstCandidateState struct {
+	active      bool
+	baseInput   string
+	startedAt   time.Time
+	lastEventAt time.Time
+	charCount   int
+	eventCount  int
 }
 
 var commandItems = []commandItem{
@@ -299,6 +314,8 @@ type model struct {
 	pasteSubmitGuardUntil time.Time
 	lastInputAt           time.Time
 	inputBurstSize        int
+	inputBurstBaseValue   string
+	pasteBurstCandidate   pasteBurstCandidateState
 	chatAutoFollow        bool
 	draggingScrollbar     bool
 	scrollbarDragOffset   int
@@ -343,6 +360,11 @@ type model struct {
 	pastedStateLoaded     bool
 	lastCompressedPasteAt time.Time
 	pasteSession          pasteSessionState
+	pasteConfirmPending   bool
+	pasteBurstActive      bool
+	pasteBurstLastEventAt time.Time
+	pasteBurstSource      string
+	pasteBurstGeneration  int
 	clipboard             clipboardImageReader
 	clipboardText         clipboardTextWriter
 	runCancel             context.CancelFunc
@@ -487,17 +509,12 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	pasteDebugf("update %s %s", summarizePasteMsg(msg), m.pasteDebugState())
 	if payload, ok := extractBracketedPastePayload(msg); ok {
 		return m.handlePastePayload(payload)
 	}
 
 	switch msg := msg.(type) {
-	case pasteFinalizeMsg:
-		if !m.hasActivePasteSession() {
-			return m, nil
-		}
-		m.finalizePasteSession(msg.ID)
-		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -634,6 +651,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectionToast = ""
 		}
 		return m, nil
+	case pasteFinalizeMsg:
+		if !m.hasActivePasteSession() {
+			return m, nil
+		}
+		m.finalizePasteSession(msg.ID)
+		if m.hasActivePasteBurst() {
+			return m, schedulePasteBurstSettle(m.pasteBurstGeneration)
+		}
+		return m, nil
+	case pasteBurstSettleMsg:
+		if !m.hasActivePasteBurst() || msg.Generation != m.pasteBurstGeneration {
+			return m, nil
+		}
+		if m.hasActivePasteSession() {
+			return m, schedulePasteBurstSettle(msg.Generation)
+		}
+		if !m.pasteBurstLastEventAt.IsZero() && time.Since(m.pasteBurstLastEventAt) < pasteBurstSettleDelay {
+			return m, schedulePasteBurstSettle(msg.Generation)
+		}
+		m.clearPasteBurstCapture()
+		return m, nil
 	case mouseSelectionScrollTickMsg:
 		return m.handleMouseSelectionScrollTick(msg)
 	case tokenMonitorTickMsg:
@@ -679,6 +717,76 @@ func normalizeKeyName(key string) string {
 	return replacer.Replace(key)
 }
 
+func pasteDebugEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BYTEMIND_DEBUG_PASTE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func pasteDebugLogPath() string {
+	return filepath.Join(os.TempDir(), "bytemind-paste-debug.log")
+}
+
+func pasteDebugf(format string, args ...any) {
+	if !pasteDebugEnabled() {
+		return
+	}
+	f, err := os.OpenFile(pasteDebugLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = fmt.Fprintf(f, "%s "+format+"\n", append([]any{time.Now().Format(time.RFC3339Nano)}, args...)...)
+}
+
+func summarizePasteMsg(msg tea.Msg) string {
+	if msg == nil {
+		return "<nil>"
+	}
+	if key, ok := msg.(tea.KeyMsg); ok {
+		joined := string(key.Runes)
+		return fmt.Sprintf(
+			"KeyMsg{type=%v str=%q paste=%v alt=%v runes=%d hasTab=%v hasNL=%v}",
+			key.Type,
+			key.String(),
+			key.Paste,
+			key.Alt,
+			len(key.Runes),
+			strings.Contains(joined, "\t"),
+			strings.ContainsAny(joined, "\r\n"),
+		)
+	}
+	t := reflect.TypeOf(msg)
+	if t == nil {
+		return "<unknown>"
+	}
+	return t.String()
+}
+
+func (m model) pasteDebugState() string {
+	lastInputAgo := "n/a"
+	if !m.lastInputAt.IsZero() {
+		lastInputAgo = time.Since(m.lastInputAt).Round(time.Millisecond).String()
+	}
+	return fmt.Sprintf(
+		"state{screen=%s mode=%s inputLen=%d burst=%d candidate=%v/%d/%d session=%v capture=%v confirm=%v lastInputAgo=%s}",
+		m.screen,
+		m.mode,
+		len([]rune(m.input.Value())),
+		m.inputBurstSize,
+		m.pasteBurstCandidate.active,
+		m.pasteBurstCandidate.eventCount,
+		m.pasteBurstCandidate.charCount,
+		m.hasActivePasteSession(),
+		m.hasActivePasteBurst(),
+		m.pasteConfirmPending,
+		lastInputAgo,
+	)
+}
+
 func isInputNewlineKey(msg tea.KeyMsg) bool {
 	if msg.Type == tea.KeyCtrlJ || normalizeKeyName(msg.String()) == "ctrl+j" {
 		return true
@@ -705,8 +813,22 @@ func (m model) pasteFragmentFromKey(msg tea.KeyMsg) (string, string, bool) {
 		switch {
 		case msg.Type == tea.KeyEnter:
 			return "\n", "paste-key", true
+		case msg.Type == tea.KeyTab:
+			return "\t", "paste-key", true
 		case len(msg.Runes) > 0:
 			return string(msg.Runes), "paste-key", true
+		default:
+			return "", "", false
+		}
+	}
+	if m.hasActivePasteBurst() {
+		switch {
+		case msg.Type == tea.KeyEnter:
+			return "\n", "paste-burst", true
+		case msg.Type == tea.KeyTab:
+			return "\t", "paste-burst", true
+		case msg.Type == tea.KeyRunes && len(msg.Runes) > 0:
+			return string(msg.Runes), "paste-burst", true
 		default:
 			return "", "", false
 		}
@@ -715,6 +837,8 @@ func (m model) pasteFragmentFromKey(msg tea.KeyMsg) (string, string, bool) {
 		switch {
 		case msg.Type == tea.KeyEnter && m.shouldAppendEnterToActivePasteSession():
 			return "\n", "rapid-enter", true
+		case msg.Type == tea.KeyTab:
+			return "\t", "rapid-enter", true
 		case msg.Type == tea.KeyRunes && len(msg.Runes) > 0:
 			return string(msg.Runes), "rune", true
 		default:
@@ -724,29 +848,24 @@ func (m model) pasteFragmentFromKey(msg tea.KeyMsg) (string, string, bool) {
 	if msg.Type != tea.KeyRunes || len(msg.Runes) == 0 {
 		return "", "", false
 	}
-	fragment := string(msg.Runes)
-	if shouldStartPasteAggregationFromRunes(fragment) {
-		return fragment, "rune", true
-	}
 	return "", "", false
 }
 
-func shouldStartPasteAggregationFromRunes(fragment string) bool {
-	normalized := normalizeNewlines(fragment)
-	trimmed := strings.TrimSpace(normalized)
-	if trimmed == "" {
+func (m model) hasImplicitPasteCandidateEvidence() bool {
+	if !m.pasteBurstCandidate.active {
 		return false
 	}
-	if strings.Contains(normalized, "\n") {
-		return true
-	}
-	if len([]rune(fragment)) <= 1 {
+	if m.pasteBurstCandidate.lastEventAt.IsZero() {
 		return false
 	}
-	if looksLikeMarkdownPasteFragment(trimmed) {
+	if time.Since(m.pasteBurstCandidate.lastEventAt) > 250*time.Millisecond {
+		return false
+	}
+	if m.pasteBurstCandidate.eventCount >= 2 {
 		return true
 	}
-	return len([]rune(trimmed)) >= pasteBurstImmediateMinChars
+	delta := strings.TrimSpace(m.candidateBurstDelta(m.input.Value()))
+	return strings.Contains(delta, "\n") && m.pasteBurstCandidate.charCount >= pasteBurstCharThreshold
 }
 
 func inputMutationSource(msg tea.KeyMsg) string {
@@ -868,6 +987,7 @@ func (m model) mouseOverLandingInput(y int) bool {
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	pasteDebugf("handleKey %s %s", summarizePasteMsg(msg), m.pasteDebugState())
 	switch msg.String() {
 	case "ctrl+c":
 		if m.hasCopyableSelection() {
@@ -884,6 +1004,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.promptSearchOpen {
 		return m.handlePromptSearchKey(msg)
+	}
+
+	if m.shouldPromoteImplicitPasteCandidate(msg) {
+		return m, m.captureImplicitPasteCandidate(msg)
+	}
+
+	if m.shouldCaptureImplicitPasteSpecialKey(msg) {
+		return m, m.captureImplicitPasteSpecialKey(msg)
+	}
+
+	if fragment, source, ok := m.pasteFragmentFromKey(msg); ok {
+		return m, m.ingestPasteFragment(fragment, source)
 	}
 
 	switch msg.String() {
@@ -1014,10 +1146,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if fragment, source, ok := m.pasteFragmentFromKey(msg); ok {
-		return m, m.ingestPasteFragment(fragment, source)
-	}
-
 	ctrlVPasteDetected := isCtrlVPasteKey(msg)
 	// Prefer Ctrl+V image paste first. If clipboard has no image, fall through
 	// so regular terminal paste behavior can continue.
@@ -1089,6 +1217,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					combined := strings.TrimSpace(markerChain) + marker
 					m.setInputValue(combined)
+					m.markPasteConfirmPending(time.Now())
 					m.syncInputOverlays()
 					m.statusNote = fmt.Sprintf("Detected another pasted block and compressed it as %s (%d lines). Press Enter again to send.", marker, content.Lines)
 					return m, nil
@@ -1112,6 +1241,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.setInputValue(marker)
+			m.markPasteConfirmPending(time.Now())
 			m.syncInputOverlays()
 			m.statusNote = fmt.Sprintf("Long pasted text (%d lines) compressed as %s. Press Enter again to send. Use [Paste #%s] or [Paste #%s line10~line20] later.", content.Lines, marker, content.ID, content.ID)
 			return m, nil
@@ -1169,6 +1299,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if strings.HasPrefix(value, "/") {
 			m.input.Reset()
+			m.clearPasteConfirmPending()
+			m.clearPasteBurstCapture()
 			next, cmd, err := m.executeCommand(value)
 			if err != nil {
 				m.statusNote = err.Error()
@@ -1226,6 +1358,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) shouldSuppressEnterAfterPaste() bool {
+	if m.pasteConfirmPending {
+		return true
+	}
 	if !m.pasteSubmitGuardUntil.IsZero() && time.Now().Before(m.pasteSubmitGuardUntil) {
 		return true
 	}
@@ -1238,23 +1373,26 @@ func (m model) shouldSuppressEnterAfterPaste() bool {
 	if time.Since(m.lastPasteAt) > pasteSubmitGuard {
 		return false
 	}
-	if strings.Contains(m.input.Value(), "\n") {
-		return true
-	}
 	if strings.Contains(m.input.Value(), "[Paste #") || strings.Contains(m.input.Value(), "[Pasted #") {
+		return false
+	}
+	if strings.Contains(m.input.Value(), "\n") {
 		return true
 	}
 	return time.Since(m.lastInputAt) <= 120*time.Millisecond
 }
 
 func (m model) hasImplicitPasteBurst() bool {
+	if m.pasteConfirmPending {
+		return true
+	}
 	if m.lastInputAt.IsZero() {
 		return false
 	}
 	if time.Since(m.lastInputAt) > 250*time.Millisecond {
 		return false
 	}
-	if m.inputBurstSize < pasteBurstImmediateMinChars {
+	if !m.hasImplicitPasteCandidateEvidence() {
 		return false
 	}
 	trimmed := strings.TrimSpace(m.input.Value())
@@ -1285,6 +1423,12 @@ func (m model) shouldTreatRapidEnterAsPasteContinuation() bool {
 	}
 	trimmed := strings.TrimSpace(m.input.Value())
 	if trimmed == "" {
+		return false
+	}
+	if strings.Contains(trimmed, "[Paste #") || strings.Contains(trimmed, "[Pasted #") {
+		return false
+	}
+	if !m.hasImplicitPasteCandidateEvidence() {
 		return false
 	}
 	if m.inputBurstSize >= 2 && looksLikeMarkdownPasteFragment(trimmed) {
@@ -1330,6 +1474,7 @@ func (m model) handleSuppressedPasteEnter(rawValue string) (tea.Model, bool) {
 	}
 	rawValue = strings.TrimSpace(rawValue)
 	if rawValue == "" {
+		m.clearPasteConfirmPending()
 		return m, true
 	}
 	if markerChain, ok := extractLeadingCompressedMarker(rawValue); ok {
@@ -1343,6 +1488,7 @@ func (m model) handleSuppressedPasteEnter(rawValue string) (tea.Model, bool) {
 				}
 				combined := strings.TrimSpace(markerChain) + marker
 				m.setInputValue(combined)
+				m.markPasteConfirmPending(time.Now())
 				m.syncInputOverlays()
 				m.statusNote = fmt.Sprintf("Detected another pasted block and compressed it as %s (%d lines). Press Enter again to send.", marker, content.Lines)
 				return m, true
@@ -1354,6 +1500,10 @@ func (m model) handleSuppressedPasteEnter(rawValue string) (tea.Model, bool) {
 				return m, true
 			}
 		}
+		if m.pasteConfirmPending {
+			m.clearPasteConfirmPending()
+			m.statusNote = "Paste compressed. Press Enter again to send."
+		}
 		return m, true
 	}
 	if m.shouldCompressPastedText(rawValue, "paste-enter") || (m.hasImplicitPasteBurst() && m.isLongPastedText(rawValue)) {
@@ -1363,11 +1513,17 @@ func (m model) handleSuppressedPasteEnter(rawValue string) (tea.Model, bool) {
 			return m, true
 		}
 		m.setInputValue(marker)
+		m.markPasteConfirmPending(time.Now())
 		m.syncInputOverlays()
 		m.statusNote = fmt.Sprintf("Long pasted text (%d lines) compressed as %s. Press Enter again to send. Use [Paste #%s] or [Paste #%s line10~line20] later.", content.Lines, marker, content.ID, content.ID)
 		return m, true
 	}
-	m.pasteSubmitGuardUntil = time.Time{}
+	if m.pasteConfirmPending {
+		m.clearPasteConfirmPending()
+		m.statusNote = "Paste captured. Press Enter again to send."
+		return m, true
+	}
+	m.clearPasteConfirmPending()
 	return m, true
 }
 
@@ -1426,7 +1582,7 @@ func rebuildSessionTimeline(sess *session.Session) ([]chatEntry, []toolRun) {
 				summary, lines, status := summarizeTool(name, part.ToolResult.Content)
 				items = append(items, chatEntry{
 					Kind:   "tool",
-					Title:  "Tool Call | " + name,
+					Title:  toolEntryTitle(name),
 					Body:   joinSummary(summary, lines),
 					Status: status,
 				})
@@ -1451,7 +1607,7 @@ func rebuildSessionTimeline(sess *session.Session) ([]chatEntry, []toolRun) {
 			summary, lines, status := summarizeTool(name, message.Content)
 			items = append(items, chatEntry{
 				Kind:   "tool",
-				Title:  "Tool Call | " + name,
+				Title:  toolEntryTitle(name),
 				Body:   joinSummary(summary, lines),
 				Status: status,
 			})
@@ -1468,13 +1624,107 @@ func chatBubbleWidth(item chatEntry, width int) int {
 	return width
 }
 
+func toolEntryTitle(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "tool"
+	}
+	return toolDisplayLabel(name) + " | " + name
+}
+
+func toolDisplayParts(title string) (string, string) {
+	title = strings.TrimSpace(title)
+	switch {
+	case strings.HasPrefix(strings.ToLower(title), "tool call | "):
+		name := strings.TrimSpace(title[len("Tool Call | "):])
+		if name == "" {
+			name = "tool"
+		}
+		return toolDisplayLabel(name), name
+	case strings.HasPrefix(strings.ToLower(title), "tool result | "):
+		name := strings.TrimSpace(title[len("Tool Result | "):])
+		if name == "" {
+			name = "tool"
+		}
+		return toolDisplayLabel(name), name
+	}
+	if idx := strings.Index(title, "|"); idx >= 0 {
+		label := strings.TrimSpace(title[:idx])
+		name := strings.TrimSpace(title[idx+1:])
+		if label != "" && name != "" {
+			return label, name
+		}
+	}
+	if title == "" {
+		return "TOOL", "tool"
+	}
+	return toolDisplayLabel(title), title
+}
+
+func toolDisplayLabel(name string) string {
+	switch strings.TrimSpace(strings.ToLower(name)) {
+	case "list_files":
+		return "LIST"
+	case "read_file":
+		return "READ"
+	case "search_text", "web_search":
+		return "SEARCH"
+	case "web_fetch":
+		return "FETCH"
+	case "run_shell":
+		return "SHELL"
+	case "write_file":
+		return "WRITE"
+	case "replace_in_file":
+		return "EDIT"
+	case "apply_patch":
+		return "PATCH"
+	case "update_plan":
+		return "PLAN"
+	default:
+		return "TOOL"
+	}
+}
+
+func compactDisplayPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	volume := filepath.VolumeName(path)
+	trimmed := strings.TrimPrefix(path, volume)
+	parts := strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == '/' || r == '\\'
+	})
+	if len(parts) <= 3 {
+		return path
+	}
+	sep := "/"
+	if strings.Contains(path, "\\") && !strings.Contains(path, "/") {
+		sep = "\\"
+	}
+	prefix := ""
+	if volume != "" {
+		prefix = volume + sep
+	}
+	return prefix + parts[0] + sep + "..." + sep + strings.Join(parts[len(parts)-2:], sep)
+}
+
+func compactToolText(text string, limit int) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
+	if text == "" {
+		return ""
+	}
+	return compact(text, limit)
+}
+
 func summarizeTool(name, payload string) (string, []string, string) {
 	var envelope struct {
 		OK    *bool  `json:"ok"`
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(payload), &envelope); err == nil && envelope.Error != "" {
-		return envelope.Error, nil, "error"
+		return compactToolText(envelope.Error, 88), nil, "error"
 	}
 
 	switch name {
@@ -1487,11 +1737,16 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			} `json:"items"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			lines := make([]string, 0, min(3, len(result.Items)))
-			for i := 0; i < min(3, len(result.Items)); i++ {
-				lines = append(lines, result.Items[i].Type+" "+result.Items[i].Path)
+			dirs := 0
+			files := 0
+			for _, item := range result.Items {
+				if item.Type == "dir" {
+					dirs++
+				} else {
+					files++
+				}
 			}
-			return fmt.Sprintf("Listed %d items under %s", len(result.Items), emptyDot(result.Root)), lines, "done"
+			return fmt.Sprintf("Read %d files, listed %d directories", files, dirs), []string{}, "done"
 		}
 	case "read_file":
 		var result struct {
@@ -1500,7 +1755,9 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			EndLine   int    `json:"end_line"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			return fmt.Sprintf("Read %s lines %d-%d", result.Path, result.StartLine, result.EndLine), nil, "done"
+			summary := "Read " + filepath.Base(result.Path)
+			// 只显示文件名，不显示行范围和路径
+			return summary, []string{}, "done"
 		}
 	case "search_text":
 		var result struct {
@@ -1512,12 +1769,7 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			} `json:"matches"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			lines := make([]string, 0, min(3, len(result.Matches)))
-			for i := 0; i < min(3, len(result.Matches)); i++ {
-				match := result.Matches[i]
-				lines = append(lines, fmt.Sprintf("%s:%d %s", match.Path, match.Line, compact(match.Text, 72)))
-			}
-			return fmt.Sprintf("Found %d match(es) for %q", len(result.Matches), result.Query), lines, "done"
+			return fmt.Sprintf("%d matches for %q", len(result.Matches), result.Query), []string{}, "done"
 		}
 	case "web_search":
 		var result struct {
@@ -1528,16 +1780,16 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			} `json:"results"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			lines := make([]string, 0, min(3, len(result.Results)))
+			lines := []string{fmt.Sprintf("results: %d", len(result.Results))}
 			for i := 0; i < min(3, len(result.Results)); i++ {
 				item := result.Results[i]
-				title := compact(item.Title, 56)
+				title := compact(item.Title, 52)
 				if strings.TrimSpace(title) == "" {
-					title = item.URL
+					title = compact(item.URL, 52)
 				}
-				lines = append(lines, title+" - "+item.URL)
+				lines = append(lines, title+" - "+compact(item.URL, 52))
 			}
-			return fmt.Sprintf("Searched web for %q (%d result(s))", result.Query, len(result.Results)), lines, "done"
+			return fmt.Sprintf("Web search for %q", result.Query), lines, "done"
 		}
 	case "web_fetch":
 		var result struct {
@@ -1548,17 +1800,17 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			Truncated  bool   `json:"truncated"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			lines := make([]string, 0, 2)
+			lines := []string{fmt.Sprintf("status: HTTP %d", result.StatusCode)}
 			if strings.TrimSpace(result.Title) != "" {
-				lines = append(lines, "title: "+compact(result.Title, 72))
+				lines = append(lines, "title: "+compact(result.Title, 64))
 			}
 			if strings.TrimSpace(result.Content) != "" {
-				lines = append(lines, "preview: "+compact(result.Content, 72))
+				lines = append(lines, "preview: "+compactToolText(result.Content, 64))
 			}
 			if result.Truncated {
-				lines = append(lines, "content truncated")
+				lines = append(lines, "content: truncated")
 			}
-			return fmt.Sprintf("Fetched %s (HTTP %d)", result.URL, result.StatusCode), lines, "done"
+			return "Fetched " + compact(result.URL, 56), lines, "done"
 		}
 	case "write_file":
 		var result struct {
@@ -1566,7 +1818,9 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			BytesWritten int    `json:"bytes_written"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			return fmt.Sprintf("Wrote %s (%d bytes)", result.Path, result.BytesWritten), nil, "done"
+			return "创建 " + filepath.Base(result.Path), []string{
+				fmt.Sprintf("写入 %d 字节", result.BytesWritten),
+			}, "done"
 		}
 	case "replace_in_file":
 		var result struct {
@@ -1575,7 +1829,9 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			OldCount int    `json:"old_count"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			return fmt.Sprintf("Updated %s (%d/%d)", result.Path, result.Replaced, result.OldCount), nil, "done"
+			return "改动 " + filepath.Base(result.Path), []string{
+				fmt.Sprintf("改动 %d 行", result.Replaced),
+			}, "done"
 		}
 	case "apply_patch":
 		var result struct {
@@ -1585,11 +1841,15 @@ func summarizeTool(name, payload string) (string, []string, string) {
 			} `json:"operations"`
 		}
 		if json.Unmarshal([]byte(payload), &result) == nil {
-			lines := make([]string, 0, min(4, len(result.Operations)))
-			for i := 0; i < min(4, len(result.Operations)); i++ {
-				lines = append(lines, result.Operations[i].Type+" "+result.Operations[i].Path)
+			// 只显示前10个操作，后面用省略号表示
+			operationLines := make([]string, 0, min(10, len(result.Operations)))
+			for i := 0; i < min(10, len(result.Operations)); i++ {
+				operationLines = append(operationLines, result.Operations[i].Type+" "+compactDisplayPath(result.Operations[i].Path))
 			}
-			return fmt.Sprintf("Patched %d file operation(s)", len(result.Operations)), lines, "done"
+			if len(result.Operations) > 10 {
+				operationLines = append(operationLines, "...")
+			}
+			return fmt.Sprintf("改动 %d 个文件", len(result.Operations)), operationLines, "done"
 		}
 	case "update_plan":
 		var result struct {
@@ -1613,10 +1873,10 @@ func summarizeTool(name, payload string) (string, []string, string) {
 		if json.Unmarshal([]byte(payload), &result) == nil {
 			lines := make([]string, 0, 2)
 			if text := strings.TrimSpace(result.Stdout); text != "" {
-				lines = append(lines, "stdout: "+compact(strings.Split(text, "\n")[0], 72))
+				lines = append(lines, "stdout: "+compact(strings.Split(text, "\n")[0], 64))
 			}
 			if text := strings.TrimSpace(result.Stderr); text != "" {
-				lines = append(lines, "stderr: "+compact(strings.Split(text, "\n")[0], 72))
+				lines = append(lines, "stderr: "+compact(strings.Split(text, "\n")[0], 64))
 			}
 			status := "done"
 			if !result.OK {
@@ -1634,6 +1894,17 @@ func joinSummary(summary string, lines []string) string {
 		return summary
 	}
 	return summary + "\n" + strings.Join(lines, "\n")
+}
+
+func truncateContent(content string, maxLines int) []string {
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	if len(lines) <= maxLines {
+		return lines
+	}
+	truncated := make([]string, maxLines+1)
+	copy(truncated, lines[:maxLines])
+	truncated[maxLines] = "..."
+	return truncated
 }
 
 func summarizeArgs(raw string) string {

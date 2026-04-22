@@ -17,8 +17,13 @@ func (m *model) noteInputMutation(before, after, source string) {
 		m.inputBurstSize += max(1, delta)
 	} else {
 		m.inputBurstSize = max(1, delta)
+		m.inputBurstBaseValue = before
 	}
 	m.lastInputAt = now
+	if strings.TrimSpace(after) == "" {
+		m.inputBurstBaseValue = ""
+	}
+	m.updatePasteBurstCandidate(before, after, source, previousInputAt, now)
 
 	if shouldRecordPasteSignal(before, after, source) ||
 		shouldRecordImplicitPasteBurst(after, source, previousInputAt, now, m.inputBurstSize) ||

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestApplyLongPastedTextPipelineCompressesCodePaste(t *testing.T) {
@@ -158,6 +160,35 @@ func TestApplyLongPastedTextPipelineDoesNotCompressManualLongTyping(t *testing.T
 	}
 	if m.shouldCompressPastedText(m.input.Value(), "enter") {
 		t.Fatalf("expected manually typed long text not to be treated as pasted on submit")
+	}
+}
+
+func TestHandleKeyTreatsNonPasteLongRuneChunkAsOrdinaryInput(t *testing.T) {
+	m := newImagePipelineModel(t)
+	longPaste := strings.Join([]string{
+		"func normalize(items []string) []string {",
+		"    out := make([]string, 0, len(items))",
+		"    for _, item := range items {",
+		"        value := strings.TrimSpace(item)",
+		"        if value == \"\" {",
+		"            continue",
+		"        }",
+		"        out = append(out, strings.ToLower(value))",
+		"    }",
+		"    return out",
+		"}",
+	}, "\n")
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(longPaste)})
+	updated := got.(model)
+	if updated.input.Value() != longPaste {
+		t.Fatalf("expected long rune chunk to stay visible as ordinary input, got %q", updated.input.Value())
+	}
+	if updated.hasActivePasteSession() || updated.hasActivePasteBurst() {
+		t.Fatalf("expected long rune chunk not to start paste aggregation")
+	}
+	if len(updated.pastedContents) != 0 {
+		t.Fatalf("expected long rune chunk not to create pasted content state")
 	}
 }
 

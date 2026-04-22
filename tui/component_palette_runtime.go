@@ -282,4 +282,6 @@ func (m model) visiblePromptSearchEntriesPage() []history.PromptEntry {
 func (m *model) setInputValue(value string) {
 	m.input.SetValue(value)
 	m.input.CursorEnd()
+	m.clearPasteBurstCandidate()
+	m.syncPasteConfirmPending(value)
 }

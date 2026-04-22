@@ -54,6 +54,8 @@ func (m model) submitPrompt(value string) (tea.Model, tea.Cmd) {
 	}
 
 	m.input.Reset()
+	m.clearPasteConfirmPending()
+	m.clearPasteBurstCapture()
 	m.screen = screenChat
 	if m.promptHistoryLoaded {
 		entry := history.PromptEntry{
@@ -88,6 +90,8 @@ func (m model) submitBTW(value string) (tea.Model, tea.Cmd) {
 	}
 
 	m.input.Reset()
+	m.clearPasteConfirmPending()
+	m.clearPasteBurstCapture()
 	m.screen = screenChat
 	m.appendChat(chatEntry{
 		Kind:   "user",
@@ -159,7 +163,7 @@ func (m *model) handleAgentEvent(event Event) {
 		m.populateLatestThinkingToolStep(event.ToolName, "", "running")
 		m.appendChat(chatEntry{
 			Kind:   "tool",
-			Title:  "Tool Call | " + event.ToolName,
+			Title:  toolEntryTitle(event.ToolName),
 			Body:   "",
 			Status: "running",
 		})

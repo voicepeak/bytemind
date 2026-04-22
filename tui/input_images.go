@@ -795,7 +795,17 @@ func (m *model) findAssetByImageID(imageID int) (llm.AssetID, session.ImageAsset
 func classifyInputMutation(before, after, source string) (inputMutationClass, int, string, int) {
 	prefix, inserted, suffix := insertionDiff(before, after)
 	cleanInserted := strings.ReplaceAll(inserted, ctrlVMarkerRune, "")
-	pasteSignal := isCtrlVKey(source) || strings.Contains(strings.ToLower(source), "paste") || strings.Contains(cleanInserted, "\n") || len(cleanInserted) > 1
+	sourceTrimmed := strings.TrimSpace(source)
+	pasteSignal := isCtrlVKey(source) || strings.Contains(strings.ToLower(source), "paste") || strings.Contains(cleanInserted, "\n")
+	if !pasteSignal && strings.TrimSpace(cleanInserted) != "" {
+		// Bubble Tea reports ordinary key-runes by echoing the inserted text in
+		// msg.String(). Treat those as normal typing, even if the terminal batches
+		// multiple runes in one event (for example IME commits).
+		sameAsTypedChunk := sourceTrimmed != "" && sourceTrimmed == cleanInserted
+		if !sameAsTypedChunk && shouldRecordPasteSignal(before, after, source) {
+			pasteSignal = true
+		}
+	}
 	if shouldTriggerClipboardImagePaste(before, after, source) {
 		return inputMutationPasteEmpty, prefix, inserted, suffix
 	}

@@ -3568,15 +3568,15 @@ func TestRenderConversationIncludesToolEntries(t *testing.T) {
 		}(),
 		chatItems: []chatEntry{
 			{Kind: "user", Title: "You", Body: "check repo", Status: "final"},
-			{Kind: "tool", Title: "Tool Call | read_file", Body: "Read tui/model.go lines 1-20", Status: "done"},
+			{Kind: "tool", Title: toolEntryTitle("read_file"), Body: "Read model.go\nrange: 1-20\npath: tui/model.go", Status: "done"},
 		},
 	}
 
 	got := m.renderConversation()
-	if !strings.Contains(got, "Tool Call | read_file") {
+	if !strings.Contains(got, "READ") || !strings.Contains(got, "read_file") {
 		t.Fatalf("expected conversation to show tool entry, got %q", got)
 	}
-	if !strings.Contains(got, "Read tui/model.go lines 1-20") {
+	if !strings.Contains(got, "Read model.go") || !strings.Contains(got, "range: 1-20") {
 		t.Fatalf("expected conversation to show tool summary, got %q", got)
 	}
 }
@@ -3658,7 +3658,7 @@ func TestRebuildSessionTimelineParsesUserToolResultParts(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("expected user + tool items, got %#v", items)
 	}
-	if items[1].Kind != "tool" || !strings.Contains(items[1].Title, "Tool Call | read_file") {
+	if items[1].Kind != "tool" || items[1].Title != toolEntryTitle("read_file") {
 		t.Fatalf("expected tool item from tool_result part, got %#v", items[1])
 	}
 	if len(runs) != 1 || runs[0].Name != "read_file" {
@@ -3677,7 +3677,7 @@ func TestRebuildSessionTimelineFallsBackToGenericToolNameForUnknownToolUseID(t *
 	if len(items) != 1 {
 		t.Fatalf("expected only one tool item, got %#v", items)
 	}
-	if items[0].Kind != "tool" || items[0].Title != "Tool Call | tool" {
+	if items[0].Kind != "tool" || items[0].Title != toolEntryTitle("tool") {
 		t.Fatalf("expected fallback tool title for unknown tool use id, got %#v", items[0])
 	}
 	if len(runs) != 1 || runs[0].Name != "tool" {
@@ -3704,7 +3704,7 @@ func TestRebuildSessionTimelineParsesLegacyToolRoleMessage(t *testing.T) {
 	if items[0].Kind != "assistant" || !strings.Contains(items[0].Body, "analysis complete") {
 		t.Fatalf("expected assistant text item from legacy message, got %#v", items[0])
 	}
-	if items[1].Kind != "tool" || items[1].Title != "Tool Call | tool" {
+	if items[1].Kind != "tool" || items[1].Title != toolEntryTitle("tool") {
 		t.Fatalf("expected fallback tool title for legacy tool message, got %#v", items[1])
 	}
 	if len(runs) != 1 || runs[0].Name != "tool" {
@@ -3732,7 +3732,7 @@ func TestHandleAgentEventShowsToolProgressInChat(t *testing.T) {
 	if m.chatItems[1].Kind != "assistant" || m.chatItems[1].Title != thinkingLabel || m.chatItems[1].Status != "thinking" || strings.TrimSpace(m.chatItems[1].Body) == "" {
 		t.Fatalf("expected assistant step before tool call, got %+v", m.chatItems[1])
 	}
-	if m.chatItems[2].Kind != "tool" || m.chatItems[2].Status != "running" || !strings.Contains(m.chatItems[2].Title, "Tool Call | read_file") {
+	if m.chatItems[2].Kind != "tool" || m.chatItems[2].Status != "running" || m.chatItems[2].Title != toolEntryTitle("read_file") {
 		t.Fatalf("expected running tool call chat item, got %+v", m.chatItems[2])
 	}
 	if strings.TrimSpace(m.chatItems[2].Body) != "" {
@@ -3747,13 +3747,13 @@ func TestHandleAgentEventShowsToolProgressInChat(t *testing.T) {
 	if len(m.chatItems) != 3 {
 		t.Fatalf("expected completed tool to update existing tool call, got %d", len(m.chatItems))
 	}
-	if m.chatItems[2].Kind != "tool" || !strings.Contains(m.chatItems[2].Title, "Tool Call | read_file") {
+	if m.chatItems[2].Kind != "tool" || m.chatItems[2].Title != toolEntryTitle("read_file") {
 		t.Fatalf("expected tool call entry after completion, got %+v", m.chatItems[2])
 	}
 	if m.chatItems[2].Status != "done" {
 		t.Fatalf("expected completed tool call status to be done, got %q", m.chatItems[2].Status)
 	}
-	if !strings.Contains(m.chatItems[2].Body, "Read tui/model.go lines 1-20") {
+	if !strings.Contains(m.chatItems[2].Body, "Read model.go") || !strings.Contains(m.chatItems[2].Body, "range: 1-20") {
 		t.Fatalf("expected completed tool summary in tool call item, got %q", m.chatItems[2].Body)
 	}
 }
@@ -3797,7 +3797,7 @@ func TestHandleAgentEventTracksRunLifecyclePhases(t *testing.T) {
 	if m.phase != "thinking" {
 		t.Fatalf("expected completed tool to return UI to thinking phase, got %q", m.phase)
 	}
-	if !strings.Contains(m.statusNote, "Read tui/model.go lines 1-5") {
+	if !strings.Contains(m.statusNote, "Read model.go") {
 		t.Fatalf("expected tool result summary in status note, got %q", m.statusNote)
 	}
 
@@ -3831,7 +3831,7 @@ func TestToolStartKeepsStreamedAssistantReasoning(t *testing.T) {
 	if !strings.Contains(m.chatItems[1].Body, "inspect the repo structure first") || m.chatItems[1].Status != "thinking" || m.chatItems[1].Title != thinkingLabel {
 		t.Fatalf("expected streamed assistant turn to preserve reasoning content, got %+v", m.chatItems[1])
 	}
-	if !strings.Contains(m.chatItems[2].Title, "Tool Call | list_files") {
+	if m.chatItems[2].Title != toolEntryTitle("list_files") {
 		t.Fatalf("expected tool call entry, got %+v", m.chatItems[2])
 	}
 }
@@ -3853,7 +3853,7 @@ func TestToolStartWithoutAssistantDeltaDoesNotInjectThinkingCard(t *testing.T) {
 	if len(m.chatItems) != 2 {
 		t.Fatalf("expected only tool call entry to be appended, got %d items", len(m.chatItems))
 	}
-	if m.chatItems[1].Kind != "tool" || !strings.Contains(m.chatItems[1].Title, "Tool Call | list_files") {
+	if m.chatItems[1].Kind != "tool" || m.chatItems[1].Title != toolEntryTitle("list_files") {
 		t.Fatalf("expected tool call entry, got %+v", m.chatItems[1])
 	}
 	if strings.TrimSpace(m.chatItems[1].Body) != "" {
@@ -3879,7 +3879,7 @@ func TestToolStartWithGenericToolIntentDoesNotShowThinkingCard(t *testing.T) {
 	if len(m.chatItems) != 2 {
 		t.Fatalf("expected generic tool-intent placeholder to be removed, got %d items", len(m.chatItems))
 	}
-	if m.chatItems[1].Kind != "tool" || !strings.Contains(m.chatItems[1].Title, "Tool Call | list_files") {
+	if m.chatItems[1].Kind != "tool" || m.chatItems[1].Title != toolEntryTitle("list_files") {
 		t.Fatalf("expected tool call entry after removing placeholder, got %+v", m.chatItems[1])
 	}
 	if strings.TrimSpace(m.chatItems[1].Body) != "" {
@@ -3890,13 +3890,16 @@ func TestToolStartWithGenericToolIntentDoesNotShowThinkingCard(t *testing.T) {
 func TestRenderChatSectionToolHeaderOmitsStatusWords(t *testing.T) {
 	got := renderChatSection(chatEntry{
 		Kind:   "tool",
-		Title:  "Tool Call | list_files",
+		Title:  toolEntryTitle("list_files"),
 		Body:   "",
 		Status: "running",
 	}, 64)
 
-	if strings.Contains(got, "running") || strings.Contains(got, "done") || strings.Contains(got, "pending") {
-		t.Fatalf("expected tool header to omit status words, got %q", got)
+	if !strings.Contains(got, "running") {
+		t.Fatalf("expected tool header to show status badge text, got %q", got)
+	}
+	if !strings.Contains(got, "LIST") || !strings.Contains(got, "list_files") {
+		t.Fatalf("expected tool header to show structured label and tool name, got %q", got)
 	}
 	if strings.Contains(got, "params:") || strings.Contains(got, "{\"") {
 		t.Fatalf("expected tool section to hide params content, got %q", got)
@@ -3906,14 +3909,14 @@ func TestRenderChatSectionToolHeaderOmitsStatusWords(t *testing.T) {
 func TestFormatChatBodyHighlightsSearchToolSummaryAndMatches(t *testing.T) {
 	item := chatEntry{
 		Kind: "tool",
-		Body: "Found 12 match(es) for \"func main() {\"\n" +
+		Body: "12 matches for \"func main() {\"\n" +
 			"bytemind/opencode-go/main.go:14 func main() {\n" +
 			"cmd/bytemind/main.go:11 func main() {",
 	}
 
 	got := formatChatBody(item, 80)
 
-	if !strings.Contains(got, toolSearchSummaryStyle.Render("Found 12 match(es) for \"func main() {\"")) {
+	if !strings.Contains(got, toolSearchSummaryStyle.Render("12 matches for \"func main() {\"")) {
 		t.Fatalf("expected search summary line to be highlighted, got %q", got)
 	}
 	if !strings.Contains(got, toolSearchMatchStyle.Render("bytemind/opencode-go/main.go:14 func main() {")) {
@@ -4322,7 +4325,7 @@ func TestBusyEnterSuppressedForRecentPasteBurstSingleLine(t *testing.T) {
 	}
 }
 
-func TestBusyEnterSuppressedForImplicitPasteBurstWithoutPasteFlag(t *testing.T) {
+func TestBusyEnterWithLongTypedTextDoesNotStartPasteFlow(t *testing.T) {
 	input := textarea.New()
 	input.Focus()
 	input.SetValue("A long multiline paste-burst candidate mentioning `main.go` should not auto-submit.")
@@ -4335,27 +4338,33 @@ func TestBusyEnterSuppressedForImplicitPasteBurstWithoutPasteFlag(t *testing.T) 
 		busy:           true,
 		input:          input,
 		lastInputAt:    now,
-		inputBurstSize: 64,
 		sess:           session.New("E:\\bytemind"),
 		workspace:      "E:\\bytemind",
 		runCancel:      func() { canceled = true },
+		inputBurstSize: 64,
 	}
 
 	got, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	updated := got.(model)
 
+	if !canceled {
+		t.Fatalf("expected busy enter to use normal BTW interruption semantics")
+	}
+	if !updated.interrupting || len(updated.pendingBTW) != 1 || updated.pendingBTW[0] != input.Value() {
+		t.Fatalf("expected busy enter to queue BTW message, got interrupting=%v pending=%#v", updated.interrupting, updated.pendingBTW)
+	}
+	if updated.hasActivePasteSession() || updated.hasActivePasteBurst() {
+		t.Fatalf("expected long typed text not to enter paste flow")
+	}
+	if regexp.MustCompile(`^\[Paste #\d+ ~\d+ lines\]$`).MatchString(updated.input.Value()) {
+		t.Fatalf("expected long typed text not to be compressed into marker, got %q", updated.input.Value())
+	}
 	if cmd != nil {
-		t.Fatalf("expected implicit paste-burst enter not to schedule a command")
-	}
-	if canceled {
-		t.Fatalf("expected implicit paste-burst enter not to cancel current run")
-	}
-	if updated.interrupting || len(updated.pendingBTW) != 0 || len(updated.chatItems) != 0 {
-		t.Fatalf("expected no BTW side effects, got interrupting=%v pending=%#v chat=%#v", updated.interrupting, updated.pendingBTW, updated.chatItems)
+		t.Fatalf("expected busy BTW handling not to schedule an extra command")
 	}
 }
 
-func TestIdleEnterCompressesImplicitLongPasteBurstWithoutPasteFlag(t *testing.T) {
+func TestIdleEnterSubmitsLongTypedTextWithoutCompression(t *testing.T) {
 	input := textarea.New()
 	input.Focus()
 	longPaste := strings.Join([]string{
@@ -4380,19 +4389,22 @@ func TestIdleEnterCompressesImplicitLongPasteBurstWithoutPasteFlag(t *testing.T)
 		screen:         screenChat,
 		input:          input,
 		lastInputAt:    now,
-		inputBurstSize: len(longPaste),
 		sess:           session.New("E:\\bytemind"),
 		workspace:      "E:\\bytemind",
+		inputBurstSize: len(longPaste),
 	}
 
 	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	updated := got.(model)
 
-	if !regexp.MustCompile(`^\[Paste #\d+ ~\d+ lines\]$`).MatchString(updated.input.Value()) {
-		t.Fatalf("expected implicit long paste burst to compress into marker, got %q", updated.input.Value())
+	if len(updated.chatItems) == 0 || updated.chatItems[0].Kind != "user" {
+		t.Fatalf("expected long typed text to submit as normal user input, got %#v", updated.chatItems)
 	}
-	if len(updated.chatItems) != 0 {
-		t.Fatalf("expected compression step not to submit chat immediately, got %d items", len(updated.chatItems))
+	if updated.chatItems[0].Body != longPaste {
+		t.Fatalf("expected submitted long text to remain literal, got %q", updated.chatItems[0].Body)
+	}
+	if len(updated.pastedContents) != 0 {
+		t.Fatalf("expected long typed text not to create pasted content state")
 	}
 }
 
@@ -4430,15 +4442,15 @@ func TestBusyEnterInToolPhaseDefersBTWCancel(t *testing.T) {
 func TestRenderChatCardToolUsesVisualSeparator(t *testing.T) {
 	got := renderChatCard(chatEntry{
 		Kind:   "tool",
-		Title:  "Tool Call | read_file",
-		Body:   "Read tui/model.go lines 1-20",
+		Title:  toolEntryTitle("read_file"),
+		Body:   "Read model.go\nrange: 1-20\npath: tui/model.go",
 		Status: "done",
 	}, 64)
 
 	if !strings.Contains(got, "\u2502") && !strings.Contains(got, "|") {
 		t.Fatalf("expected tool card to include a left border separator, got %q", got)
 	}
-	if !strings.Contains(got, "Tool Call | read_file") {
+	if !strings.Contains(got, "READ") || !strings.Contains(got, "read_file") {
 		t.Fatalf("expected tool card title to render, got %q", got)
 	}
 }
@@ -5479,6 +5491,261 @@ func TestUpdatePasteMsgSuppressesImmediateEnterSubmit(t *testing.T) {
 	}
 	if !regexp.MustCompile(`^\[Paste #\d+ ~\d+ lines\]$`).MatchString(afterEnter.input.Value()) {
 		t.Fatalf("expected compressed marker to remain after suppressed enter, got %q", afterEnter.input.Value())
+	}
+}
+
+func TestCompressedPasteRequiresExplicitConfirmationBeforeSubmit(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	longPaste := strings.Join([]string{
+		"line 1", "line 2", "line 3", "line 4", "line 5", "line 6",
+		"line 7", "line 8", "line 9", "line 10", "line 11", "line 12",
+	}, "\n")
+
+	got, _ := m.handlePastePayload(longPaste + "\n")
+	afterPaste := got.(model)
+	if !afterPaste.pasteConfirmPending {
+		t.Fatalf("expected compressed paste to require explicit confirmation")
+	}
+	afterPaste.pasteBurstLastEventAt = time.Now().Add(-time.Second)
+	got, _ = afterPaste.Update(pasteBurstSettleMsg{Generation: afterPaste.pasteBurstGeneration})
+	afterPaste = got.(model)
+	if afterPaste.pasteBurstActive {
+		t.Fatalf("expected compressed paste burst to settle before confirmation")
+	}
+
+	got, _ = afterPaste.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	afterConfirm := got.(model)
+	if afterConfirm.pasteConfirmPending {
+		t.Fatalf("expected first enter after compressed paste to clear confirmation latch")
+	}
+	if len(afterConfirm.chatItems) != 0 {
+		t.Fatalf("expected first enter after compressed paste not to submit, got %d chat items", len(afterConfirm.chatItems))
+	}
+	if !regexp.MustCompile(`^\[Paste #\d+ ~\d+ lines\]$`).MatchString(afterConfirm.input.Value()) {
+		t.Fatalf("expected compressed marker to remain after confirmation enter, got %q", afterConfirm.input.Value())
+	}
+
+	got, _ = afterConfirm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	afterSubmit := got.(model)
+	if len(afterSubmit.chatItems) < 1 || afterSubmit.chatItems[0].Kind != "user" {
+		t.Fatalf("expected second enter to submit compressed paste, got %#v", afterSubmit.chatItems)
+	}
+	if !afterSubmit.busy {
+		t.Fatalf("expected second enter to begin a run")
+	}
+	if afterSubmit.input.Value() != "" {
+		t.Fatalf("expected input to clear after submitting compressed paste, got %q", afterSubmit.input.Value())
+	}
+}
+
+func TestBusyCompressedPasteConfirmationDoesNotQueueBTW(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	longPaste := strings.Join([]string{
+		"line 1", "line 2", "line 3", "line 4", "line 5", "line 6",
+		"line 7", "line 8", "line 9", "line 10", "line 11", "line 12",
+	}, "\n")
+
+	got, _ := m.handlePastePayload(longPaste + "\n")
+	afterPaste := got.(model)
+	afterPaste.pasteBurstLastEventAt = time.Now().Add(-time.Second)
+	got, _ = afterPaste.Update(pasteBurstSettleMsg{Generation: afterPaste.pasteBurstGeneration})
+	afterPaste = got.(model)
+	if afterPaste.pasteBurstActive {
+		t.Fatalf("expected compressed paste burst to settle before confirmation")
+	}
+
+	canceled := false
+	afterPaste.busy = true
+	afterPaste.runCancel = func() { canceled = true }
+
+	got, cmd := afterPaste.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+	if cmd != nil {
+		t.Fatalf("expected confirmation enter in busy state not to schedule a command")
+	}
+	if canceled {
+		t.Fatalf("expected confirmation enter in busy state not to cancel the active run")
+	}
+	if updated.interrupting || len(updated.pendingBTW) != 0 {
+		t.Fatalf("expected confirmation enter in busy state not to queue BTW, got interrupting=%v pending=%#v", updated.interrupting, updated.pendingBTW)
+	}
+	if updated.pasteConfirmPending {
+		t.Fatalf("expected confirmation enter to consume pending paste confirmation")
+	}
+}
+
+func TestPasteBurstTabAndEnterStayInsidePasteFlow(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.mode = modeBuild
+
+	longPaste := strings.Join([]string{
+		"func normalize(items []string) []string {",
+		"    out := make([]string, 0, len(items))",
+		"    for _, item := range items {",
+		"        v := strings.TrimSpace(item)",
+		"        if v == \"\" {",
+		"            continue",
+		"        }",
+		"        out = append(out, strings.ToLower(v))",
+		"    }",
+		"    sort.Strings(out)",
+		"    return out",
+		"}",
+	}, "\n")
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(longPaste), Paste: true})
+	afterPaste := got.(model)
+	if !afterPaste.pasteBurstActive {
+		t.Fatalf("expected long paste to keep burst capture active")
+	}
+	if afterPaste.mode != modeBuild {
+		t.Fatalf("expected long paste not to toggle mode, got %q", afterPaste.mode)
+	}
+
+	got, _ = afterPaste.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	afterTab := got.(model)
+	if afterTab.mode != modeBuild {
+		t.Fatalf("expected tab during paste burst not to toggle mode, got %q", afterTab.mode)
+	}
+	if len(afterTab.chatItems) != 0 {
+		t.Fatalf("expected tab during paste burst not to submit, got %#v", afterTab.chatItems)
+	}
+	if !afterTab.hasActivePasteSession() {
+		t.Fatalf("expected tab during paste burst to stay inside paste session")
+	}
+
+	got, _ = afterTab.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	afterEnter := got.(model)
+	if afterEnter.mode != modeBuild {
+		t.Fatalf("expected enter during paste burst not to toggle mode, got %q", afterEnter.mode)
+	}
+	if len(afterEnter.chatItems) != 0 {
+		t.Fatalf("expected enter during paste burst not to submit, got %#v", afterEnter.chatItems)
+	}
+
+	got, _ = afterEnter.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("tail")})
+	afterRunes := got.(model)
+	if len(afterRunes.chatItems) != 0 {
+		t.Fatalf("expected late burst runes not to submit, got %#v", afterRunes.chatItems)
+	}
+	if !afterRunes.hasActivePasteSession() {
+		t.Fatalf("expected late burst runes to keep paste session active")
+	}
+
+	got, _ = afterRunes.Update(pasteFinalizeMsg{ID: afterRunes.pasteSession.finalizeID})
+	finalized := got.(model)
+	if !regexp.MustCompile(`^\[Paste #\d+ ~\d+ lines\]$`).MatchString(finalized.input.Value()) {
+		t.Fatalf("expected mixed burst flow to end as one marker, got %q", finalized.input.Value())
+	}
+	if strings.Contains(finalized.input.Value(), "tail") {
+		t.Fatalf("expected no raw tail text to leak into input, got %q", finalized.input.Value())
+	}
+	if len(finalized.pastedOrder) != 1 {
+		t.Fatalf("expected mixed burst flow to keep one stored paste, got %d", len(finalized.pastedOrder))
+	}
+	latest, ok := finalized.findPastedContent("")
+	if !ok {
+		t.Fatalf("expected latest pasted content to remain available")
+	}
+	if !strings.Contains(latest.Content, "\t") || !strings.Contains(latest.Content, "tail") {
+		t.Fatalf("expected burst tab and trailing text to stay in pasted content, got %q", latest.Content)
+	}
+
+	finalized.pasteBurstLastEventAt = time.Now().Add(-time.Second)
+	got, _ = finalized.Update(pasteBurstSettleMsg{Generation: finalized.pasteBurstGeneration})
+	settled := got.(model)
+	if settled.pasteBurstActive {
+		t.Fatalf("expected paste burst capture to settle after inactivity")
+	}
+}
+
+func TestBusyEnterDuringActivePasteBurstDoesNotQueueBTW(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	longPaste := strings.Join([]string{
+		"line 1", "line 2", "line 3", "line 4", "line 5", "line 6",
+		"line 7", "line 8", "line 9", "line 10", "line 11", "line 12",
+	}, "\n")
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(longPaste), Paste: true})
+	afterPaste := got.(model)
+	if !afterPaste.pasteBurstActive {
+		t.Fatalf("expected long paste to start an active paste burst")
+	}
+
+	canceled := false
+	afterPaste.busy = true
+	afterPaste.runCancel = func() { canceled = true }
+
+	got, _ = afterPaste.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+	if canceled {
+		t.Fatalf("expected enter during active paste burst not to cancel current run")
+	}
+	if updated.interrupting || len(updated.pendingBTW) != 0 {
+		t.Fatalf("expected enter during active paste burst not to queue BTW, got interrupting=%v pending=%#v", updated.interrupting, updated.pendingBTW)
+	}
+	if len(updated.chatItems) != 0 {
+		t.Fatalf("expected enter during active paste burst not to submit, got %#v", updated.chatItems)
+	}
+	if !updated.hasActivePasteSession() {
+		t.Fatalf("expected enter during active paste burst to stay inside paste session")
+	}
+}
+
+func TestLongTypedTextTabStillTogglesMode(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	m.mode = modeBuild
+
+	firstLine := "func normalize(items []string) []string {"
+	m.input.SetValue(firstLine)
+	m.input.CursorEnd()
+	m.lastInputAt = time.Now()
+	m.inputBurstSize = len([]rune(firstLine))
+
+	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	afterTab := got.(model)
+	if afterTab.mode != modePlan {
+		t.Fatalf("expected tab with long typed text to toggle mode, got %q", afterTab.mode)
+	}
+	if afterTab.hasActivePasteSession() || afterTab.hasActivePasteBurst() {
+		t.Fatalf("expected tab with long typed text not to start paste flow")
+	}
+}
+
+func TestBusyLongTypedTextEnterDoesNotStartPasteFlow(t *testing.T) {
+	m := newImagePipelineModel(t)
+	m.screen = screenChat
+	firstLine := "A rapidly inserted first line of pasted text"
+	m.input.SetValue(firstLine)
+	m.input.CursorEnd()
+	m.lastInputAt = time.Now()
+	m.inputBurstSize = len([]rune(firstLine))
+	m.busy = true
+
+	canceled := false
+	m.runCancel = func() { canceled = true }
+
+	got, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := got.(model)
+	if !canceled {
+		t.Fatalf("expected busy enter after long typing to use normal BTW interruption semantics")
+	}
+	if !updated.interrupting || len(updated.pendingBTW) != 1 || updated.pendingBTW[0] != firstLine {
+		t.Fatalf("expected busy enter after long typing to queue BTW, got interrupting=%v pending=%#v", updated.interrupting, updated.pendingBTW)
+	}
+	if updated.hasActivePasteSession() || updated.hasActivePasteBurst() {
+		t.Fatalf("expected busy long typed text enter not to start paste flow")
+	}
+	if regexp.MustCompile(`^\[Paste #\d+ ~\d+ lines\]$`).MatchString(updated.input.Value()) {
+		t.Fatalf("expected busy long typed text enter not to create paste marker, got %q", updated.input.Value())
+	}
+	if cmd != nil {
+		t.Fatalf("expected busy BTW handling not to schedule an extra command")
 	}
 }
 
