@@ -38,6 +38,21 @@ type osExecWorkerInvoker struct {
 	goos           string
 }
 
+type workerLaunchError struct {
+	cause error
+}
+
+func (e workerLaunchError) Error() string {
+	if e.cause == nil {
+		return "worker launch failed"
+	}
+	return e.cause.Error()
+}
+
+func (e workerLaunchError) Unwrap() error {
+	return e.cause
+}
+
 type workerRPCRequest struct {
 	Version   string                    `json:"version"`
 	ToolName  string                    `json:"tool_name"`
@@ -118,6 +133,11 @@ func (w subprocessWorker) Run(ctx context.Context, req workerRunRequest) (string
 		if details == "" {
 			details = strings.TrimSpace(err.Error())
 		}
+		var launchErr workerLaunchError
+		if errors.As(err, &launchErr) &&
+			normalizeSystemSandboxMode(normalizedReq.Execution) == systemSandboxModeRequired {
+			return "", NewToolExecError(ToolErrorPermissionDenied, "sandbox worker process failed: "+details, false, err)
+		}
 		return "", NewToolExecError(ToolErrorInternal, "sandbox worker process failed: "+details, true, err)
 	}
 	if response.Error != nil {
@@ -136,7 +156,7 @@ func shouldUseSubprocessWorker(execCtx *ExecutionContext) bool {
 func (i osExecWorkerInvoker) Invoke(ctx context.Context, req workerRPCRequest) (workerRPCResponse, string, error) {
 	launch, err := i.resolveLaunch(req)
 	if err != nil {
-		return workerRPCResponse{}, "", err
+		return workerRPCResponse{}, "", workerLaunchError{cause: err}
 	}
 	payload, err := json.Marshal(req)
 	if err != nil {

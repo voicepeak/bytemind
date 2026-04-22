@@ -188,6 +188,48 @@ func TestSubprocessWorkerPropagatesWorkerError(t *testing.T) {
 	}
 }
 
+func TestSubprocessWorkerRequiredModeLaunchFailureReturnsPermissionDenied(t *testing.T) {
+	worker := subprocessWorker{
+		fallback: inProcessWorker{},
+		invoker: osExecWorkerInvoker{
+			executablePath: "/tmp/bytemind",
+			goos:           "freebsd",
+			lookPath: func(string) (string, error) {
+				t.Fatal("lookPath should not be called on unsupported OS")
+				return "", nil
+			},
+		},
+	}
+
+	_, err := worker.Run(context.Background(), workerRunRequest{
+		ToolName: "run_shell",
+		RawArgs:  json.RawMessage(`{"command":"git status"}`),
+		Execution: &ExecutionContext{
+			Workspace:         t.TempDir(),
+			SandboxEnabled:    true,
+			SystemSandboxMode: "required",
+			ApprovalMode:      "interactive",
+			ApprovalPolicy:    "never",
+			ExecAllowlist: []sandboxpkg.ExecRule{
+				{Command: "git status"},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected required-mode launch failure")
+	}
+	execErr, ok := AsToolExecError(err)
+	if !ok {
+		t.Fatalf("expected ToolExecError, got %T (%v)", err, err)
+	}
+	if execErr.Code != ToolErrorPermissionDenied {
+		t.Fatalf("expected permission_denied code, got %s (%v)", execErr.Code, err)
+	}
+	if !strings.Contains(strings.ToLower(execErr.Message), "required") {
+		t.Fatalf("expected required-mode context in error message, got %q", execErr.Message)
+	}
+}
+
 func TestSubprocessWorkerPreApprovesInteractiveEscalation(t *testing.T) {
 	invoker := &fakeWorkerInvoker{
 		resp: workerRPCResponse{Output: `{"ok":true}`},
