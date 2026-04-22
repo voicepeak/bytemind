@@ -36,6 +36,8 @@ func RunMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return runMCPTest(args[1:], stdout, stderr)
 	case "reload":
 		return runMCPReload(args[1:], stdout, stderr)
+	case "auth":
+		return runMCPAuth(args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unknown mcp subcommand %q", args[0])
 	}
@@ -173,6 +175,23 @@ func runMCPReload(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+func runMCPAuth(args []string, stdout, stderr io.Writer) error {
+	_, _, serverID, err := parseMCPActionTarget("mcp auth", args, stderr)
+	if err != nil {
+		return err
+	}
+	lines := []string{
+		fmt.Sprintf("Auth guide for `%s`:", serverID),
+		"- Configure secrets through environment variables and pass them with --env KEY=VALUE when adding/updating the server.",
+		"- Do not paste plaintext tokens into chat history or shell history.",
+		"- Run `bytemind mcp test " + serverID + "` after updating credentials.",
+	}
+	for _, line := range lines {
+		fmt.Fprintln(stdout, line)
+	}
+	return nil
+}
+
 func parseMCPActionTarget(name string, args []string, stderr io.Writer) (workspace string, configPath string, target string, err error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -223,6 +242,7 @@ func renderMCPUsage(w io.Writer) {
 		"bytemind mcp disable <id> [--workspace path] [--config path]",
 		"bytemind mcp test <id> [--workspace path] [--config path]",
 		"bytemind mcp reload [--workspace path] [--config path]",
+		"bytemind mcp auth <id> [--workspace path] [--config path]",
 	}
 	for _, line := range lines {
 		fmt.Fprintln(w, line)

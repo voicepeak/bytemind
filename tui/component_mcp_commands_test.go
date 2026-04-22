@@ -4,8 +4,11 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"bytemind/internal/mcpctl"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 type stubMCPService struct {
@@ -119,5 +122,81 @@ func TestHandleSlashCommandMCPAddAlias(t *testing.T) {
 	}
 	if service.lastAdd.AutoStart == nil || *service.lastAdd.AutoStart {
 		t.Fatalf("expected auto_start=false, got %#v", service.lastAdd.AutoStart)
+	}
+}
+
+func TestParseMCPAddFieldsSupportsExtendedOptions(t *testing.T) {
+	fields := []string{
+		"/mcp",
+		"add",
+		"local",
+		"--cmd", "npx",
+		"--startup-timeout-s", "45",
+		"--call-timeout-s", "90",
+		"--max-concurrency", "2",
+		"--protocol-version", "2025-03-26",
+		"--protocol-versions", "2025-03-26,2024-11-05",
+	}
+	request, err := parseMCPAddFields(fields)
+	if err != nil {
+		t.Fatalf("parseMCPAddFields failed: %v", err)
+	}
+	if request.StartupTimeoutS != 45 {
+		t.Fatalf("expected startup timeout 45, got %d", request.StartupTimeoutS)
+	}
+	if request.CallTimeoutS != 90 {
+		t.Fatalf("expected call timeout 90, got %d", request.CallTimeoutS)
+	}
+	if request.MaxConcurrency != 2 {
+		t.Fatalf("expected max concurrency 2, got %d", request.MaxConcurrency)
+	}
+	if request.ProtocolVersion != "2025-03-26" {
+		t.Fatalf("expected protocol version 2025-03-26, got %q", request.ProtocolVersion)
+	}
+	if len(request.ProtocolVersions) != 2 || request.ProtocolVersions[0] != "2025-03-26" || request.ProtocolVersions[1] != "2024-11-05" {
+		t.Fatalf("unexpected protocol versions: %#v", request.ProtocolVersions)
+	}
+}
+
+func TestHandleSlashCommandMCPAddAliasAsync(t *testing.T) {
+	service := &stubMCPService{}
+	m := model{
+		mcpService: service,
+		async:      make(chan tea.Msg, 2),
+	}
+	err := m.handleSlashCommand("/mcp-add local --cmd npx --startup-timeout-s 33")
+	if err != nil {
+		t.Fatalf("expected async /mcp-add alias to succeed, got %v", err)
+	}
+	if !m.mcpCommandPending {
+		t.Fatal("expected mcp command pending flag to be set")
+	}
+	if m.statusNote != "MCP command running..." {
+		t.Fatalf("expected pending status note, got %q", m.statusNote)
+	}
+
+	var msg tea.Msg
+	select {
+	case msg = <-m.async:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for async mcp result")
+	}
+
+	next, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected update to keep waiting for async events")
+	}
+	updated := next.(model)
+	if updated.mcpCommandPending {
+		t.Fatal("expected pending flag to be cleared")
+	}
+	if service.lastAdd.ID != "local" || service.lastAdd.Command != "npx" {
+		t.Fatalf("expected async add to execute with local/npx, got %#v", service.lastAdd)
+	}
+	if service.lastAdd.StartupTimeoutS != 33 {
+		t.Fatalf("expected async add startup timeout 33, got %#v", service.lastAdd)
+	}
+	if len(updated.chatItems) < 2 {
+		t.Fatalf("expected chat exchange after async result, got %#v", updated.chatItems)
 	}
 }

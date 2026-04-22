@@ -15,101 +15,137 @@ const (
 )
 
 func (m *model) runMCPCommand(input string, fields []string) error {
-	if m.mcpService == nil {
+	response, status, err := executeMCPServiceCommand(m.mcpService, fields)
+	if err != nil {
+		return err
+	}
+	m.appendCommandExchange(input, response)
+	m.statusNote = status
+	return nil
+}
+
+func (m *model) runMCPCommandDispatch(input string, fields []string) error {
+	if m == nil {
+		return fmt.Errorf("model is unavailable")
+	}
+	if m.async == nil {
+		return m.runMCPCommand(input, fields)
+	}
+	return m.runMCPCommandAsync(input, fields)
+}
+
+func (m *model) runMCPCommandAsync(input string, fields []string) error {
+	if m == nil {
+		return fmt.Errorf("model is unavailable")
+	}
+	if m.mcpCommandPending {
+		return fmt.Errorf("an MCP command is already running")
+	}
+	service := m.mcpService
+	if service == nil {
 		return fmt.Errorf("mcp service is unavailable")
 	}
+	if m.async == nil {
+		return m.runMCPCommand(input, fields)
+	}
+	m.mcpCommandPending = true
+	m.statusNote = "MCP command running..."
+	asyncCh := m.async
+	commandInput := strings.TrimSpace(input)
+	commandFields := append([]string(nil), fields...)
+
+	go func() {
+		response, status, err := executeMCPServiceCommand(service, commandFields)
+		asyncCh <- mcpCommandResultMsg{
+			Input:    commandInput,
+			Response: response,
+			Status:   status,
+			Err:      err,
+		}
+	}()
+	return nil
+}
+
+func executeMCPServiceCommand(service MCPService, fields []string) (response string, status string, err error) {
+	if service == nil {
+		return "", "", fmt.Errorf("mcp service is unavailable")
+	}
 	if len(fields) < 2 {
-		return fmt.Errorf("usage: /mcp <list|remove|enable|disable|test|reload|auth> ... or %s", mcpAddUsage)
+		return "", "", fmt.Errorf("usage: /mcp <list|remove|enable|disable|test|reload|auth> ... or %s", mcpAddUsage)
 	}
 	sub := strings.ToLower(strings.TrimSpace(fields[1]))
 
 	switch sub {
 	case "list":
-		items, err := m.mcpService.List(context.Background())
-		if err != nil {
-			return err
+		items, listErr := service.List(context.Background())
+		if listErr != nil {
+			return "", "", listErr
 		}
-		m.appendCommandExchange(input, formatMCPStatusText(items))
-		m.statusNote = fmt.Sprintf("Listed %d MCP server(s).", len(items))
-		return nil
+		return formatMCPStatusText(items), fmt.Sprintf("Listed %d MCP server(s).", len(items)), nil
 	case "reload":
-		if err := m.mcpService.Reload(context.Background()); err != nil {
-			return err
+		if reloadErr := service.Reload(context.Background()); reloadErr != nil {
+			return "", "", reloadErr
 		}
-		m.appendCommandExchange(input, "MCP runtime reloaded.")
-		m.statusNote = "MCP reloaded."
-		return nil
+		return "MCP runtime reloaded.", "MCP reloaded.", nil
 	case "test":
 		if len(fields) < 3 {
-			return fmt.Errorf("usage: /mcp test <id>")
+			return "", "", fmt.Errorf("usage: /mcp test <id>")
 		}
-		status, err := m.mcpService.Test(context.Background(), fields[2])
-		if err != nil {
-			return err
+		item, testErr := service.Test(context.Background(), fields[2])
+		if testErr != nil {
+			return "", "", testErr
 		}
-		m.appendCommandExchange(input, formatMCPStatusText([]mcpctl.ServerStatus{status}))
-		m.statusNote = "MCP test completed."
-		return nil
+		return formatMCPStatusText([]mcpctl.ServerStatus{item}), "MCP test completed.", nil
 	case "remove":
 		if len(fields) < 3 {
-			return fmt.Errorf("usage: /mcp remove <id>")
-		}
-		if err := m.mcpService.Remove(context.Background(), fields[2]); err != nil {
-			return err
-		}
-		m.appendCommandExchange(input, fmt.Sprintf("Removed MCP server `%s`.", strings.TrimSpace(fields[2])))
-		m.statusNote = "MCP server removed."
-		return nil
-	case "enable":
-		if len(fields) < 3 {
-			return fmt.Errorf("usage: /mcp enable <id>")
-		}
-		status, err := m.mcpService.Enable(context.Background(), fields[2], true)
-		if err != nil {
-			return err
-		}
-		m.appendCommandExchange(input, formatMCPStatusText([]mcpctl.ServerStatus{status}))
-		m.statusNote = "MCP server enabled."
-		return nil
-	case "disable":
-		if len(fields) < 3 {
-			return fmt.Errorf("usage: /mcp disable <id>")
-		}
-		status, err := m.mcpService.Enable(context.Background(), fields[2], false)
-		if err != nil {
-			return err
-		}
-		m.appendCommandExchange(input, formatMCPStatusText([]mcpctl.ServerStatus{status}))
-		m.statusNote = "MCP server disabled."
-		return nil
-	case "add":
-		request, err := parseMCPAddFields(fields)
-		if err != nil {
-			return err
-		}
-		status, err := m.mcpService.Add(context.Background(), request)
-		if err != nil {
-			return err
-		}
-		m.appendCommandExchange(input, formatMCPStatusText([]mcpctl.ServerStatus{status}))
-		m.statusNote = "MCP server added."
-		return nil
-	case "auth":
-		if len(fields) < 3 {
-			return fmt.Errorf("usage: /mcp auth <id>")
+			return "", "", fmt.Errorf("usage: /mcp remove <id>")
 		}
 		serverID := strings.TrimSpace(fields[2])
-		response := strings.Join([]string{
+		if removeErr := service.Remove(context.Background(), serverID); removeErr != nil {
+			return "", "", removeErr
+		}
+		return fmt.Sprintf("Removed MCP server `%s`.", serverID), "MCP server removed.", nil
+	case "enable":
+		if len(fields) < 3 {
+			return "", "", fmt.Errorf("usage: /mcp enable <id>")
+		}
+		item, enableErr := service.Enable(context.Background(), fields[2], true)
+		if enableErr != nil {
+			return "", "", enableErr
+		}
+		return formatMCPStatusText([]mcpctl.ServerStatus{item}), "MCP server enabled.", nil
+	case "disable":
+		if len(fields) < 3 {
+			return "", "", fmt.Errorf("usage: /mcp disable <id>")
+		}
+		item, disableErr := service.Enable(context.Background(), fields[2], false)
+		if disableErr != nil {
+			return "", "", disableErr
+		}
+		return formatMCPStatusText([]mcpctl.ServerStatus{item}), "MCP server disabled.", nil
+	case "add":
+		request, parseErr := parseMCPAddFields(fields)
+		if parseErr != nil {
+			return "", "", parseErr
+		}
+		item, addErr := service.Add(context.Background(), request)
+		if addErr != nil {
+			return "", "", addErr
+		}
+		return formatMCPStatusText([]mcpctl.ServerStatus{item}), "MCP server added.", nil
+	case "auth":
+		if len(fields) < 3 {
+			return "", "", fmt.Errorf("usage: /mcp auth <id>")
+		}
+		serverID := strings.TrimSpace(fields[2])
+		return strings.Join([]string{
 			fmt.Sprintf("Auth guide for `%s`:", serverID),
 			"- Configure secrets through environment variables and pass them with `--env KEY=VALUE` when adding/updating the server.",
 			"- Do not paste plaintext tokens into chat history.",
 			"- Run `/mcp test " + serverID + "` after updating credentials.",
-		}, "\n")
-		m.appendCommandExchange(input, response)
-		m.statusNote = "MCP auth guidance shown."
-		return nil
+		}, "\n"), "MCP auth guidance shown.", nil
 	default:
-		return fmt.Errorf("usage: /mcp <list|remove|enable|disable|test|reload|auth> ... or %s", mcpAddUsage)
+		return "", "", fmt.Errorf("usage: /mcp <list|remove|enable|disable|test|reload|auth> ... or %s", mcpAddUsage)
 	}
 }
 
@@ -171,6 +207,48 @@ func parseMCPAddFields(fields []string) (mcpctl.AddRequest, error) {
 				return mcpctl.AddRequest{}, fmt.Errorf("invalid --auto-start value %q", fields[index])
 			}
 			request.AutoStart = &value
+		case "--startup-timeout-s":
+			index++
+			if index >= len(fields) {
+				return mcpctl.AddRequest{}, fmt.Errorf("usage: /mcp-add <id> --startup-timeout-s <seconds>")
+			}
+			value, convErr := strconv.Atoi(strings.TrimSpace(fields[index]))
+			if convErr != nil || value < 0 {
+				return mcpctl.AddRequest{}, fmt.Errorf("invalid --startup-timeout-s value %q", fields[index])
+			}
+			request.StartupTimeoutS = value
+		case "--call-timeout-s":
+			index++
+			if index >= len(fields) {
+				return mcpctl.AddRequest{}, fmt.Errorf("usage: /mcp-add <id> --call-timeout-s <seconds>")
+			}
+			value, convErr := strconv.Atoi(strings.TrimSpace(fields[index]))
+			if convErr != nil || value < 0 {
+				return mcpctl.AddRequest{}, fmt.Errorf("invalid --call-timeout-s value %q", fields[index])
+			}
+			request.CallTimeoutS = value
+		case "--max-concurrency":
+			index++
+			if index >= len(fields) {
+				return mcpctl.AddRequest{}, fmt.Errorf("usage: /mcp-add <id> --max-concurrency <n>")
+			}
+			value, convErr := strconv.Atoi(strings.TrimSpace(fields[index]))
+			if convErr != nil || value < 0 {
+				return mcpctl.AddRequest{}, fmt.Errorf("invalid --max-concurrency value %q", fields[index])
+			}
+			request.MaxConcurrency = value
+		case "--protocol-version":
+			index++
+			if index >= len(fields) {
+				return mcpctl.AddRequest{}, fmt.Errorf("usage: /mcp-add <id> --protocol-version <version>")
+			}
+			request.ProtocolVersion = strings.TrimSpace(fields[index])
+		case "--protocol-versions":
+			index++
+			if index >= len(fields) {
+				return mcpctl.AddRequest{}, fmt.Errorf("usage: /mcp-add <id> --protocol-versions a,b,c")
+			}
+			request.ProtocolVersions = splitCSVFields(fields[index])
 		default:
 			return mcpctl.AddRequest{}, fmt.Errorf("unsupported /mcp-add flag %q", fields[index])
 		}

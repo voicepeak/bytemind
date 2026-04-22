@@ -2541,6 +2541,19 @@ func TestCommandPaletteListsMCPAddAlias(t *testing.T) {
 	}
 }
 
+func TestCommandPaletteListsMCPAuthCommand(t *testing.T) {
+	found := false
+	for _, item := range commandItems {
+		if item.Name == "/mcp auth" && item.Kind == "command" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected command palette to include /mcp auth")
+	}
+}
+
 func TestCommandPaletteDoesNotListExitAlias(t *testing.T) {
 	for _, item := range commandItems {
 		if item.Name == "/exit" {

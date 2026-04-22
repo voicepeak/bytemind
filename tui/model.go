@@ -243,6 +243,13 @@ type pasteBurstSettleMsg struct {
 	Generation int
 }
 
+type mcpCommandResultMsg struct {
+	Input    string
+	Response string
+	Status   string
+	Err      error
+}
+
 type pasteSessionState struct {
 	active       bool
 	startedAt    time.Time
@@ -275,6 +282,11 @@ var commandItems = []commandItem{
 	{Name: "/skills-select", Usage: "/skills-select", Description: "Open the loaded skills picker.", Kind: "command"},
 	{Name: "/mcp list", Usage: "/mcp list", Description: "List configured MCP servers and current status.", Kind: "command"},
 	{Name: "/mcp-add", Usage: "/mcp-add <id>", Description: "Add a stdio MCP server.", Kind: "command"},
+	{Name: "/mcp remove", Usage: "/mcp remove <id>", Description: "Remove one configured MCP server.", Kind: "command"},
+	{Name: "/mcp enable", Usage: "/mcp enable <id>", Description: "Enable one MCP server.", Kind: "command"},
+	{Name: "/mcp disable", Usage: "/mcp disable <id>", Description: "Disable one MCP server.", Kind: "command"},
+	{Name: "/mcp test", Usage: "/mcp test <id>", Description: "Run MCP health check for one server.", Kind: "command"},
+	{Name: "/mcp auth", Usage: "/mcp auth <id>", Description: "Show MCP credential setup guidance.", Kind: "command"},
 	{Name: "/mcp reload", Usage: "/mcp reload", Description: "Reload MCP runtime and refresh tools.", Kind: "command"},
 	{Name: "/new", Usage: "/new", Description: "Start a fresh session in this workspace.", Kind: "command"},
 	{Name: "/compact", Usage: "/compact", Description: "Compress long session history into a continuation summary.", Kind: "command"},
@@ -321,6 +333,7 @@ type model struct {
 	commandOpen                bool
 	mentionOpen                bool
 	promptSearchOpen           bool
+	mcpCommandPending          bool
 	busy                       bool
 	runStartedAt               time.Time
 	streamingIndex             int
@@ -689,6 +702,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case mcpCommandResultMsg:
+		m.mcpCommandPending = false
+		if msg.Err != nil {
+			m.statusNote = msg.Err.Error()
+			return m, waitForAsync(m.async)
+		}
+		m.appendCommandExchange(msg.Input, msg.Response)
+		if strings.TrimSpace(msg.Status) != "" {
+			m.statusNote = msg.Status
+		}
+		m.refreshViewport()
+		return m, waitForAsync(m.async)
 	case tokenUsagePulledMsg:
 		// Account-level usage is not session-accurate; ignore in session-only mode.
 		return m, nil

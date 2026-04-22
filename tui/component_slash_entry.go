@@ -36,10 +36,10 @@ func (m *model) handleSlashCommand(input string) error {
 	case "/skill":
 		return m.runSkillCommand(input, fields)
 	case "/mcp":
-		return m.runMCPCommand(input, fields)
+		return m.runMCPCommandDispatch(input, fields)
 	case "/mcp-add":
 		aliasFields := append([]string{"/mcp", "add"}, fields[1:]...)
-		return m.runMCPCommand(input, aliasFields)
+		return m.runMCPCommandDispatch(input, aliasFields)
 	case "/new":
 		return m.newSession()
 	case "/compact":

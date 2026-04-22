@@ -52,6 +52,21 @@ func TestRunMCPAddAndList(t *testing.T) {
 	}
 }
 
+func TestRunMCPAuthRendersGuidance(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := RunMCP([]string{"auth", "github"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("RunMCP auth failed: %v", err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "Auth guide for `github`") {
+		t.Fatalf("expected auth header in output, got %q", output)
+	}
+	if !strings.Contains(output, "bytemind mcp test github") {
+		t.Fatalf("expected auth output to include test hint, got %q", output)
+	}
+}
+
 func writeMCPCLITestConfig(t *testing.T, workspace string) {
 	t.Helper()
 	doc := map[string]any{
