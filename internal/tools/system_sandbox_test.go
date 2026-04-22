@@ -37,6 +37,20 @@ func TestValidateSystemSandboxRuntimeWithFailsClosedForRequiredModeWithoutBacken
 	}
 }
 
+func TestValidateSystemSandboxRuntimeWithFailsClosedForRequiredModeWithoutCapabilities(t *testing.T) {
+	err := validateSystemSandboxRuntimeWith(true, "required", "windows", func(string) (string, error) {
+		t.Fatal("lookPath should not be called for windows job-object backend")
+		return "", nil
+	})
+	if err == nil {
+		t.Fatal("expected required mode to fail closed when backend lacks capabilities")
+	}
+	lower := strings.ToLower(err.Error())
+	if !strings.Contains(lower, "required") || !strings.Contains(lower, "file/process isolation") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateSystemSandboxRuntimeWithBestEffortFallsBackWithoutBackend(t *testing.T) {
 	err := validateSystemSandboxRuntimeWith(true, "best_effort", "linux", func(string) (string, error) {
 		return "", errors.New("missing unshare")

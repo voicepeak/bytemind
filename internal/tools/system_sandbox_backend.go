@@ -110,13 +110,30 @@ func resolveSystemSandboxRuntimeBackend(mode, goos string, lookPath func(string)
 		}, nil
 	}
 
-	return systemSandboxRuntimeBackend{
+	resolved := systemSandboxRuntimeBackend{
 		Enabled: true,
 		Name:    backend.Name(),
 		Runner:  runner,
 		Shell:   backend.ShellLaunchSpec(),
 		Worker:  backend.WorkerLaunchSpec(),
-	}, nil
+	}
+	if mode == systemSandboxModeRequired && !requiredSystemSandboxCapabilitiesSatisfied(resolved) {
+		return systemSandboxRuntimeBackend{}, fmt.Errorf("system sandbox mode required but backend %q lacks required file/process isolation capabilities", resolved.Name)
+	}
+	return resolved, nil
+}
+
+func requiredSystemSandboxCapabilitiesSatisfied(backend systemSandboxRuntimeBackend) bool {
+	if !backend.Enabled {
+		return false
+	}
+	if !backend.Shell.Policy.ProcessIsolation || !backend.Worker.Policy.ProcessIsolation {
+		return false
+	}
+	if !backend.Shell.Policy.FileIsolation || !backend.Worker.Policy.FileIsolation {
+		return false
+	}
+	return true
 }
 
 func systemSandboxBackendForOS(goos string) systemSandboxPlatformBackend {

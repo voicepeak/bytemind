@@ -22,5 +22,5 @@ ByteMind TUI supports the following runtime environment variables:
 - Current backend support:
   - Linux: `unshare`
   - macOS: `sandbox-exec` (when available in `PATH`)
-  - Windows: Job Object process isolation (file/network isolation still policy-level)
+  - Windows: Job Object process isolation for `best_effort`; `required` fails closed because file isolation is not available yet
 - See [Sandbox Acceptance Checklist](./sandbox-acceptance.md) for validation matrix and test commands.

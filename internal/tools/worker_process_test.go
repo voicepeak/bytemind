@@ -444,7 +444,7 @@ func TestResolveLaunchFailsClosedWhenRequiredBackendUnavailable(t *testing.T) {
 	}
 }
 
-func TestResolveLaunchWindowsKeepsDirectExecutableAndTracksBackend(t *testing.T) {
+func TestResolveLaunchWindowsBestEffortKeepsDirectExecutableAndTracksBackend(t *testing.T) {
 	invoker := osExecWorkerInvoker{
 		executablePath: `C:\bytemind.exe`,
 		goos:           "windows",
@@ -456,7 +456,7 @@ func TestResolveLaunchWindowsKeepsDirectExecutableAndTracksBackend(t *testing.T)
 	launch, err := invoker.resolveLaunch(workerRPCRequest{
 		Execution: workerRPCExecutionContext{
 			Workspace:         `C:\workspace`,
-			SystemSandboxMode: "required",
+			SystemSandboxMode: "best_effort",
 		},
 	})
 	if err != nil {
@@ -471,8 +471,32 @@ func TestResolveLaunchWindowsKeepsDirectExecutableAndTracksBackend(t *testing.T)
 	if launch.SystemSandboxBackendName != "windows_job_object" {
 		t.Fatalf("expected windows_job_object backend marker, got %#v", launch)
 	}
-	if launch.SystemSandboxMode != "required" {
-		t.Fatalf("expected required mode marker, got %#v", launch)
+	if launch.SystemSandboxMode != "best_effort" {
+		t.Fatalf("expected best_effort mode marker, got %#v", launch)
+	}
+}
+
+func TestResolveLaunchWindowsRequiredFailsCapabilityGate(t *testing.T) {
+	invoker := osExecWorkerInvoker{
+		executablePath: `C:\bytemind.exe`,
+		goos:           "windows",
+		lookPath: func(string) (string, error) {
+			t.Fatal("lookPath should not be called for windows job-object backend")
+			return "", nil
+		},
+	}
+	_, err := invoker.resolveLaunch(workerRPCRequest{
+		Execution: workerRPCExecutionContext{
+			Workspace:         `C:\workspace`,
+			SystemSandboxMode: "required",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected windows required mode to fail capability gate")
+	}
+	lower := strings.ToLower(err.Error())
+	if !strings.Contains(lower, "required") || !strings.Contains(lower, "file/process isolation") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

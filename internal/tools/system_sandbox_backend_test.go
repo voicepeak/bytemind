@@ -59,6 +59,20 @@ func TestResolveSystemSandboxRuntimeBackendWindowsBackendActive(t *testing.T) {
 	}
 }
 
+func TestResolveSystemSandboxRuntimeBackendWindowsRequiredFailsCapabilityGate(t *testing.T) {
+	_, err := resolveSystemSandboxRuntimeBackend(systemSandboxModeRequired, "windows", func(string) (string, error) {
+		t.Fatal("lookPath should not be called for windows job-object backend")
+		return "", nil
+	})
+	if err == nil {
+		t.Fatal("expected windows required mode to fail capability gate")
+	}
+	lower := strings.ToLower(err.Error())
+	if !strings.Contains(lower, "required") || !strings.Contains(lower, "file/process isolation") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveSystemSandboxRuntimeBackendBestEffortFallbackIncludesPendingDarwinReason(t *testing.T) {
 	backend, err := resolveSystemSandboxRuntimeBackend(systemSandboxModeRequired, "darwin", func(name string) (string, error) {
 		if name != "sandbox-exec" {
