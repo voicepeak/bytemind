@@ -89,6 +89,7 @@ func (e *defaultEngine) executeToolCall(
 	if systemSandboxMode == "" {
 		systemSandboxMode = "off"
 	}
+	sandboxEnabledText := strconv.FormatBool(runner.config.SandboxEnabled)
 	runner.appendAudit(ctx, storagepkg.AuditEvent{
 		SessionID: sessionID,
 		TraceID:   traceID,
@@ -98,7 +99,7 @@ func (e *defaultEngine) executeToolCall(
 			"tool_name":        call.Function.Name,
 			"sandbox_lease_id": sandboxLeaseID,
 			"sandbox_run_id":   sandboxRunID,
-			"sandbox_enabled":  strconv.FormatBool(runner.config.SandboxEnabled),
+			"sandbox_enabled":  sandboxEnabledText,
 			"sandbox_mode":     systemSandboxMode,
 		},
 	})
@@ -113,7 +114,9 @@ func (e *defaultEngine) executeToolCall(
 		Name:      call.Function.Name,
 		Kind:      "tool",
 		Metadata: map[string]string{
-			"tool_name": call.Function.Name,
+			"tool_name":       call.Function.Name,
+			"sandbox_enabled": sandboxEnabledText,
+			"sandbox_mode":    systemSandboxMode,
 		},
 		Execute: func(execCtx context.Context) ([]byte, error) {
 			sandboxRoots := buildSandboxRoots(runner.workspace, runner.config.WritableRoots)

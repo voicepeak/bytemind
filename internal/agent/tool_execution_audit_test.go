@@ -211,6 +211,12 @@ func TestRunPromptExecutesToolThroughRuntimeGatewayBoundary(t *testing.T) {
 	if call.Name != "list_files" || call.Kind != "tool" {
 		t.Fatalf("expected runtime gateway tool request, got %+v", call)
 	}
+	if got := call.Metadata["sandbox_enabled"]; got != "true" {
+		t.Fatalf("expected runtime metadata sandbox_enabled=true, got %q", got)
+	}
+	if got := call.Metadata["sandbox_mode"]; got != "best_effort" {
+		t.Fatalf("expected runtime metadata sandbox_mode=best_effort, got %q", got)
+	}
 
 	if len(sess.Messages) < 3 {
 		t.Fatalf("expected tool result message to be persisted, got %#v", sess.Messages)
