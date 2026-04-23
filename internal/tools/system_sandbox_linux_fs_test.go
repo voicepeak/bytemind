@@ -2,6 +2,7 @@ package tools
 
 import (
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -24,7 +25,7 @@ func TestBuildRequiredLinuxShellCommandIncludesIsolationSteps(t *testing.T) {
 		t.Fatalf("resolve workspace canonical path: %v", err)
 	}
 	workspaceQuoted := shellSingleQuote(workspaceCanonical)
-	if !strings.Contains(command, "mount --bind "+workspaceQuoted+" "+workspaceQuoted) {
+	if !containsCommandFragment(command, "mount --bind "+workspaceQuoted+" "+workspaceQuoted) {
 		t.Fatalf("expected workspace bind step, got %q", command)
 	}
 	writableCanonical, err := canonicalPathForAccess(filepath.Clean(writable))
@@ -32,7 +33,7 @@ func TestBuildRequiredLinuxShellCommandIncludesIsolationSteps(t *testing.T) {
 		t.Fatalf("resolve writable canonical path: %v", err)
 	}
 	writableQuoted := shellSingleQuote(writableCanonical)
-	if !strings.Contains(command, "mount --bind "+writableQuoted+" "+writableQuoted) {
+	if !containsCommandFragment(command, "mount --bind "+writableQuoted+" "+writableQuoted) {
 		t.Fatalf("expected writable root bind step, got %q", command)
 	}
 	if !strings.Contains(command, "go test ./...") {
@@ -55,4 +56,18 @@ func TestShellSingleQuoteEscapesApostrophe(t *testing.T) {
 	if got != `'a'"'"'b'` {
 		t.Fatalf("unexpected quoting: %q", got)
 	}
+}
+
+func containsCommandFragment(command, fragment string) bool {
+	if strings.Contains(command, fragment) {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		norm := func(value string) string {
+			value = strings.ReplaceAll(value, `\`, `/`)
+			return strings.ToLower(value)
+		}
+		return strings.Contains(norm(command), norm(fragment))
+	}
+	return false
 }

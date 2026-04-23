@@ -108,9 +108,14 @@ func TestResolveWorkspaceRejectsFilePathOverride(t *testing.T) {
 }
 
 func samePath(a, b string) bool {
+	leftInfo, leftErr := os.Stat(a)
+	rightInfo, rightErr := os.Stat(b)
+	if leftErr == nil && rightErr == nil {
+		return os.SameFile(leftInfo, rightInfo)
+	}
 	left := normalizeExistingPath(a)
 	right := normalizeExistingPath(b)
-	return strings.EqualFold(left, right)
+	return filepath.Clean(left) == filepath.Clean(right)
 }
 
 func normalizeExistingPath(path string) string {
