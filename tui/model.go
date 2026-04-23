@@ -725,14 +725,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if !m.sessionsOpen && !m.helpOpen && !m.commandOpen && m.approval == nil {
-		before := m.input.Value()
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		if m.input.Value() != before {
-			m.handleInputMutation(before, m.input.Value(), "")
-			m.syncInputOverlays()
-		}
-		return m, cmd
+		return m.defaultInputComponent().Update(m, msg)
 	}
 
 	return m, nil
