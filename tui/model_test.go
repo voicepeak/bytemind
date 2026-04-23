@@ -1793,6 +1793,190 @@ func TestPlanActionOptionAdjustPlanKeepsPlanModeAndPreservesDisplay(t *testing.T
 	}
 }
 
+func TestRunFinishedOpensPlanActionPicker(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		screen:    screenChat,
+		width:     100,
+		height:    24,
+		input:     input,
+		viewport:  viewport.New(0, 0),
+		planView:  viewport.New(0, 0),
+		mode:      modePlan,
+		sess:      session.New("E:\\bytemind"),
+		workspace: "E:\\bytemind",
+		plan: planpkg.State{
+			Goal:                "Finish plan mode",
+			Phase:               planpkg.PhaseReady,
+			Steps:               []planpkg.Step{{Title: "Implement continuation", Status: planpkg.StepPending}},
+			ScopeDefined:        true,
+			RiskRollbackDefined: true,
+			VerificationDefined: true,
+		},
+	}
+
+	m.handleAgentEvent(Event{Type: EventRunFinished, Content: "done"})
+	if !m.planActionOpen {
+		t.Fatalf("expected plan action picker to open")
+	}
+	footer := m.renderFooter()
+	for _, want := range []string{"下一步", "A", "切到 Build 模式，开始执行", "B", "继续微调计划"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("expected footer to include %q, got %q", want, footer)
+		}
+	}
+}
+
+func TestRunFinishedSequenceOpensPlanActionPickerAfterBusyClears(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		screen:      screenChat,
+		width:       100,
+		height:      24,
+		input:       input,
+		viewport:    viewport.New(0, 0),
+		planView:    viewport.New(0, 0),
+		mode:        modePlan,
+		busy:        true,
+		activeRunID: 7,
+		sess:        session.New("E:\\bytemind"),
+		workspace:   "E:\\bytemind",
+		plan: planpkg.State{
+			Goal:                "Finish plan mode",
+			Phase:               planpkg.PhaseReady,
+			Steps:               []planpkg.Step{{Title: "Implement continuation", Status: planpkg.StepPending}},
+			ScopeDefined:        true,
+			RiskRollbackDefined: true,
+			VerificationDefined: true,
+		},
+	}
+
+	m.handleAgentEvent(Event{Type: EventRunFinished, Content: "done"})
+	if m.planActionOpen {
+		t.Fatalf("expected picker to stay closed until runFinishedMsg clears busy")
+	}
+
+	got, _ := m.Update(runFinishedMsg{RunID: 7})
+	updated := got.(model)
+	if !updated.planActionOpen {
+		t.Fatalf("expected plan action picker to open after runFinishedMsg")
+	}
+	if updated.statusNote != "Choose the next step from the picker." {
+		t.Fatalf("expected picker status note, got %q", updated.statusNote)
+	}
+}
+
+func TestRunFinishedCanceledClosesPlanActionPicker(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		screen:         screenChat,
+		width:          100,
+		height:         24,
+		input:          input,
+		viewport:       viewport.New(0, 0),
+		planView:       viewport.New(0, 0),
+		mode:           modePlan,
+		planActionOpen: true,
+		activeRunID:    8,
+		sess:           session.New("E:\\bytemind"),
+		workspace:      "E:\\bytemind",
+		plan: planpkg.State{
+			Goal:                "Finish plan mode",
+			Phase:               planpkg.PhaseReady,
+			Steps:               []planpkg.Step{{Title: "Implement continuation", Status: planpkg.StepPending}},
+			ScopeDefined:        true,
+			RiskRollbackDefined: true,
+			VerificationDefined: true,
+		},
+	}
+
+	got, _ := m.Update(runFinishedMsg{RunID: 8, Err: context.Canceled})
+	updated := got.(model)
+	if updated.planActionOpen {
+		t.Fatalf("expected canceled run to close the plan action picker")
+	}
+	if updated.statusNote != "Run canceled." {
+		t.Fatalf("expected canceled status note, got %q", updated.statusNote)
+	}
+}
+
+func TestPlanActionPickerHandlesShortcutSelectionWithoutTextInput(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	m := model{
+		screen:    screenChat,
+		width:     100,
+		height:    24,
+		input:     input,
+		viewport:  viewport.New(0, 0),
+		planView:  viewport.New(0, 0),
+		mode:      modePlan,
+		sess:      session.New("E:\\bytemind"),
+		workspace: "E:\\bytemind",
+		plan: planpkg.State{
+			Goal:                "Finish plan mode",
+			Phase:               planpkg.PhaseReady,
+			NextAction:          "Start: Implement continuation",
+			Steps:               []planpkg.Step{{Title: "Implement continuation", Status: planpkg.StepPending}},
+			ScopeDefined:        true,
+			RiskRollbackDefined: true,
+			VerificationDefined: true,
+		},
+	}
+	m.syncPlanActionPicker()
+
+	got, _ := m.handlePlanActionKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	updated := got.(model)
+	if updated.mode != modeBuild {
+		t.Fatalf("expected picker shortcut to switch to build mode, got %q", updated.mode)
+	}
+	if updated.sess.Mode != planpkg.ModeBuild {
+		t.Fatalf("expected session mode to switch to build, got %q", updated.sess.Mode)
+	}
+	if len(updated.chatItems) == 0 || updated.chatItems[0].Body != "A. 切到 Build 模式，开始执行" {
+		t.Fatalf("expected picker action to append labeled choice, got %#v", updated.chatItems)
+	}
+}
+
+func TestFinishAssistantMessageStripsPlanActionTailWhenPickerRendersSeparately(t *testing.T) {
+	m := model{
+		mode: modePlan,
+		plan: planpkg.State{
+			Goal:                "Finish plan mode",
+			Phase:               planpkg.PhaseReady,
+			Steps:               []planpkg.Step{{Title: "Implement continuation", Status: planpkg.StepPending}},
+			ScopeDefined:        true,
+			RiskRollbackDefined: true,
+			VerificationDefined: true,
+		},
+	}
+
+	m.finishAssistantMessage(strings.Join([]string{
+		"Plan is converged.",
+		"",
+		"<proposed_plan>",
+		"Goal",
+		"- Finish plan mode",
+		"</proposed_plan>",
+		"",
+		"Choose next step:",
+		"1. Start execution",
+		"2. Adjust plan",
+		"Reply with 1 / A / start execution / continue execution to enter Build mode.",
+	}, "\n"))
+
+	if len(m.chatItems) == 0 {
+		t.Fatalf("expected assistant message to be recorded")
+	}
+	body := m.chatItems[len(m.chatItems)-1].Body
+	if strings.Contains(body, "Reply with 1") || strings.Contains(body, "Choose next step:") {
+		t.Fatalf("expected action tail to be stripped, got %q", body)
+	}
+	if !strings.Contains(body, "<proposed_plan>") {
+		t.Fatalf("expected proposed plan to remain, got %q", body)
+	}
+}
+
 func TestIsContinueExecutionInputSupportsPlanAlias(t *testing.T) {
 	for _, input := range []string{"continue plan", "start execution", "\u7ee7\u7eed", "\u5f00\u59cb\u6267\u884c"} {
 		if !isContinueExecutionInput(input) {

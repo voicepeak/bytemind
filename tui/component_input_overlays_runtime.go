@@ -409,6 +409,7 @@ func (m *model) toggleMode() {
 			_ = m.store.Save(m.sess)
 		}
 	}
+	m.syncPlanActionPicker()
 	if m.width > 0 && m.height > 0 {
 		m.syncLayoutForCurrentScreen()
 		m.refreshViewport()

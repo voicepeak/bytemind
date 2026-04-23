@@ -59,6 +59,7 @@ func (m model) submitPreparedPrompt(promptInput RunPromptInput, displayText stri
 	if strings.TrimSpace(promptInput.DisplayText) == "" && strings.TrimSpace(displayText) != "" {
 		promptInput.DisplayText = displayText
 	}
+	m.closePlanActionPicker()
 	m.input.Reset()
 	m.clearPasteTransaction()
 	m.clearVirtualPasteParts()
@@ -204,11 +205,14 @@ func (m *model) handleAgentEvent(event Event) {
 		}
 		switch {
 		case canContinuePlan(m.plan):
-			m.statusNote = "Plan converged. Reply 1 / A / start execution to switch to Build mode."
+			m.statusNote = "Plan converged. Review the full plan, then choose the next action from the picker."
 		case len(m.plan.DecisionGaps) > 0:
 			m.statusNote = fmt.Sprintf("Plan updated. %d decision gap(s) remain.", len(m.plan.DecisionGaps))
 		default:
 			m.statusNote = fmt.Sprintf("Plan updated with %d step(s).", len(m.plan.Steps))
+		}
+		if !canContinuePlan(m.plan) {
+			m.closePlanActionPicker()
 		}
 	case EventUsageUpdated:
 		m.applyUsage(event.Usage)
@@ -217,6 +221,12 @@ func (m *model) handleAgentEvent(event Event) {
 			m.statusNote = "Run finished."
 		}
 		m.phase = "idle"
+		if m.mode == modePlan && canContinuePlan(m.plan) {
+			m.syncPlanActionPicker()
+			m.statusNote = "请选择下一步：开始执行，或继续微调计划。"
+		} else {
+			m.closePlanActionPicker()
+		}
 	}
 }
 

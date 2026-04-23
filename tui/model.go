@@ -304,6 +304,8 @@ type model struct {
 	chatItems                  []chatEntry
 	toolRuns                   []toolRun
 	plan                       planpkg.State
+	planAction                 *planActionPicker
+	planActionOpen             bool
 	sessions                   []session.Summary
 	sessionLimit               int
 	sessionCursor              int
@@ -500,6 +502,7 @@ func newModel(opts Options) model {
 	m.tokenUsage.SetBreakdown(m.tokenInput, m.tokenOutput, m.tokenContext)
 	m.ensureSessionImageAssets()
 	m.ensurePastedContentState()
+	m.syncPlanActionPicker()
 	m.syncInputStyle()
 	m.syncInputOverlays()
 	if m.mentionIndex != nil {
@@ -618,21 +621,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.shouldKeepStreamingIndexOnRunFinished() {
 				m.streamingIndex = -1
 			}
-			m.statusNote = "Ready."
 			m.phase = "idle"
+			if m.mode == modePlan && canContinuePlan(m.plan) {
+				m.syncPlanActionPicker()
+				m.statusNote = "Choose the next step from the picker."
+			} else {
+				m.closePlanActionPicker()
+				m.statusNote = "Ready."
+			}
 		case runFinishReasonCanceled:
 			m.streamingIndex = -1
+			m.closePlanActionPicker()
 			m.statusNote = "Run canceled."
 			m.phase = "idle"
 			m.llmConnected = true
 		case runFinishReasonFailed:
 			m.streamingIndex = -1
+			m.closePlanActionPicker()
 			m.statusNote = "Run failed: " + msg.Err.Error()
 			m.phase = "error"
 			m.llmConnected = false
 			m.failLatestAssistant(msg.Err.Error())
 		default:
 			m.streamingIndex = -1
+			m.closePlanActionPicker()
 			m.statusNote = "Ready."
 			m.phase = "idle"
 		}
@@ -724,7 +736,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	}
 
-	if !m.sessionsOpen && !m.helpOpen && !m.commandOpen && m.approval == nil {
+	if !m.sessionsOpen && !m.helpOpen && !m.commandOpen && !m.planActionOpen && m.approval == nil {
 		before := m.input.Value()
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
@@ -1057,6 +1069,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.promptSearchOpen {
 		return m.handlePromptSearchKey(msg)
 	}
+	if m.planActionOpen {
+		return m.handlePlanActionKey(msg)
+	}
 
 	if m.shouldPromoteImplicitPasteCandidate(msg) {
 		return m, m.captureImplicitPasteCandidate(msg)
@@ -1079,7 +1094,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case "tab":
-		if m.commandOpen || m.mentionOpen || m.sessionsOpen || m.helpOpen || m.approval != nil {
+		if m.commandOpen || m.mentionOpen || m.sessionsOpen || m.helpOpen || m.approval != nil || m.planActionOpen {
 			break
 		}
 		m.toggleMode()
@@ -1090,12 +1105,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "ctrl+f":
-		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.skillsOpen || m.commandOpen || m.mentionOpen {
+		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.skillsOpen || m.commandOpen || m.mentionOpen || m.planActionOpen {
 			return m, nil
 		}
 		return m, m.openPromptSearch(promptSearchModeQuick)
 	case "ctrl+k":
-		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.commandOpen || m.mentionOpen || m.busy {
+		if m.approval != nil || m.helpOpen || m.sessionsOpen || m.commandOpen || m.mentionOpen || m.planActionOpen || m.busy {
 			return m, nil
 		}
 		if err := m.openSkillsPicker(); err != nil {
