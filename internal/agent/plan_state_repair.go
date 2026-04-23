@@ -2,11 +2,80 @@ package agent
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"bytemind/internal/llm"
 	planpkg "bytemind/internal/plan"
 )
+
+var clarifyChoiceShortcutPattern = regexp.MustCompile(`(?i)(^|[\s/|,，;；:：\-])([a-d]|1|2|3|4)([.)：:\s]|$)`)
+
+func shouldRepairPlanClarifyTurn(runMode planpkg.AgentMode, state planpkg.State, intent assistantTurnIntent, reply llm.Message) bool {
+	if runMode != planpkg.ModePlan || len(reply.ToolCalls) > 0 {
+		return false
+	}
+
+	state = planpkg.NormalizeState(state)
+	if !planpkg.HasStructuredPlan(state) || !planpkg.HasDecisionGaps(state) || planpkg.HasActiveChoice(state) {
+		return false
+	}
+
+	text := strings.TrimSpace(reply.Content)
+	if text == "" {
+		return false
+	}
+
+	if intent == turnIntentAskUser {
+		return true
+	}
+	return looksLikeInlineClarifyChoicePrompt(text)
+}
+
+func buildPlanClarifyRepairInstruction(state planpkg.State, reply llm.Message, attempt, maxAttempts int) string {
+	state = planpkg.NormalizeState(state)
+	preview := strings.TrimSpace(reply.Content)
+	if preview == "" {
+		preview = "(empty assistant text)"
+	}
+	preview = truncateRunes(preview, 240)
+
+	gaps := "(none recorded)"
+	if len(state.DecisionGaps) > 0 {
+		items := make([]string, 0, len(state.DecisionGaps))
+		for _, gap := range state.DecisionGaps {
+			gap = strings.TrimSpace(gap)
+			if gap != "" {
+				items = append(items, "- "+gap)
+			}
+		}
+		if len(items) > 0 {
+			gaps = strings.Join(items, "\n")
+		}
+	}
+
+	return strings.TrimSpace(fmt.Sprintf(
+		`The previous assistant turn asked the user to choose among plan options in prose without storing active_choice first.
+Attempt %d/%d.
+
+Reply text preview:
+%s
+
+Current unresolved decision gaps:
+%s
+
+For this next turn:
+1) Call update_plan before finalizing.
+2) Populate active_choice with a stable id, kind="clarify", one question, and 2 to 4 mutually exclusive options.
+3) Put the recommended option first and include explicit shortcuts such as A/B/C. Use one freeform option only if custom input is truly needed.
+4) Keep phase in clarify unless this decision fully converges the plan.
+5) Keep the visible assistant reply to one short lead sentence only. Do not inline the full A/B/C choice block in prose when the UI can render it.`,
+		attempt,
+		maxAttempts,
+		preview,
+		gaps,
+	))
+}
 
 func shouldRepairPlanDecisionTurn(runMode planpkg.AgentMode, state planpkg.State, intent assistantTurnIntent, reply llm.Message) bool {
 	if runMode != planpkg.ModePlan || len(reply.ToolCalls) > 0 {
@@ -90,6 +159,56 @@ func looksLikeClarifyingQuestion(text string) bool {
 		return true
 	}
 	return false
+}
+
+func looksLikeInlineClarifyChoicePrompt(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized == "" {
+		return false
+	}
+	if looksLikeClarifyingQuestion(text) {
+		return true
+	}
+	if countChoiceShortcuts(normalized) < 2 {
+		return false
+	}
+	if strings.Contains(normalized, "/") || strings.Contains(normalized, "\n") {
+		return true
+	}
+	return containsAnyToken(normalized,
+		"choose",
+		"pick",
+		"select",
+		"option",
+		"which",
+		"prefer",
+		"please choose",
+		"please pick",
+		"please select",
+		"请选择",
+		"请先选",
+		"先选",
+		"选择",
+		"选哪个",
+		"选目录",
+		"选路线",
+		"选方案",
+	)
+}
+
+func countChoiceShortcuts(text string) int {
+	matches := clarifyChoiceShortcutPattern.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		seen[strings.ToLower(strings.TrimSpace(match[2]))] = struct{}{}
+	}
+	return len(seen)
 }
 
 func looksLikePlanDecisionAcknowledgement(text string) bool {

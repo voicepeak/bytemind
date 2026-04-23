@@ -72,5 +72,17 @@ func ValidateState(state State) ValidationResult {
 			result.Warnings = append(result.Warnings, "converged plans must confirm scope, risks/rollback, and verification")
 		}
 	}
+	if state.ActiveChoice != nil {
+		if strings.TrimSpace(state.ActiveChoice.Question) == "" {
+			result.OK = false
+			result.RequiresReplan = true
+			result.Warnings = append(result.Warnings, "active choice requires a question")
+		}
+		if len(state.ActiveChoice.Options) < 2 {
+			result.OK = false
+			result.RequiresReplan = true
+			result.Warnings = append(result.Warnings, "active choice requires at least two options")
+		}
+	}
 	return result
 }

@@ -66,22 +66,40 @@ type Decision struct {
 	Reason   string `json:"reason,omitempty"`
 }
 
+type ChoiceOption struct {
+	ID          string `json:"id,omitempty"`
+	Shortcut    string `json:"shortcut,omitempty"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	Recommended bool   `json:"recommended,omitempty"`
+	Freeform    bool   `json:"freeform,omitempty"`
+}
+
+type ActiveChoice struct {
+	ID       string         `json:"id,omitempty"`
+	Kind     string         `json:"kind,omitempty"`
+	Question string         `json:"question"`
+	GapKey   string         `json:"gap_key,omitempty"`
+	Options  []ChoiceOption `json:"options,omitempty"`
+}
+
 type State struct {
-	Goal                string     `json:"goal,omitempty"`
-	Summary             string     `json:"summary,omitempty"`
-	ImplementationBrief string     `json:"implementation_brief,omitempty"`
-	Phase               Phase      `json:"phase,omitempty"`
-	UpdatedAt           time.Time  `json:"updated_at,omitempty"`
-	Steps               []Step     `json:"steps,omitempty"`
-	Risks               []string   `json:"risks,omitempty"`
-	Verification        []string   `json:"verification,omitempty"`
-	DecisionLog         []Decision `json:"decision_log,omitempty"`
-	DecisionGaps        []string   `json:"decision_gaps,omitempty"`
-	ScopeDefined        bool       `json:"scope_defined,omitempty"`
-	RiskRollbackDefined bool       `json:"risk_and_rollback_defined,omitempty"`
-	VerificationDefined bool       `json:"verification_defined,omitempty"`
-	NextAction          string     `json:"next_action,omitempty"`
-	BlockReason         string     `json:"block_reason,omitempty"`
+	Goal                string        `json:"goal,omitempty"`
+	Summary             string        `json:"summary,omitempty"`
+	ImplementationBrief string        `json:"implementation_brief,omitempty"`
+	Phase               Phase         `json:"phase,omitempty"`
+	UpdatedAt           time.Time     `json:"updated_at,omitempty"`
+	Steps               []Step        `json:"steps,omitempty"`
+	Risks               []string      `json:"risks,omitempty"`
+	Verification        []string      `json:"verification,omitempty"`
+	DecisionLog         []Decision    `json:"decision_log,omitempty"`
+	DecisionGaps        []string      `json:"decision_gaps,omitempty"`
+	ActiveChoice        *ActiveChoice `json:"active_choice,omitempty"`
+	ScopeDefined        bool          `json:"scope_defined,omitempty"`
+	RiskRollbackDefined bool          `json:"risk_and_rollback_defined,omitempty"`
+	VerificationDefined bool          `json:"verification_defined,omitempty"`
+	NextAction          string        `json:"next_action,omitempty"`
+	BlockReason         string        `json:"block_reason,omitempty"`
 }
 
 func NormalizeMode(raw string) AgentMode {
@@ -164,6 +182,18 @@ func CloneDecisionLog(entries []Decision) []Decision {
 	return cloned
 }
 
+func CloneActiveChoice(choice *ActiveChoice) *ActiveChoice {
+	if choice == nil {
+		return nil
+	}
+	cloned := *choice
+	if len(choice.Options) > 0 {
+		cloned.Options = make([]ChoiceOption, len(choice.Options))
+		copy(cloned.Options, choice.Options)
+	}
+	return &cloned
+}
+
 func CloneState(state State) State {
 	cloned := state
 	cloned.Steps = CloneSteps(state.Steps)
@@ -171,6 +201,7 @@ func CloneState(state State) State {
 	cloned.Verification = append([]string(nil), state.Verification...)
 	cloned.DecisionLog = CloneDecisionLog(state.DecisionLog)
 	cloned.DecisionGaps = append([]string(nil), state.DecisionGaps...)
+	cloned.ActiveChoice = CloneActiveChoice(state.ActiveChoice)
 	return cloned
 }
 
@@ -199,6 +230,11 @@ func CountByStatus(state State, status StepStatus) int {
 
 func HasDecisionGaps(state State) bool {
 	return len(state.DecisionGaps) > 0
+}
+
+func HasActiveChoice(state State) bool {
+	state = NormalizeState(state)
+	return state.ActiveChoice != nil && len(state.ActiveChoice.Options) > 0 && strings.TrimSpace(state.ActiveChoice.Question) != ""
 }
 
 func HasExecutionReadiness(state State) bool {
@@ -287,14 +323,19 @@ func NormalizeState(state State) State {
 	state.Verification = trimStrings(state.Verification)
 	state.DecisionLog = normalizeDecisionLog(state.DecisionLog)
 	state.DecisionGaps = trimStrings(state.DecisionGaps)
+	state.ActiveChoice = normalizeActiveChoice(state.ActiveChoice)
 	if len(state.Steps) == 0 {
 		state.Steps = nil
+		if len(state.DecisionGaps) == 0 || state.Phase == PhaseConvergeReady || state.Phase == PhaseApprovedToBuild {
+			state.ActiveChoice = nil
+		}
 		if state.Phase == PhaseNone &&
 			strings.TrimSpace(state.Goal) == "" &&
 			strings.TrimSpace(state.Summary) == "" &&
 			strings.TrimSpace(state.ImplementationBrief) == "" &&
 			len(state.DecisionLog) == 0 &&
 			len(state.DecisionGaps) == 0 &&
+			state.ActiveChoice == nil &&
 			len(state.Risks) == 0 &&
 			len(state.Verification) == 0 {
 			return state
@@ -329,6 +370,9 @@ func NormalizeState(state State) State {
 	}
 	if state.Phase == PhaseNone {
 		state.Phase = DerivePhase(ModeBuild, state)
+	}
+	if len(state.DecisionGaps) == 0 || state.Phase == PhaseConvergeReady || state.Phase == PhaseApprovedToBuild {
+		state.ActiveChoice = nil
 	}
 	return state
 }
@@ -384,6 +428,49 @@ func normalizeDecisionLog(entries []Decision) []Decision {
 		return nil
 	}
 	return out
+}
+
+func normalizeActiveChoice(choice *ActiveChoice) *ActiveChoice {
+	if choice == nil {
+		return nil
+	}
+	normalized := &ActiveChoice{
+		ID:       strings.TrimSpace(choice.ID),
+		Kind:     strings.ToLower(strings.TrimSpace(choice.Kind)),
+		Question: strings.TrimSpace(choice.Question),
+		GapKey:   strings.TrimSpace(choice.GapKey),
+	}
+	options := make([]ChoiceOption, 0, len(choice.Options))
+	for i, option := range choice.Options {
+		title := strings.TrimSpace(option.Title)
+		if title == "" {
+			continue
+		}
+		id := strings.TrimSpace(option.ID)
+		if id == "" {
+			id = fmt.Sprintf("o%d", i+1)
+		}
+		shortcut := strings.ToUpper(strings.TrimSpace(option.Shortcut))
+		if shortcut == "" {
+			shortcut = string(rune('A' + i))
+		}
+		options = append(options, ChoiceOption{
+			ID:          id,
+			Shortcut:    shortcut,
+			Title:       title,
+			Description: strings.TrimSpace(option.Description),
+			Recommended: option.Recommended,
+			Freeform:    option.Freeform,
+		})
+	}
+	if normalized.Question == "" || len(options) < 2 {
+		return nil
+	}
+	if normalized.Kind == "" {
+		normalized.Kind = "clarify"
+	}
+	normalized.Options = options
+	return normalized
 }
 
 func hasStepStatus(steps []Step, want StepStatus) bool {

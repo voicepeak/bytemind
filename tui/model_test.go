@@ -1938,6 +1938,144 @@ func TestPlanActionPickerHandlesShortcutSelectionWithoutTextInput(t *testing.T) 
 	}
 }
 
+func TestRunFinishedSequenceOpensClarifyChoicePickerAfterBusyClears(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		screen:      screenChat,
+		width:       100,
+		height:      24,
+		input:       input,
+		viewport:    viewport.New(0, 0),
+		planView:    viewport.New(0, 0),
+		mode:        modePlan,
+		busy:        true,
+		activeRunID: 9,
+		sess:        session.New("E:\\bytemind"),
+		workspace:   "E:\\bytemind",
+		plan: planpkg.State{
+			Goal:         "Finish clarify picker",
+			Phase:        planpkg.PhaseClarify,
+			DecisionGaps: []string{"Choose the frontend stack"},
+			Steps:        []planpkg.Step{{Title: "Choose frontend", Status: planpkg.StepPending}},
+			ActiveChoice: &planpkg.ActiveChoice{
+				ID:       "frontend_stack",
+				Kind:     "clarify",
+				Question: "前端希望走哪条路线？",
+				Options: []planpkg.ChoiceOption{
+					{ID: "fastapi", Shortcut: "A", Title: "FastAPI + Jinja2 HTML", Recommended: true},
+					{ID: "flask", Shortcut: "B", Title: "Flask + Jinja2 HTML"},
+					{ID: "other", Shortcut: "C", Title: "Other", Freeform: true},
+				},
+			},
+		},
+	}
+
+	m.handleAgentEvent(Event{Type: EventRunFinished, Content: "done"})
+	if m.planActionOpen {
+		t.Fatalf("expected clarify picker to stay closed until runFinishedMsg clears busy")
+	}
+
+	got, _ := m.Update(runFinishedMsg{RunID: 9})
+	updated := got.(model)
+	if !updated.planActionOpen {
+		t.Fatalf("expected clarify picker to open after runFinishedMsg")
+	}
+	if updated.statusNote != "Choose the current decision from the picker." {
+		t.Fatalf("expected clarify picker status note, got %q", updated.statusNote)
+	}
+	footer := updated.renderFooter()
+	for _, want := range []string{"当前决策", "前端希望走哪条路线？", "FastAPI + Jinja2 HTML", "Flask + Jinja2 HTML", "Other"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("expected footer to include %q, got %q", want, footer)
+		}
+	}
+}
+
+func TestPlanActionPickerHandlesClarifyShortcutSelectionWithoutTextInput(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	m := model{
+		screen:    screenChat,
+		width:     100,
+		height:    24,
+		input:     input,
+		viewport:  viewport.New(0, 0),
+		planView:  viewport.New(0, 0),
+		mode:      modePlan,
+		sess:      session.New("E:\\bytemind"),
+		workspace: "E:\\bytemind",
+		plan: planpkg.State{
+			Goal:         "Finish clarify picker",
+			Phase:        planpkg.PhaseClarify,
+			DecisionGaps: []string{"Choose the frontend stack"},
+			Steps:        []planpkg.Step{{Title: "Choose frontend", Status: planpkg.StepPending}},
+			ActiveChoice: &planpkg.ActiveChoice{
+				ID:       "frontend_stack",
+				Kind:     "clarify",
+				Question: "前端希望走哪条路线？",
+				Options: []planpkg.ChoiceOption{
+					{ID: "fastapi", Shortcut: "A", Title: "FastAPI + Jinja2 HTML", Recommended: true},
+					{ID: "other", Shortcut: "B", Title: "Other", Freeform: true},
+				},
+			},
+		},
+	}
+	m.syncPlanActionPicker()
+
+	got, _ := m.handlePlanActionKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	updated := got.(model)
+	if updated.mode != modePlan {
+		t.Fatalf("expected clarify picker to stay in plan mode, got %q", updated.mode)
+	}
+	if len(updated.chatItems) == 0 || updated.chatItems[0].Body != "A. FastAPI + Jinja2 HTML" {
+		t.Fatalf("expected clarify choice to append labeled choice, got %#v", updated.chatItems)
+	}
+}
+
+func TestPlanActionPickerFreeformOptionClosesPickerAndWaitsForInput(t *testing.T) {
+	input := textarea.New()
+	input.Focus()
+	m := model{
+		screen:    screenChat,
+		width:     100,
+		height:    24,
+		input:     input,
+		viewport:  viewport.New(0, 0),
+		planView:  viewport.New(0, 0),
+		mode:      modePlan,
+		sess:      session.New("E:\\bytemind"),
+		workspace: "E:\\bytemind",
+		plan: planpkg.State{
+			Goal:         "Finish clarify picker",
+			Phase:        planpkg.PhaseClarify,
+			DecisionGaps: []string{"Choose the frontend stack"},
+			Steps:        []planpkg.Step{{Title: "Choose frontend", Status: planpkg.StepPending}},
+			ActiveChoice: &planpkg.ActiveChoice{
+				ID:       "frontend_stack",
+				Kind:     "clarify",
+				Question: "前端希望走哪条路线？",
+				Options: []planpkg.ChoiceOption{
+					{ID: "fastapi", Shortcut: "A", Title: "FastAPI + Jinja2 HTML"},
+					{ID: "other", Shortcut: "B", Title: "Other", Freeform: true},
+				},
+			},
+		},
+	}
+	m.syncPlanActionPicker()
+
+	got, _ := m.handlePlanActionKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	updated := got.(model)
+	if updated.planActionOpen {
+		t.Fatalf("expected freeform choice to close the picker")
+	}
+	if updated.statusNote != "请在输入框补充你的自定义方案，然后按 Enter。" {
+		t.Fatalf("expected freeform guidance note, got %q", updated.statusNote)
+	}
+	if len(updated.chatItems) != 0 {
+		t.Fatalf("expected freeform choice not to submit yet, got %#v", updated.chatItems)
+	}
+}
+
 func TestFinishAssistantMessageStripsPlanActionTailWhenPickerRendersSeparately(t *testing.T) {
 	m := model{
 		mode: modePlan,
@@ -1974,6 +2112,69 @@ func TestFinishAssistantMessageStripsPlanActionTailWhenPickerRendersSeparately(t
 	}
 	if !strings.Contains(body, "<proposed_plan>") {
 		t.Fatalf("expected proposed plan to remain, got %q", body)
+	}
+}
+
+func TestFinishAssistantMessageStripsClarifyChoiceBlockWhenPickerRendersSeparately(t *testing.T) {
+	m := model{
+		mode: modePlan,
+		plan: planpkg.State{
+			Phase:        planpkg.PhaseClarify,
+			DecisionGaps: []string{"Choose the frontend stack"},
+			Steps:        []planpkg.Step{{Title: "Choose frontend", Status: planpkg.StepPending}},
+			ActiveChoice: &planpkg.ActiveChoice{
+				ID:       "frontend_stack",
+				Kind:     "clarify",
+				Question: "前端希望走哪条路线？",
+				Options: []planpkg.ChoiceOption{
+					{ID: "fastapi", Shortcut: "A", Title: "FastAPI + Jinja2 HTML"},
+					{ID: "flask", Shortcut: "B", Title: "Flask + Jinja2 HTML"},
+				},
+			},
+		},
+	}
+
+	m.finishAssistantMessage(strings.Join([]string{
+		"请确认下面这个关键决策。",
+		"",
+		"Question: 前端希望走哪条路线？",
+		"A. FastAPI + Jinja2 HTML - 推荐",
+		"B. Flask + Jinja2 HTML - 兼容现有栈",
+	}, "\n"))
+
+	if len(m.chatItems) == 0 {
+		t.Fatalf("expected assistant message to be recorded")
+	}
+	body := m.chatItems[len(m.chatItems)-1].Body
+	if strings.Contains(body, "Question:") || strings.Contains(body, "A. FastAPI + Jinja2 HTML") {
+		t.Fatalf("expected clarify choice block to be stripped, got %q", body)
+	}
+	if !strings.Contains(body, "请确认下面这个关键决策。") {
+		t.Fatalf("expected lead sentence to remain, got %q", body)
+	}
+}
+
+func TestResolvePlanActionSelectionUsesActiveChoice(t *testing.T) {
+	state := planpkg.State{
+		Phase:        planpkg.PhaseClarify,
+		DecisionGaps: []string{"Choose the frontend stack"},
+		Steps:        []planpkg.Step{{Title: "Choose frontend", Status: planpkg.StepPending}},
+		ActiveChoice: &planpkg.ActiveChoice{
+			ID:       "frontend_stack",
+			Kind:     "clarify",
+			Question: "前端希望走哪条路线？",
+			Options: []planpkg.ChoiceOption{
+				{ID: "fastapi", Shortcut: "A", Title: "FastAPI + Jinja2 HTML"},
+				{ID: "other", Shortcut: "B", Title: "Other", Freeform: true},
+			},
+		},
+	}
+
+	if got, ok := resolvePlanActionSelection("a", state, nil); !ok || got != "choice:frontend_stack:fastapi" {
+		t.Fatalf("expected active choice shortcut to resolve, got %q ok=%v", got, ok)
+	}
+	if got, ok := resolvePlanActionSelection("other", state, nil); !ok || got != "choice:frontend_stack:other" {
+		t.Fatalf("expected active choice freeform shortcut to resolve, got %q ok=%v", got, ok)
 	}
 }
 

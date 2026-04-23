@@ -130,6 +130,35 @@ func TestSystemPromptIncludesCurrentPlanStateWhenPresent(t *testing.T) {
 	assertContains(t, prompt, "execution_readiness: scope=yes, risks_rollback=yes, verification=no")
 }
 
+func TestSystemPromptIncludesActiveChoiceWhenPresent(t *testing.T) {
+	prompt := systemPrompt(PromptInput{
+		Workspace:      "/tmp/workspace",
+		ApprovalPolicy: "never",
+		Model:          "deepseek-chat",
+		Mode:           "plan",
+		Platform:       "darwin/arm64",
+		Now:            time.Date(2026, 4, 3, 0, 0, 0, 0, time.UTC),
+		Plan: planpkg.State{
+			Phase:        planpkg.PhaseClarify,
+			Steps:        []planpkg.Step{{Title: "Choose frontend", Status: planpkg.StepPending}},
+			DecisionGaps: []string{"Choose the frontend stack"},
+			ActiveChoice: &planpkg.ActiveChoice{
+				ID:       "frontend_stack",
+				Kind:     "clarify",
+				Question: "前端希望走哪条路线？",
+				Options: []planpkg.ChoiceOption{
+					{ID: "a", Shortcut: "A", Title: "FastAPI + Jinja2", Recommended: true},
+					{ID: "b", Shortcut: "B", Title: "Flask + Jinja2"},
+				},
+			},
+		},
+	})
+
+	assertContains(t, prompt, "active_choice:")
+	assertContains(t, prompt, "- question: 前端希望走哪条路线？")
+	assertContains(t, prompt, "- [A] FastAPI + Jinja2 -- recommended")
+}
+
 func TestModePromptDefaultsToBuild(t *testing.T) {
 	prompt := strings.TrimSpace(modePrompt(""))
 	assertContains(t, prompt, "[Current Mode]")

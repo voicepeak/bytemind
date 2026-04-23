@@ -102,6 +102,29 @@ func RenderPromptStateBlock(state State) string {
 	if len(state.DecisionGaps) > 0 {
 		lines = append(lines, "decision_gaps: "+strings.Join(state.DecisionGaps, " | "))
 	}
+	if state.ActiveChoice != nil {
+		lines = append(lines, "active_choice:")
+		if state.ActiveChoice.ID != "" {
+			lines = append(lines, "- id: "+state.ActiveChoice.ID)
+		}
+		if state.ActiveChoice.Kind != "" {
+			lines = append(lines, "- kind: "+state.ActiveChoice.Kind)
+		}
+		lines = append(lines, "- question: "+state.ActiveChoice.Question)
+		for _, option := range state.ActiveChoice.Options {
+			label := fmt.Sprintf("- [%s] %s", option.Shortcut, option.Title)
+			if option.Description != "" {
+				label += " -- " + option.Description
+			}
+			if option.Recommended {
+				label += " -- recommended"
+			}
+			if option.Freeform {
+				label += " -- freeform"
+			}
+			lines = append(lines, label)
+		}
+	}
 	if len(state.DecisionLog) > 0 {
 		lines = append(lines, "decision_log:")
 		for _, entry := range state.DecisionLog {
@@ -161,6 +184,7 @@ func hasRenderablePlanState(state State) bool {
 		strings.TrimSpace(state.ImplementationBrief) != "" ||
 		len(state.DecisionLog) > 0 ||
 		len(state.DecisionGaps) > 0 ||
+		state.ActiveChoice != nil ||
 		len(state.Risks) > 0 ||
 		len(state.Verification) > 0
 }

@@ -622,9 +622,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.streamingIndex = -1
 			}
 			m.phase = "idle"
-			if m.mode == modePlan && canContinuePlan(m.plan) {
+			if m.mode == modePlan {
 				m.syncPlanActionPicker()
-				m.statusNote = "Choose the next step from the picker."
+				m.statusNote = planActionStatusNote(m.plan)
 			} else {
 				m.closePlanActionPicker()
 				m.statusNote = "Ready."
@@ -1346,29 +1346,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.submitBTW(value)
 		}
 		if action, ok := resolvePlanActionSelection(value, m.plan, m.sess); ok {
-			if action == "start execution" {
-				state, err := preparePlanForContinuation(m.plan)
-				if err != nil {
-					m.statusNote = err.Error()
-					return m, nil
-				}
-				m.plan = state
-				m.mode = modeBuild
-				if m.sess != nil {
-					m.sess.Mode = planpkg.ModeBuild
-					m.sess.Plan = copyPlanState(state)
-					if m.store != nil {
-						if err := m.store.Save(m.sess); err != nil {
-							m.statusNote = err.Error()
-							return m, nil
-						}
-					}
-				}
-			}
-			return m.submitPreparedPrompt(RunPromptInput{
-				UserMessage: llm.NewUserTextMessage(action),
-				DisplayText: strings.TrimSpace(value),
-			}, strings.TrimSpace(value))
+			return m.submitPlanActionSelectionWithDisplay(action, strings.TrimSpace(value))
 		}
 		if strings.HasPrefix(value, "/") {
 			m.input.Reset()
@@ -2309,6 +2287,9 @@ func resolvePlanActionSelection(input string, state planpkg.State, sess *session
 	if !planpkg.HasStructuredPlan(state) {
 		return "", false
 	}
+	if action, ok := resolveActiveChoiceSelection(input, state); ok {
+		return action, true
+	}
 	if isContinueExecutionInput(input) {
 		return "start execution", true
 	}
@@ -2329,6 +2310,34 @@ func resolvePlanActionSelection(input string, state planpkg.State, sess *session
 
 func normalizePlanActionInput(input string) string {
 	return strings.ToLower(strings.TrimSpace(input))
+}
+
+func resolveActiveChoiceSelection(input string, state planpkg.State) (string, bool) {
+	state = planpkg.NormalizeState(state)
+	if state.ActiveChoice == nil || len(state.ActiveChoice.Options) == 0 {
+		return "", false
+	}
+	normalized := normalizePlanActionInput(input)
+	if normalized == "" {
+		return "", false
+	}
+	for index, option := range state.ActiveChoice.Options {
+		number := fmt.Sprintf("%d", index+1)
+		shortcut := strings.ToLower(strings.TrimSpace(option.Shortcut))
+		title := strings.ToLower(strings.TrimSpace(option.Title))
+		switch normalized {
+		case number, number + ".", shortcut, shortcut + ".", "option " + number, "option " + shortcut:
+			return formatActiveChoiceAction(state.ActiveChoice.ID, option.ID), true
+		case "other", "other:", "其他", "自定义":
+			if option.Freeform {
+				return formatActiveChoiceAction(state.ActiveChoice.ID, option.ID), true
+			}
+		}
+		if title != "" && normalized == title {
+			return formatActiveChoiceAction(state.ActiveChoice.ID, option.ID), true
+		}
+	}
+	return "", false
 }
 
 func latestAssistantHasPlanActionChoices(sess *session.Session) bool {

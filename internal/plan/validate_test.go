@@ -77,3 +77,43 @@ func TestShouldRenderStructuredPlanBlockShowsConvergedPlan(t *testing.T) {
 		t.Fatalf("expected converged plan to render proposed plan block")
 	}
 }
+
+func TestNormalizeStateClearsActiveChoiceWhenDecisionGapsClose(t *testing.T) {
+	state := NormalizeState(State{
+		Phase:        PhaseConvergeReady,
+		Steps:        []Step{{Title: "Inspect prompt flow", Status: StepPending}},
+		DecisionGaps: nil,
+		ActiveChoice: &ActiveChoice{
+			ID:       "frontend_stack",
+			Question: "Pick the frontend stack",
+			Options: []ChoiceOption{
+				{ID: "a", Shortcut: "A", Title: "FastAPI + Jinja2"},
+				{ID: "b", Shortcut: "B", Title: "Flask + Jinja2"},
+			},
+		},
+		ScopeDefined:        true,
+		RiskRollbackDefined: true,
+		VerificationDefined: true,
+	})
+	if state.ActiveChoice != nil {
+		t.Fatalf("expected active choice to clear after convergence, got %#v", state.ActiveChoice)
+	}
+}
+
+func TestValidateStateRejectsActiveChoiceWithoutEnoughOptions(t *testing.T) {
+	result := ValidateState(State{
+		Phase:        PhaseClarify,
+		Steps:        []Step{{Title: "Inspect prompt flow", Status: StepPending}},
+		DecisionGaps: []string{"Choose the frontend stack"},
+		ActiveChoice: &ActiveChoice{
+			ID:       "frontend_stack",
+			Question: "Pick the frontend stack",
+			Options: []ChoiceOption{
+				{ID: "a", Shortcut: "A", Title: "FastAPI + Jinja2"},
+			},
+		},
+	})
+	if result.OK {
+		t.Fatalf("expected invalid active choice to fail validation")
+	}
+}

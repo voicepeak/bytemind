@@ -73,6 +73,40 @@ func (e *defaultEngine) processTurn(ctx context.Context, p turnProcessParams) (s
 		if intent == turnIntentUnknown {
 			intent = inferAssistantTurnIntent(reply.Content)
 		}
+		if shouldRepairPlanClarifyTurn(p.RunMode, p.Session.Plan, intent, reply) {
+			attempt := 0
+			maxAttempts := 0
+			if p.AdaptiveState != nil {
+				p.AdaptiveState.recordNoProgressTurn()
+				attempt = p.AdaptiveState.recordSemanticRepairAttempt()
+				maxAttempts = p.AdaptiveState.maxSemanticRepairs
+			}
+			if p.TaskReport != nil {
+				p.TaskReport.RecordNoProgressTurn()
+				p.TaskReport.RecordRetry("plan_clarify_missing_active_choice")
+				p.TaskReport.RecordStrategyAdjustment("assistant asked a plan clarification question without update_plan.active_choice; injected correction prompt")
+			}
+			if p.AdaptiveState != nil {
+				if p.AdaptiveState.exceededSemanticRepairLimit() || p.AdaptiveState.exceededNoProgressLimit() {
+					if p.TaskReport != nil {
+						p.TaskReport.RecordEscalation("plan clarify repair retries exceeded while waiting for active_choice")
+					}
+					summary := BuildStopSummary(StopSummaryInput{
+						SessionID:     corepkg.SessionID(p.Session.ID),
+						Reason:        fmt.Sprintf("I paused because the assistant kept asking plan clarification questions without storing active_choice first (attempts=%d, explicit_intent=%t).", attempt, explicitIntent),
+						ExecutedTools: *p.ExecutedTools,
+						TaskReport:    p.TaskReport,
+					})
+					answer, summaryErr := e.finishWithSummary(p.Session, summary, p.Out, streamedText)
+					return answer, true, summaryErr
+				}
+				p.AdaptiveState.schedulePendingControlNote(buildPlanClarifyRepairInstruction(p.Session.Plan, reply, attempt, maxAttempts))
+			}
+			if p.Out != nil {
+				fmt.Fprintf(p.Out, "%sassistant asked a plan clarification question without active_choice; retrying with a correction prompt%s\n", ansiDim, ansiReset)
+			}
+			return "", false, nil
+		}
 		if shouldRepairPlanDecisionTurn(p.RunMode, p.Session.Plan, intent, reply) {
 			attempt := 0
 			maxAttempts := 0

@@ -204,6 +204,8 @@ func (m *model) handleAgentEvent(event Event) {
 			m.phase = "plan"
 		}
 		switch {
+		case planpkg.HasActiveChoice(m.plan):
+			m.statusNote = "Plan updated. A clarification choice will appear after this reply finishes."
 		case canContinuePlan(m.plan):
 			m.statusNote = "Plan converged. Review the full plan, then choose the next action from the picker."
 		case len(m.plan.DecisionGaps) > 0:

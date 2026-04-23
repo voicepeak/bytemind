@@ -63,6 +63,31 @@ func (UpdatePlanTool) Definition() llm.ToolDefinition {
 						"type":  "array",
 						"items": map[string]any{"type": "string"},
 					},
+					"active_choice": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"id":       map[string]any{"type": "string"},
+							"kind":     map[string]any{"type": "string"},
+							"question": map[string]any{"type": "string"},
+							"gap_key":  map[string]any{"type": "string"},
+							"options": map[string]any{
+								"type": "array",
+								"items": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"id":          map[string]any{"type": "string"},
+										"shortcut":    map[string]any{"type": "string"},
+										"title":       map[string]any{"type": "string"},
+										"description": map[string]any{"type": "string"},
+										"recommended": map[string]any{"type": "boolean"},
+										"freeform":    map[string]any{"type": "boolean"},
+									},
+									"required": []string{"title"},
+								},
+							},
+						},
+						"required": []string{"question", "options"},
+					},
 					"scope_defined":             map[string]any{"type": "boolean"},
 					"risk_and_rollback_defined": map[string]any{"type": "boolean"},
 					"verification_defined":      map[string]any{"type": "boolean"},
@@ -118,13 +143,27 @@ func (UpdatePlanTool) Run(_ context.Context, raw json.RawMessage, execCtx *Execu
 			Decision string `json:"decision"`
 			Reason   string `json:"reason"`
 		} `json:"decision_log"`
-		DecisionGaps           []string `json:"decision_gaps"`
-		ScopeDefined           *bool    `json:"scope_defined"`
-		RiskAndRollbackDefined *bool    `json:"risk_and_rollback_defined"`
-		VerificationDefined    *bool    `json:"verification_defined"`
-		NextAction             string   `json:"next_action"`
-		BlockReason            string   `json:"block_reason"`
-		Explanation            string   `json:"explanation"`
+		DecisionGaps []string `json:"decision_gaps"`
+		ActiveChoice *struct {
+			ID       string `json:"id"`
+			Kind     string `json:"kind"`
+			Question string `json:"question"`
+			GapKey   string `json:"gap_key"`
+			Options  []struct {
+				ID          string `json:"id"`
+				Shortcut    string `json:"shortcut"`
+				Title       string `json:"title"`
+				Description string `json:"description"`
+				Recommended bool   `json:"recommended"`
+				Freeform    bool   `json:"freeform"`
+			} `json:"options"`
+		} `json:"active_choice"`
+		ScopeDefined           *bool  `json:"scope_defined"`
+		RiskAndRollbackDefined *bool  `json:"risk_and_rollback_defined"`
+		VerificationDefined    *bool  `json:"verification_defined"`
+		NextAction             string `json:"next_action"`
+		BlockReason            string `json:"block_reason"`
+		Explanation            string `json:"explanation"`
 		Plan                   []struct {
 			ID          string   `json:"id"`
 			Step        string   `json:"step"`
@@ -200,6 +239,26 @@ func (UpdatePlanTool) Run(_ context.Context, raw json.RawMessage, execCtx *Execu
 	}
 	if args.DecisionGaps != nil {
 		state.DecisionGaps = trimPlanStrings(args.DecisionGaps)
+	}
+	if args.ActiveChoice != nil {
+		activeChoice := &planpkg.ActiveChoice{
+			ID:       strings.TrimSpace(args.ActiveChoice.ID),
+			Kind:     strings.TrimSpace(args.ActiveChoice.Kind),
+			Question: strings.TrimSpace(args.ActiveChoice.Question),
+			GapKey:   strings.TrimSpace(args.ActiveChoice.GapKey),
+			Options:  make([]planpkg.ChoiceOption, 0, len(args.ActiveChoice.Options)),
+		}
+		for _, option := range args.ActiveChoice.Options {
+			activeChoice.Options = append(activeChoice.Options, planpkg.ChoiceOption{
+				ID:          strings.TrimSpace(option.ID),
+				Shortcut:    strings.TrimSpace(option.Shortcut),
+				Title:       strings.TrimSpace(option.Title),
+				Description: strings.TrimSpace(option.Description),
+				Recommended: option.Recommended,
+				Freeform:    option.Freeform,
+			})
+		}
+		state.ActiveChoice = activeChoice
 	}
 	if args.ScopeDefined != nil {
 		state.ScopeDefined = *args.ScopeDefined

@@ -26,23 +26,27 @@ Workflow
   - if those decisions are closed, advance toward `draft` or `converge_ready`
 - Each clarification round should ask at most 1 to 2 mutually exclusive questions.
 - Put the recommended option first and keep the choices cheap to answer.
-- Allow one fallback line for `Other: ...` so unusual cases do not get stuck.
 - If the repository context answers the question, do not ask the user.
 
 Output Structure
-- If waiting on user input, ask the question directly without a plan recap or convergence summary above it.
-- In a clarification turn, the reply should usually contain only:
-  - `Question: <the decision to make>`
-  - `A. <Recommended option> - <why>`
-  - `B. <Alternative option> - <why>`
-  - optional `C. <Third option> - <why>`
-  - `Other: <short custom input>`
-- Keep the clarification block short and avoid more than 2 questions in one turn.
-- Use mutually exclusive options only. Do not ask the user to compare overlapping choices.
+- If waiting on user input, ask for the decision directly without a plan recap or convergence summary above it.
+- In a clarification turn:
+  - store the current question in `active_choice`
+  - keep the visible reply to one short lead sentence only
+  - do not restate a full `Question / A / B / Other` block when the UI can render the picker
+- `active_choice` should include:
+  - `id` with a stable decision key
+  - `kind="clarify"`
+  - `question`
+  - 2 to 4 mutually exclusive `options`
+  - the recommended option first
+  - explicit `shortcut` labels such as `A`, `B`, `C`
+  - at most one `freeform=true` option when custom input is genuinely needed
 - Record stable plan data in `update_plan`, including:
   - `implementation_brief` when the plan is ready for handoff
   - `decision_log` for key decisions and why they were made
   - `decision_gaps` for unresolved items
+  - `active_choice` for the current clarification decision
   - `risks`
   - `verification`
   - the three execution-readiness booleans

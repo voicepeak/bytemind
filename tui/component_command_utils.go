@@ -35,6 +35,7 @@ func (m model) helpText() string {
 		"- Long pasted code/text is compressed to `[Paste #N ~X lines]`.",
 		"- Use `[Paste]`, `[Paste #N]`, `[Paste line3]`, or `[Paste #N line3~line7]` to expand references.",
 		"- After converging a saved plan, use the on-screen action picker to start execution or keep refining the plan.",
+		"- `start execution` and `continue execution` still work as compatibility fallbacks when the picker is unavailable.",
 		"- Approval requests appear above the input area when a shell command needs confirmation.",
 		"- Footer shortcuts: `tab` agents, `/` commands, drag select, `Ctrl+A` away, `Ctrl+C` copy/quit, `Ctrl+L` sessions.",
 	}, "\n")

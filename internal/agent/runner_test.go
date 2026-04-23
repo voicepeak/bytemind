@@ -443,6 +443,107 @@ func TestRunPromptRepairsPlanDecisionAcknowledgementWithoutUpdatePlan(t *testing
 	}
 }
 
+func TestRunPromptRepairsClarifyQuestionWithoutActiveChoice(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	sess.Mode = planpkg.ModePlan
+	sess.Plan = planpkg.State{
+		Goal:         "Implement the first paper RAG demo",
+		Summary:      "Need to choose the target demo directory before the rest of the plan converges.",
+		Phase:        planpkg.PhaseClarify,
+		DecisionGaps: []string{"Choose the target demo directory."},
+		Steps: []planpkg.Step{
+			{Title: "Choose the target demo directory", Status: planpkg.StepPending},
+			{Title: "Lock the technical path", Status: planpkg.StepPending},
+			{Title: "Define the runnable acceptance path", Status: planpkg.StepPending},
+		},
+	}
+
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role:    "assistant",
+			Content: "请先选目录： A 复用 demos/paper_rag_minimal（推荐） / B 复用 demos/paper_rag / C 新建 demos/paper_rag_mvp。",
+		},
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name: "update_plan",
+					Arguments: `{
+						"summary":"The first directory choice is waiting on the user before plan convergence.",
+						"phase":"clarify",
+						"decision_gaps":["Choose the target demo directory."],
+						"active_choice":{
+							"id":"target_demo_directory",
+							"kind":"clarify",
+							"question":"请先选目录：",
+							"gap_key":"Choose the target demo directory.",
+							"options":[
+								{"id":"reuse_paper_rag_minimal","shortcut":"A","title":"复用 demos/paper_rag_minimal","description":"推荐，最接近最小闭环。","recommended":true},
+								{"id":"reuse_paper_rag","shortcut":"B","title":"复用 demos/paper_rag","description":"复用现有目录，但改动面更大。"},
+								{"id":"new_paper_rag_mvp","shortcut":"C","title":"新建 demos/paper_rag_mvp","description":"隔离更强，但会多一些样板搭建。"}
+							]
+						},
+						"plan":[
+							{"step":"Choose the target demo directory", "status":"pending"},
+							{"step":"Lock the technical path", "status":"pending"},
+							{"step":"Define the runnable acceptance path", "status":"pending"}
+						]
+					}`,
+				},
+			}},
+		},
+		{
+			Role:    "assistant",
+			Content: "<turn_intent>ask_user</turn_intent>先从下面的选项里确认目录方案。",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 6,
+			Stream:        false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "继续规划", "plan", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("expected three requests (repair + update_plan + ask_user), got %d", len(client.requests))
+	}
+	secondTurnMessages := client.requests[1].Messages
+	lastMsg := secondTurnMessages[len(secondTurnMessages)-1]
+	if lastMsg.Role != llm.RoleUser || !strings.Contains(strings.ToLower(lastMsg.Text()), "without storing active_choice first") {
+		t.Fatalf("expected clarify repair note to be appended as user message, got %#v", secondTurnMessages)
+	}
+	if sess.Plan.ActiveChoice == nil {
+		t.Fatalf("expected session plan to store active_choice after repair, got %#v", sess.Plan)
+	}
+	if sess.Plan.ActiveChoice.ID != "target_demo_directory" {
+		t.Fatalf("expected active_choice to preserve the directory decision key, got %#v", sess.Plan.ActiveChoice)
+	}
+	if !strings.Contains(answer, "确认目录方案") {
+		t.Fatalf("expected repaired answer to keep a short lead sentence, got %q", answer)
+	}
+	if strings.Contains(answer, "demos/paper_rag_minimal") {
+		t.Fatalf("expected repaired answer to avoid inlining option text once the picker can render it, got %q", answer)
+	}
+}
+
 func TestRunPromptRepairsBuildHandoffWithoutRestartingPlanConfirmation(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "main.go"), []byte("package main\n"), 0o644); err != nil {

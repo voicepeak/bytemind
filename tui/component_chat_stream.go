@@ -69,8 +69,13 @@ func (m *model) finishAssistantMessage(content string) {
 		return
 	}
 	finalContent := m.decorateFinalAnswer(content)
-	if m.mode == modePlan && planpkg.CanStartExecution(m.plan) {
-		finalContent = stripPlanActionTailFromAnswer(finalContent)
+	if m.mode == modePlan {
+		if planpkg.HasActiveChoice(m.plan) {
+			finalContent = stripClarifyChoiceBlockFromAnswer(finalContent)
+		}
+		if planpkg.CanStartExecution(m.plan) {
+			finalContent = stripPlanActionTailFromAnswer(finalContent)
+		}
 	}
 
 	if m.streamingIndex >= 0 && m.streamingIndex < len(m.chatItems) {
