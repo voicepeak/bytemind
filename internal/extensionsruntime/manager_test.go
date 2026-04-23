@@ -168,6 +168,72 @@ func TestManagerGetReloadAndTestPaths(t *testing.T) {
 	}
 }
 
+func TestManagerReloadUsesBaseReloaderWhenAvailable(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	writeRuntimeConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"mcp": map[string]any{
+			"enabled": false,
+		},
+	})
+
+	baseReloadErr := errors.New("base reload failed")
+	base := &fakeBaseRuntimeManagerWithReloader{
+		base: fakeBaseRuntimeManager{
+			listErr: errors.New("list should not be called"),
+		},
+		reloadErr: baseReloadErr,
+	}
+	manager := NewManager(workspace, "", base, loadRuntimeConfig(t, workspace))
+
+	err := manager.Reload(context.Background())
+	if !errors.Is(err, baseReloadErr) {
+		t.Fatalf("expected reload to return base reload error, got %v", err)
+	}
+	if base.reloadCalls != 1 {
+		t.Fatalf("expected base reload to be called once, got %d", base.reloadCalls)
+	}
+	if base.base.listCalls != 0 {
+		t.Fatalf("expected base list to be skipped when reloader exists, got %d", base.base.listCalls)
+	}
+}
+
+func TestManagerReloadFallsBackToBaseListWhenNoBaseReloader(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	writeRuntimeConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"mcp": map[string]any{
+			"enabled": false,
+		},
+	})
+
+	baseListErr := errors.New("base list failed")
+	base := &fakeBaseRuntimeManager{
+		listErr: baseListErr,
+	}
+	manager := NewManager(workspace, "", base, loadRuntimeConfig(t, workspace))
+
+	err := manager.Reload(context.Background())
+	if !errors.Is(err, baseListErr) {
+		t.Fatalf("expected reload to return base list error fallback, got %v", err)
+	}
+	if base.listCalls != 1 {
+		t.Fatalf("expected base list to be called once without reloader, got %d", base.listCalls)
+	}
+}
+
 func TestManagerResolveAllToolsAndInvalidate(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("BYTEMIND_HOME", t.TempDir())
@@ -561,4 +627,53 @@ func (f *fakeMCPRuntimeExtension) Reload(context.Context) error {
 
 func (f *fakeMCPRuntimeExtension) Invalidate() {
 	f.invalidateCalls++
+}
+
+type fakeBaseRuntimeManager struct {
+	listErr   error
+	listCalls int
+}
+
+func (f *fakeBaseRuntimeManager) Load(context.Context, string) (extensionspkg.ExtensionInfo, error) {
+	return extensionspkg.ExtensionInfo{}, nil
+}
+
+func (f *fakeBaseRuntimeManager) Unload(context.Context, string) error {
+	return nil
+}
+
+func (f *fakeBaseRuntimeManager) Get(context.Context, string) (extensionspkg.ExtensionInfo, error) {
+	return extensionspkg.ExtensionInfo{}, nil
+}
+
+func (f *fakeBaseRuntimeManager) List(context.Context) ([]extensionspkg.ExtensionInfo, error) {
+	f.listCalls++
+	return nil, f.listErr
+}
+
+type fakeBaseRuntimeManagerWithReloader struct {
+	base        fakeBaseRuntimeManager
+	reloadErr   error
+	reloadCalls int
+}
+
+func (f *fakeBaseRuntimeManagerWithReloader) Load(ctx context.Context, source string) (extensionspkg.ExtensionInfo, error) {
+	return f.base.Load(ctx, source)
+}
+
+func (f *fakeBaseRuntimeManagerWithReloader) Unload(ctx context.Context, extensionID string) error {
+	return f.base.Unload(ctx, extensionID)
+}
+
+func (f *fakeBaseRuntimeManagerWithReloader) Get(ctx context.Context, extensionID string) (extensionspkg.ExtensionInfo, error) {
+	return f.base.Get(ctx, extensionID)
+}
+
+func (f *fakeBaseRuntimeManagerWithReloader) List(ctx context.Context) ([]extensionspkg.ExtensionInfo, error) {
+	return f.base.List(ctx)
+}
+
+func (f *fakeBaseRuntimeManagerWithReloader) Reload(context.Context) error {
+	f.reloadCalls++
+	return f.reloadErr
 }

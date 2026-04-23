@@ -155,8 +155,14 @@ func (m *Manager) List(ctx context.Context) ([]extensionspkg.ExtensionInfo, erro
 }
 
 func (m *Manager) Reload(ctx context.Context) error {
-	_, _ = m.base.List(ctx)
-	return m.refresh(ctx, true)
+	var baseErr error
+	if reloader, ok := m.base.(extensionspkg.Reloader); ok {
+		baseErr = reloader.Reload(ctx)
+	} else {
+		_, baseErr = m.base.List(ctx)
+	}
+	mcpErr := m.refresh(ctx, true)
+	return mergeErrors(baseErr, mcpErr)
 }
 
 func (m *Manager) ResolveAllTools(ctx context.Context) ([]extensionspkg.ExtensionTool, error) {

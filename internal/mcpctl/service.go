@@ -376,7 +376,8 @@ func (s *Service) reloadRuntime(ctx context.Context) error {
 	if reloader, ok := s.manager.(extensionspkg.Reloader); ok {
 		return reloader.Reload(ctx)
 	}
-	return nil
+	_, err := s.manager.List(ctx)
+	return err
 }
 
 func normalizeAddRequest(req AddRequest) AddRequest {

@@ -210,6 +210,55 @@ func TestServiceReloadAndTestUseInjectedManager(t *testing.T) {
 	}
 }
 
+func TestServiceReloadRuntimeFallsBackToListWhenManagerLacksReloader(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	listErr := errors.New("list refresh failed")
+	manager := &fakeManagerNoReloader{
+		listErr: listErr,
+	}
+	service := NewService(workspace, "", manager)
+
+	err := service.reloadRuntime(context.Background())
+	if !errors.Is(err, listErr) {
+		t.Fatalf("expected reloadRuntime to return list fallback error, got %v", err)
+	}
+	if manager.listCalls != 1 {
+		t.Fatalf("expected one list fallback call, got %d", manager.listCalls)
+	}
+	if len(manager.invalidateArgs) != 1 || manager.invalidateArgs[0] != "" {
+		t.Fatalf("expected invalidate(\"\") before fallback list, got %#v", manager.invalidateArgs)
+	}
+}
+
+func TestServiceAddReturnsErrorWhenReloadFallbackListFails(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	listErr := errors.New("list refresh failed")
+	manager := &fakeManagerNoReloader{
+		listErr: listErr,
+	}
+	service := NewService(workspace, "", manager)
+
+	status, err := service.Add(context.Background(), AddRequest{
+		ID:      "docs",
+		Command: "cmd",
+		Args:    []string{"/c", "echo", "ok"},
+	})
+	if err == nil {
+		t.Fatal("expected add to return reload fallback list error")
+	}
+	if !errors.Is(err, listErr) {
+		t.Fatalf("expected add error to wrap fallback list error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "runtime reload failed after config persisted") {
+		t.Fatalf("expected add error message to include runtime reload context, got %v", err)
+	}
+	if status.ID != "docs" {
+		t.Fatalf("expected status for added server even on reload fallback error, got %#v", status)
+	}
+}
+
 func TestServiceListReturnsStatusesAlongsideManagerListError(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("BYTEMIND_HOME", t.TempDir())
@@ -478,5 +527,34 @@ func (f *fakeManager) Test(_ context.Context, extensionID string) (extensionspkg
 }
 
 func (f *fakeManager) Invalidate(extensionID string) {
+	f.invalidateArgs = append(f.invalidateArgs, extensionID)
+}
+
+type fakeManagerNoReloader struct {
+	listItems      []extensionspkg.ExtensionInfo
+	listErr        error
+	listCalls      int
+	invalidateArgs []string
+}
+
+func (f *fakeManagerNoReloader) Load(context.Context, string) (extensionspkg.ExtensionInfo, error) {
+	return extensionspkg.ExtensionInfo{}, nil
+}
+
+func (f *fakeManagerNoReloader) Unload(context.Context, string) error {
+	return nil
+}
+
+func (f *fakeManagerNoReloader) Get(context.Context, string) (extensionspkg.ExtensionInfo, error) {
+	return extensionspkg.ExtensionInfo{}, nil
+}
+
+func (f *fakeManagerNoReloader) List(context.Context) ([]extensionspkg.ExtensionInfo, error) {
+	f.listCalls++
+	items := append([]extensionspkg.ExtensionInfo(nil), f.listItems...)
+	return items, f.listErr
+}
+
+func (f *fakeManagerNoReloader) Invalidate(extensionID string) {
 	f.invalidateArgs = append(f.invalidateArgs, extensionID)
 }
