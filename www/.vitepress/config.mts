@@ -1,68 +1,66 @@
 import { defineConfig } from 'vitepress'
 
 const enNav = [
-  { text: 'Quick Start', link: '/en/quick-start' },
-  { text: 'Usage', link: '/en/usage/chat-mode' },
-  { text: 'Reference', link: '/en/reference/cli-commands' },
-  { text: 'Open Source', link: '/en/open-source' },
+  { text: 'Start', link: '/en/quick-start' },
+  { text: 'Guide', link: '/en/usage/chat-mode' },
+  { text: 'Examples', link: '/en/examples/fix-bug' },
+  { text: 'Reference', link: '/en/reference/cli-commands' }
 ]
 
 const enSidebar = [
   {
     text: 'Getting Started',
     items: [
-      { text: 'Overview', link: '/en/index' },
-      { text: 'Quick Start', link: '/en/quick-start' },
-      { text: 'Installation', link: '/en/installation' },
-      { text: 'Configuration', link: '/en/configuration' },
-      { text: 'Core Concepts', link: '/en/core-concepts' },
+      { text: 'Quick Start', link: '/quick-start' },
+      { text: 'Installation', link: '/installation' },
+      { text: 'Configuration', link: '/configuration' },
+      { text: 'Core Concepts', link: '/core-concepts' },
     ],
   },
   {
-    text: 'Usage',
+    text: 'Guide',
     items: [
-      { text: 'Chat Mode', link: '/en/usage/chat-mode' },
-      { text: 'Run Mode', link: '/en/usage/run-mode' },
-      { text: 'Session Management', link: '/en/usage/session-management' },
-      { text: 'Tools and Approval', link: '/en/usage/tools-and-approval' },
-      { text: 'Provider Setup', link: '/en/usage/provider-setup' },
-      { text: 'Plan Mode', link: '/en/usage/plan-mode' },
-      { text: 'Skills', link: '/en/usage/skills' },
+      { text: 'Chat Mode', link: '/usage/chat-mode' },
+      { text: 'Run Mode', link: '/usage/run-mode' },
+      { text: 'Session Management', link: '/usage/session-management' },
+      { text: 'Tools and Approval', link: '/usage/tools-and-approval' },
+      { text: 'Provider Setup', link: '/usage/provider-setup' },
+      { text: 'Plan Mode', link: '/usage/plan-mode' },
+      { text: 'Skills', link: '/usage/skills' },
     ],
   },
   {
     text: 'Examples',
     items: [
-      { text: 'Fix a Bug', link: '/en/examples/fix-bug' },
-      { text: 'Refactor Code', link: '/en/examples/refactor' },
-      { text: 'Generate Documentation', link: '/en/examples/doc-generation' },
+      { text: 'Fix a Bug', link: '/examples/fix-bug' },
+      { text: 'Refactor Code', link: '/examples/refactor' },
+      { text: 'Generate Documentation', link: '/examples/doc-generation' },
     ],
   },
   {
     text: 'Reference',
     items: [
-      { text: 'CLI Commands', link: '/en/reference/cli-commands' },
-      { text: 'Config Reference', link: '/en/reference/config-reference' },
-      { text: 'Environment Variables', link: '/en/reference/env-vars' },
-      { text: 'FAQ', link: '/en/faq' },
-      { text: 'Troubleshooting', link: '/en/troubleshooting' },
-      { text: 'Open Source', link: '/en/open-source' },
+      { text: 'CLI Commands', link: '/reference/cli-commands' },
+      { text: 'Config Reference', link: '/reference/config-reference' },
+      { text: 'Environment Variables', link: '/reference/env-vars' },
+      { text: 'FAQ', link: '/faq' },
+      { text: 'Troubleshooting', link: '/troubleshooting' },
+      { text: 'Open Source', link: '/open-source' },
     ],
   },
 ]
 
 const zhNav = [
-  { text: '快速开始', link: '/zh/quick-start' },
-  { text: '使用指南', link: '/zh/usage/chat-mode' },
-  { text: '参考', link: '/zh/reference/cli-commands' },
-  { text: '开源参与', link: '/zh/open-source' },
+  { text: '开始', link: '/zh/quick-start' },
+  { text: '指南', link: '/zh/usage/chat-mode' },
+  { text: '示例', link: '/zh/examples/fix-bug' },
+  { text: '参考', link: '/zh/reference/cli-commands' }
 ]
 
 const zhSidebar = [
   {
     text: '入门',
     items: [
-      { text: '产品概览', link: '/zh/index' },
       { text: '快速开始', link: '/zh/quick-start' },
       { text: '安装', link: '/zh/installation' },
       { text: '配置', link: '/zh/configuration' },
@@ -107,18 +105,6 @@ export default defineConfig({
 
   locales: {
     root: {
-      label: 'English',
-      lang: 'en-US',
-      title: 'ByteMind',
-      description: 'Terminal-first AI coding agent documentation.',
-      themeConfig: {
-        nav: [
-          { text: 'English Docs', link: '/en/index' },
-          { text: '中文文档', link: '/zh/index' },
-        ],
-      },
-    },
-    en: {
       label: 'English',
       lang: 'en-US',
       title: 'ByteMind',
