@@ -368,6 +368,50 @@ func TestMCPSetupRequiresID(t *testing.T) {
 	}
 }
 
+func TestMCPSetupAsyncShowsApplyingStatus(t *testing.T) {
+	service := &stubMCPService{}
+	m := newMCPSetupTestModel(service)
+	m.async = make(chan tea.Msg, 2)
+
+	if err := m.handleSlashCommand("/mcp setup docs"); err != nil {
+		t.Fatalf("start setup failed: %v", err)
+	}
+	m = submitMCPSetupEnter(t, m, "npx")
+	m = submitMCPSetupEnter(t, m, "-y,@modelcontextprotocol/server-filesystem")
+	m = submitMCPSetupEnter(t, m, "skip")
+	m = submitMCPSetupEnter(t, m, "yes")
+
+	if !m.mcpCommandPending {
+		t.Fatal("expected setup apply to run asynchronously")
+	}
+	if !strings.Contains(m.statusNote, "Applying MCP setup") {
+		t.Fatalf("expected applying status note, got %q", m.statusNote)
+	}
+	if len(m.chatItems) == 0 || m.chatItems[len(m.chatItems)-1].Status != "pending" {
+		t.Fatalf("expected pending applying chat entry, got %#v", m.chatItems)
+	}
+
+	var msg tea.Msg
+	select {
+	case msg = <-m.async:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for async mcp setup result")
+	}
+
+	next, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected update to continue async wait command")
+	}
+	updated := next.(model)
+	if updated.mcpCommandPending {
+		t.Fatal("expected pending flag to clear after async result")
+	}
+	last := updated.chatItems[len(updated.chatItems)-1]
+	if last.Status == "pending" {
+		t.Fatalf("expected pending applying entry to be finalized, got %#v", last)
+	}
+}
+
 func TestMCPSetupCanBeCanceled(t *testing.T) {
 	service := &stubMCPService{}
 	m := newMCPSetupTestModel(service)

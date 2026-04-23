@@ -701,6 +701,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case mcpCommandResultMsg:
 		m.mcpCommandPending = false
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.Input)), "/mcp setup") {
+			m.finishMCPSetupApplying(msg.Err == nil)
+		}
 		if msg.Err != nil {
 			m.statusNote = msg.Err.Error()
 			return m, waitForAsync(m.async)

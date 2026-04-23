@@ -209,6 +209,7 @@ func (m *model) startMCPSetupApply(req mcpctl.AddRequest) tea.Cmd {
 		m.statusNote = "mcp service is unavailable"
 		return nil
 	}
+	m.markMCPSetupApplying()
 	commandInput := "/mcp setup " + strings.TrimSpace(req.ID)
 	if commandInput == "/mcp setup " {
 		commandInput = "/mcp setup"
@@ -334,6 +335,43 @@ func (m *model) appendMCPSetupAssistant(body string) {
 		Body:   strings.TrimSpace(body),
 		Status: "final",
 	})
+}
+
+func (m *model) markMCPSetupApplying() {
+	if m == nil {
+		return
+	}
+	m.screen = screenChat
+	m.appendChat(chatEntry{
+		Kind:   "assistant",
+		Title:  assistantLabel,
+		Body:   "Applying MCP setup... (Add -> Test -> Enable -> Reload)",
+		Status: "pending",
+	})
+}
+
+func (m *model) finishMCPSetupApplying(success bool) {
+	if m == nil {
+		return
+	}
+	for index := len(m.chatItems) - 1; index >= 0; index-- {
+		item := &m.chatItems[index]
+		if item.Kind != "assistant" || item.Status != "pending" {
+			continue
+		}
+		normalized := strings.ToLower(strings.TrimSpace(item.Body))
+		if !strings.HasPrefix(normalized, "applying mcp setup") {
+			continue
+		}
+		if success {
+			item.Status = "final"
+			item.Body = "MCP setup apply finished."
+		} else {
+			item.Status = "warn"
+			item.Body = "MCP setup apply failed. Check error/status message."
+		}
+		return
+	}
 }
 
 func splitMCPSetupCSV(raw string) []string {
