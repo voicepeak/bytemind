@@ -162,6 +162,7 @@ func (r *Runner) renderToolFeedback(out io.Writer, name, payload string) {
 				Backend         string `json:"backend"`
 				Active          bool   `json:"active"`
 				RequiredCapable bool   `json:"required_capable"`
+				CapabilityLevel string `json:"capability_level"`
 				Fallback        bool   `json:"fallback"`
 				Reason          string `json:"fallback_reason"`
 			} `json:"system_sandbox"`
@@ -177,6 +178,7 @@ func (r *Runner) renderToolFeedback(out io.Writer, name, payload string) {
 				result.SystemSandbox.Backend,
 				result.SystemSandbox.Active,
 				result.SystemSandbox.RequiredCapable,
+				result.SystemSandbox.CapabilityLevel,
 				result.SystemSandbox.Fallback,
 			); summary != "" {
 				fmt.Fprintf(out, "    sandbox: %s\n", summary)
@@ -284,10 +286,11 @@ func compactWhitespace(text string, limit int) string {
 	return string(runes[:limit-3]) + "..."
 }
 
-func formatSystemSandboxSummary(mode, backend string, active, requiredCapable, fallback bool) string {
+func formatSystemSandboxSummary(mode, backend string, active, requiredCapable bool, capabilityLevel string, fallback bool) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	backend = strings.TrimSpace(backend)
-	if mode == "" && backend == "" && !active && !requiredCapable && !fallback {
+	capabilityLevel = strings.ToLower(strings.TrimSpace(capabilityLevel))
+	if mode == "" && backend == "" && !active && !requiredCapable && capabilityLevel == "" && !fallback {
 		return ""
 	}
 	if mode == "" {
@@ -296,6 +299,9 @@ func formatSystemSandboxSummary(mode, backend string, active, requiredCapable, f
 	if backend == "" {
 		backend = "none"
 	}
+	if capabilityLevel == "" {
+		capabilityLevel = "none"
+	}
 
 	state := "inactive"
 	if active {
@@ -303,7 +309,7 @@ func formatSystemSandboxSummary(mode, backend string, active, requiredCapable, f
 	} else if fallback {
 		state = "fallback"
 	}
-	return fmt.Sprintf("%s (mode=%s, backend=%s, required_capable=%t)", state, mode, backend, requiredCapable)
+	return fmt.Sprintf("%s (mode=%s, backend=%s, required_capable=%t, capability_level=%s)", state, mode, backend, requiredCapable, capabilityLevel)
 }
 
 func normalizeApprovalErrorMessage(message, reasonCode string) string {

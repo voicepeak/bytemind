@@ -53,6 +53,7 @@ type PromptInput struct {
 	SystemSandbox                string
 	SystemSandboxBackend         string
 	SystemSandboxRequiredCapable bool
+	SystemSandboxCapabilityLevel string
 	SystemSandboxFallback        bool
 	SystemSandboxStatus          string
 	Model                        string
@@ -163,6 +164,10 @@ func renderSystemBlock(input PromptInput) string {
 	if input.SystemSandboxRequiredCapable {
 		systemSandboxRequiredCapable = "true"
 	}
+	systemSandboxCapabilityLevel := strings.ToLower(strings.TrimSpace(input.SystemSandboxCapabilityLevel))
+	if systemSandboxCapabilityLevel == "" {
+		systemSandboxCapabilityLevel = "none"
+	}
 	systemSandboxStatus := strings.TrimSpace(input.SystemSandboxStatus)
 	sandboxEnabled := "false"
 	if input.SandboxEnabled {
@@ -189,6 +194,7 @@ func renderSystemBlock(input PromptInput) string {
 		fmt.Sprintf("system_sandbox_mode: %s", systemSandbox),
 		fmt.Sprintf("system_sandbox_backend: %s", systemSandboxBackend),
 		fmt.Sprintf("system_sandbox_required_capable: %s", systemSandboxRequiredCapable),
+		fmt.Sprintf("system_sandbox_capability_level: %s", systemSandboxCapabilityLevel),
 		fmt.Sprintf("system_sandbox_fallback: %s", systemSandboxFallback),
 		"",
 		"[Available Skills]",

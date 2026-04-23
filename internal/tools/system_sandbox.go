@@ -16,6 +16,7 @@ type SystemSandboxRuntimeStatus struct {
 	BackendEnabled  bool
 	BackendName     string
 	RequiredCapable bool
+	CapabilityLevel string
 	Fallback        bool
 	Message         string
 }
@@ -49,9 +50,10 @@ func resolveSystemSandboxRuntimeStatusWith(
 	lookPath func(string) (string, error),
 ) (SystemSandboxRuntimeStatus, error) {
 	status := SystemSandboxRuntimeStatus{
-		SandboxEnabled: sandboxEnabled,
-		RequestedMode:  strings.TrimSpace(mode),
-		GOOS:           strings.TrimSpace(goos),
+		SandboxEnabled:  sandboxEnabled,
+		RequestedMode:   strings.TrimSpace(mode),
+		GOOS:            strings.TrimSpace(goos),
+		CapabilityLevel: "none",
 	}
 	if status.GOOS == "" {
 		status.GOOS = runtime.GOOS
@@ -74,9 +76,14 @@ func resolveSystemSandboxRuntimeStatusWith(
 		status.BackendEnabled = true
 		status.BackendName = strings.TrimSpace(backend.Name)
 		status.RequiredCapable = backend.RequiredCapable
+		status.CapabilityLevel = strings.TrimSpace(backend.CapabilityLevel)
+		if status.CapabilityLevel == "" {
+			status.CapabilityLevel = systemSandboxCapabilityLevel(status.Mode, backend)
+		}
 		status.Message = fmt.Sprintf("system sandbox backend %q is active", status.BackendName)
 		return status, nil
 	}
+	status.CapabilityLevel = "none"
 	if status.Mode == systemSandboxModeBestEffort {
 		status.Fallback = true
 		reason := strings.TrimSpace(backend.UnavailableReason)

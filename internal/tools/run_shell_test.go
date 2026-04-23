@@ -390,6 +390,9 @@ func TestBuildSystemSandboxExecutionMetadataDefaults(t *testing.T) {
 	if got := meta["required_capable"]; got != false {
 		t.Fatalf("expected required_capable=false, got %#v", meta)
 	}
+	if got := meta["capability_level"]; got != "none" {
+		t.Fatalf("expected capability_level=none, got %#v", meta)
+	}
 	if got := meta["fallback"]; got != false {
 		t.Fatalf("expected fallback=false, got %#v", meta)
 	}
@@ -411,6 +414,9 @@ func TestBuildSystemSandboxExecutionMetadataFallback(t *testing.T) {
 	}
 	if got := meta["required_capable"]; got != false {
 		t.Fatalf("expected required_capable=false in fallback metadata, got %#v", meta)
+	}
+	if got := meta["capability_level"]; got != "none" {
+		t.Fatalf("expected capability_level=none in fallback metadata, got %#v", meta)
 	}
 	if got := meta["status"]; got != "fallback" {
 		t.Fatalf("expected status fallback, got %#v", meta)
@@ -461,6 +467,9 @@ func TestRunShellToolResultIncludesSandboxMetadata(t *testing.T) {
 	if got := metadata["required_capable"]; got != false {
 		t.Fatalf("expected required_capable=false, got %#v", metadata)
 	}
+	if got := metadata["capability_level"]; got != "none" {
+		t.Fatalf("expected capability_level=none, got %#v", metadata)
+	}
 	if got := metadata["fallback"]; got != false {
 		t.Fatalf("expected fallback=false, got %#v", metadata)
 	}
@@ -489,6 +498,9 @@ func TestBuildSystemSandboxExecutionMetadataMarksRequiredCapabilityWhenBackendSu
 	if got := meta["required_capable"]; got != true {
 		t.Fatalf("expected required_capable=true for capable backend, got %#v", meta)
 	}
+	if got := meta["capability_level"]; got != "full" {
+		t.Fatalf("expected capability_level=full for capable backend, got %#v", meta)
+	}
 }
 
 func TestBuildSystemSandboxExecutionMetadataWindowsRequiredMarksCapability(t *testing.T) {
@@ -510,6 +522,9 @@ func TestBuildSystemSandboxExecutionMetadataWindowsRequiredMarksCapability(t *te
 	})
 	if got := meta["required_capable"]; got != true {
 		t.Fatalf("expected windows required mode to mark required_capable=true, got %#v", meta)
+	}
+	if got := meta["capability_level"]; got != "guarded" {
+		t.Fatalf("expected capability_level=guarded for windows required mode, got %#v", meta)
 	}
 }
 

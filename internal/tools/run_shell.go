@@ -146,11 +146,16 @@ func buildSystemSandboxExecutionMetadata(mode string, backend systemSandboxRunti
 		status = "fallback"
 	}
 	requiredCapable := systemSandboxRequiredCapable(mode, backend)
+	capabilityLevel := strings.TrimSpace(backend.CapabilityLevel)
+	if capabilityLevel == "" {
+		capabilityLevel = systemSandboxCapabilityLevel(mode, backend)
+	}
 	payload := map[string]any{
 		"mode":             mode,
 		"backend":          backendName,
 		"active":           active,
 		"required_capable": requiredCapable,
+		"capability_level": capabilityLevel,
 		"fallback":         fallback,
 		"status":           status,
 	}

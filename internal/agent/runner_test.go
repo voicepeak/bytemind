@@ -1112,11 +1112,12 @@ func TestRunPromptReportsSystemSandboxStartupFallbackOnSuccess(t *testing.T) {
 			return tools.SystemSandboxRuntimeStatus{}, nil
 		}
 		return tools.SystemSandboxRuntimeStatus{
-			Mode:           mode,
-			BackendEnabled: false,
-			Fallback:       true,
-			Message:        "system sandbox best_effort fallback: test backend unavailable",
-			BackendName:    "",
+			Mode:            mode,
+			BackendEnabled:  false,
+			CapabilityLevel: "none",
+			Fallback:        true,
+			Message:         "system sandbox best_effort fallback: test backend unavailable",
+			BackendName:     "",
 		}, nil
 	}
 	t.Cleanup(func() {
@@ -1157,11 +1158,11 @@ func TestRunPromptReportsSystemSandboxStartupFallbackOnSuccess(t *testing.T) {
 		t.Fatalf("unexpected answer: %q", answer)
 	}
 	for _, want := range []string{
-		"mode=best_effort backend=none state=fallback required_capable=false",
+		"mode=best_effort backend=none state=fallback required_capable=false capability_level=none",
 		"Task report summary:",
-		"- System sandbox fallback: startup (mode=best_effort, backend=none, required_capable=false, reason=system sandbox best_effort fallback: test backend unavailable)",
+		"- System sandbox fallback: startup (mode=best_effort, backend=none, required_capable=false, capability_level=none, reason=system sandbox best_effort fallback: test backend unavailable)",
 		"Task report (json):",
-		`"system_sandbox_fallback":["startup (mode=best_effort, backend=none, required_capable=false, reason=system sandbox best_effort fallback: test backend unavailable)"]`,
+		`"system_sandbox_fallback":["startup (mode=best_effort, backend=none, required_capable=false, capability_level=none, reason=system sandbox best_effort fallback: test backend unavailable)"]`,
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("expected output to contain %q, got %q", want, out.String())
@@ -1180,6 +1181,7 @@ func TestRunPromptReportsSystemSandboxStartupActiveRequiredCapable(t *testing.T)
 			BackendEnabled:  true,
 			BackendName:     "linux_unshare",
 			RequiredCapable: true,
+			CapabilityLevel: "full",
 			Fallback:        false,
 			Message:         `system sandbox backend "linux_unshare" is active`,
 		}, nil
@@ -1222,7 +1224,7 @@ func TestRunPromptReportsSystemSandboxStartupActiveRequiredCapable(t *testing.T)
 		t.Fatalf("unexpected answer: %q", answer)
 	}
 	for _, want := range []string{
-		"mode=required backend=linux_unshare state=active required_capable=true",
+		"mode=required backend=linux_unshare state=active required_capable=true capability_level=full",
 		`(system sandbox backend "linux_unshare" is active)`,
 	} {
 		if !strings.Contains(out.String(), want) {

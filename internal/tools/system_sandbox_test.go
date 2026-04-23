@@ -88,6 +88,9 @@ func TestResolveSystemSandboxRuntimeStatusWithBestEffortFallback(t *testing.T) {
 	if status.RequiredCapable {
 		t.Fatalf("expected required_capable=false without active backend, got %#v", status)
 	}
+	if status.CapabilityLevel != "none" {
+		t.Fatalf("expected capability_level=none without active backend, got %#v", status)
+	}
 	if !strings.Contains(strings.ToLower(status.Message), "fallback") {
 		t.Fatalf("expected fallback message, got %#v", status)
 	}
@@ -113,6 +116,9 @@ func TestResolveSystemSandboxRuntimeStatusWithWindowsBackendActive(t *testing.T)
 	if status.RequiredCapable {
 		t.Fatalf("expected required_capable=false for windows best_effort backend, got %#v", status)
 	}
+	if status.CapabilityLevel != "guarded" {
+		t.Fatalf("expected capability_level=guarded for windows best_effort backend, got %#v", status)
+	}
 }
 
 func TestResolveSystemSandboxRuntimeStatusWithWindowsRequiredBackendActive(t *testing.T) {
@@ -134,6 +140,9 @@ func TestResolveSystemSandboxRuntimeStatusWithWindowsRequiredBackendActive(t *te
 	}
 	if !status.RequiredCapable {
 		t.Fatalf("expected required_capable=true for windows required backend, got %#v", status)
+	}
+	if status.CapabilityLevel != "guarded" {
+		t.Fatalf("expected capability_level=guarded for windows required backend, got %#v", status)
 	}
 }
 
@@ -158,5 +167,8 @@ func TestResolveSystemSandboxRuntimeStatusWithRequiredBackendActive(t *testing.T
 	}
 	if !status.RequiredCapable {
 		t.Fatalf("expected required_capable=true for linux required backend, got %#v", status)
+	}
+	if status.CapabilityLevel != "full" {
+		t.Fatalf("expected capability_level=full for linux required backend, got %#v", status)
 	}
 }

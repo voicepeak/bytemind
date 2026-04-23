@@ -66,6 +66,7 @@ func TestSystemPromptRendersMainModeSystemAndInstruction(t *testing.T) {
 	assertContains(t, prompt, "system_sandbox_mode: best_effort")
 	assertContains(t, prompt, "system_sandbox_backend: linux_unshare")
 	assertContains(t, prompt, "system_sandbox_required_capable: true")
+	assertContains(t, prompt, "system_sandbox_capability_level: none")
 	assertContains(t, prompt, "system_sandbox_fallback: false")
 	assertContains(t, prompt, `system_sandbox_status: system sandbox backend "linux_unshare" is active`)
 	assertContains(t, prompt, "[Available Skills]")
@@ -109,6 +110,7 @@ func TestSystemPromptOmitsOptionalBlocksWhenEmpty(t *testing.T) {
 	assertContains(t, prompt, "system_sandbox_mode: off")
 	assertContains(t, prompt, "system_sandbox_backend: none")
 	assertContains(t, prompt, "system_sandbox_required_capable: false")
+	assertContains(t, prompt, "system_sandbox_capability_level: none")
 	assertContains(t, prompt, "system_sandbox_fallback: false")
 	if strings.Contains(prompt, "[Instructions]") {
 		t.Fatalf("did not expect instruction block in prompt: %q", prompt)

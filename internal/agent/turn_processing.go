@@ -233,6 +233,7 @@ type toolResultEnvelope struct {
 		Mode            string `json:"mode"`
 		Backend         string `json:"backend"`
 		RequiredCapable bool   `json:"required_capable"`
+		CapabilityLevel string `json:"capability_level"`
 		Fallback        bool   `json:"fallback"`
 		FallbackReason  string `json:"fallback_reason"`
 	} `json:"system_sandbox"`
@@ -298,6 +299,9 @@ func systemSandboxFallbackReportEntry(toolName string, envelope toolResultEnvelo
 		parts = append(parts, "backend="+backend)
 	}
 	parts = append(parts, fmt.Sprintf("required_capable=%t", envelope.SystemSandbox.RequiredCapable))
+	if capability := strings.TrimSpace(envelope.SystemSandbox.CapabilityLevel); capability != "" {
+		parts = append(parts, "capability_level="+capability)
+	}
 	if reason != "" {
 		parts = append(parts, "reason="+reason)
 	}

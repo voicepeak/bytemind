@@ -71,6 +71,7 @@ type systemSandboxRuntimeBackend struct {
 	Shell             systemSandboxLaunchSpec
 	Worker            systemSandboxLaunchSpec
 	RequiredCapable   bool
+	CapabilityLevel   string
 	UnavailableReason string
 }
 
@@ -124,10 +125,28 @@ func resolveSystemSandboxRuntimeBackend(mode, goos string, lookPath func(string)
 		strings.EqualFold(strings.TrimSpace(goos), "windows") {
 		resolved.RequiredCapable = requiredWindowsRequiredCapabilitiesSatisfied(resolved)
 	}
+	resolved.CapabilityLevel = systemSandboxCapabilityLevel(mode, resolved)
 	if mode == systemSandboxModeRequired && !resolved.RequiredCapable {
 		return systemSandboxRuntimeBackend{}, fmt.Errorf("system sandbox mode required but backend %q lacks required file/process isolation capabilities", resolved.Name)
 	}
 	return resolved, nil
+}
+
+func systemSandboxCapabilityLevel(mode string, backend systemSandboxRuntimeBackend) string {
+	if !backend.Enabled {
+		return "none"
+	}
+	if requiredSystemSandboxCapabilitiesSatisfied(backend) {
+		return "full"
+	}
+	if strings.EqualFold(strings.TrimSpace(mode), systemSandboxModeRequired) &&
+		requiredWindowsRequiredCapabilitiesSatisfied(backend) {
+		return "guarded"
+	}
+	if strings.EqualFold(strings.TrimSpace(backend.Name), "windows_job_object") {
+		return "guarded"
+	}
+	return "partial"
 }
 
 func requiredSystemSandboxCapabilitiesSatisfied(backend systemSandboxRuntimeBackend) bool {

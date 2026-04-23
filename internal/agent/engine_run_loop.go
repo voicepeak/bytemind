@@ -191,7 +191,11 @@ func writeSystemSandboxStartupNotice(out io.Writer, setup runPromptSetup, sandbo
 		sandboxState = "inactive"
 	}
 	requiredCapable := strconv.FormatBool(setup.SystemSandboxRequiredCapable)
-	line := fmt.Sprintf("%ssystem sandbox startup%s mode=%s backend=%s state=%s required_capable=%s", ansiDim, ansiReset, mode, backend, sandboxState, requiredCapable)
+	capabilityLevel := strings.TrimSpace(setup.SystemSandboxCapabilityLevel)
+	if capabilityLevel == "" {
+		capabilityLevel = "none"
+	}
+	line := fmt.Sprintf("%ssystem sandbox startup%s mode=%s backend=%s state=%s required_capable=%s capability_level=%s", ansiDim, ansiReset, mode, backend, sandboxState, requiredCapable, capabilityLevel)
 	if status != "" {
 		line += fmt.Sprintf(" (%s)", status)
 	}
@@ -211,8 +215,12 @@ func recordSystemSandboxStartupFallback(taskReport *TaskReport, setup runPromptS
 		backend = "none"
 	}
 	requiredCapable := strconv.FormatBool(setup.SystemSandboxRequiredCapable)
+	capabilityLevel := strings.TrimSpace(setup.SystemSandboxCapabilityLevel)
+	if capabilityLevel == "" {
+		capabilityLevel = "none"
+	}
 	reason := strings.TrimSpace(setup.SystemSandboxStatus)
-	note := fmt.Sprintf("startup (mode=%s, backend=%s, required_capable=%s", mode, backend, requiredCapable)
+	note := fmt.Sprintf("startup (mode=%s, backend=%s, required_capable=%s, capability_level=%s", mode, backend, requiredCapable, capabilityLevel)
 	if reason != "" {
 		note += fmt.Sprintf(", reason=%s", reason)
 	}
@@ -254,6 +262,7 @@ func appendSystemSandboxStartupAudit(
 		"sandbox_mode":             mode,
 		"sandbox_backend":          backend,
 		"sandbox_required_capable": strconv.FormatBool(setup.SystemSandboxRequiredCapable),
+		"sandbox_capability_level": capabilityLevelFromSetup(setup),
 		"sandbox_status":           state,
 		"sandbox_fallback":         strconv.FormatBool(setup.SystemSandboxFallback),
 	}
@@ -267,4 +276,12 @@ func appendSystemSandboxStartupAudit(
 		Result:    state,
 		Metadata:  metadata,
 	})
+}
+
+func capabilityLevelFromSetup(setup runPromptSetup) string {
+	level := strings.TrimSpace(setup.SystemSandboxCapabilityLevel)
+	if level == "" {
+		return "none"
+	}
+	return level
 }

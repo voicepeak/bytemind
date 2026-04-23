@@ -45,12 +45,14 @@ func TestSystemSandboxFallbackReportEntry(t *testing.T) {
 			Mode            string `json:"mode"`
 			Backend         string `json:"backend"`
 			RequiredCapable bool   `json:"required_capable"`
+			CapabilityLevel string `json:"capability_level"`
 			Fallback        bool   `json:"fallback"`
 			FallbackReason  string `json:"fallback_reason"`
 		}{
 			Mode:            "best_effort",
 			Backend:         "none",
 			RequiredCapable: false,
+			CapabilityLevel: "none",
 			Fallback:        true,
 			FallbackReason:  "darwin backend unavailable",
 		},
@@ -61,6 +63,7 @@ func TestSystemSandboxFallbackReportEntry(t *testing.T) {
 		"mode=best_effort",
 		"backend=none",
 		"required_capable=false",
+		"capability_level=none",
 		"reason=darwin backend unavailable",
 	} {
 		if !strings.Contains(note, want) {

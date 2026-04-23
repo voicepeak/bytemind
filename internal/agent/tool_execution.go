@@ -26,6 +26,7 @@ type sandboxAuditContext struct {
 	Mode            string
 	Backend         string
 	RequiredCapable bool
+	CapabilityLevel string
 	Fallback        bool
 	Status          string
 	FallbackReason  string
@@ -478,6 +479,7 @@ func appendSystemSandboxAuditMetadata(metadata map[string]string, result string)
 			Backend         string `json:"backend"`
 			Status          string `json:"status"`
 			RequiredCapable bool   `json:"required_capable"`
+			CapabilityLevel string `json:"capability_level"`
 			Fallback        bool   `json:"fallback"`
 			FallbackReason  string `json:"fallback_reason"`
 		} `json:"system_sandbox"`
@@ -496,6 +498,9 @@ func appendSystemSandboxAuditMetadata(metadata map[string]string, result string)
 		metadata["sandbox_status"] = status
 	}
 	metadata["sandbox_required_capable"] = strconv.FormatBool(systemSandbox.RequiredCapable)
+	if capability := strings.TrimSpace(systemSandbox.CapabilityLevel); capability != "" {
+		metadata["sandbox_capability_level"] = capability
+	}
 	metadata["sandbox_fallback"] = strconv.FormatBool(systemSandbox.Fallback)
 	if reason := strings.TrimSpace(systemSandbox.FallbackReason); reason != "" {
 		metadata["sandbox_fallback_reason"] = reason
@@ -508,6 +513,7 @@ func sandboxAuditFromSetup(setup runPromptSetup, sandboxEnabled bool, configured
 		Mode:            strings.TrimSpace(configuredMode),
 		Backend:         strings.TrimSpace(setup.SystemSandboxBackend),
 		RequiredCapable: setup.SystemSandboxRequiredCapable,
+		CapabilityLevel: strings.TrimSpace(setup.SystemSandboxCapabilityLevel),
 		Fallback:        setup.SystemSandboxFallback,
 		FallbackReason:  strings.TrimSpace(setup.SystemSandboxStatus),
 	}
@@ -535,6 +541,10 @@ func normalizeSandboxAuditContext(context sandboxAuditContext) sandboxAuditConte
 	if context.Backend == "" {
 		context.Backend = "none"
 	}
+	context.CapabilityLevel = strings.TrimSpace(context.CapabilityLevel)
+	if context.CapabilityLevel == "" {
+		context.CapabilityLevel = "none"
+	}
 	context.Status = strings.TrimSpace(context.Status)
 	context.FallbackReason = strings.TrimSpace(context.FallbackReason)
 	return context
@@ -549,6 +559,7 @@ func appendSandboxAuditContext(metadata map[string]string, context sandboxAuditC
 	metadata["sandbox_mode"] = context.Mode
 	metadata["sandbox_backend"] = context.Backend
 	metadata["sandbox_required_capable"] = strconv.FormatBool(context.RequiredCapable)
+	metadata["sandbox_capability_level"] = context.CapabilityLevel
 	metadata["sandbox_fallback"] = strconv.FormatBool(context.Fallback)
 	if context.Status != "" {
 		metadata["sandbox_status"] = context.Status

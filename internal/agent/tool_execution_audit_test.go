@@ -120,6 +120,9 @@ func TestRunPromptRecordsTaskStateChangedAuditWithSessionTaskTrace(t *testing.T)
 		if got := event.Metadata["sandbox_required_capable"]; got != "true" && got != "false" {
 			t.Fatalf("expected task_state_changed sandbox_required_capable to be boolean text, got %q", got)
 		}
+		if got := event.Metadata["sandbox_capability_level"]; got == "" {
+			t.Fatalf("expected task_state_changed sandbox_capability_level, got %q", got)
+		}
 		if got := event.Metadata["sandbox_fallback"]; got != "true" && got != "false" {
 			t.Fatalf("expected task_state_changed sandbox_fallback to be boolean text, got %q", got)
 		}
@@ -232,6 +235,9 @@ func TestRunPromptExecutesToolThroughRuntimeGatewayBoundary(t *testing.T) {
 	if got := call.Metadata["sandbox_required_capable"]; got != "true" && got != "false" {
 		t.Fatalf("expected runtime metadata sandbox_required_capable boolean text, got %q", got)
 	}
+	if got := call.Metadata["sandbox_capability_level"]; got == "" {
+		t.Fatalf("expected runtime metadata sandbox_capability_level, got %q", got)
+	}
 
 	if len(sess.Messages) < 3 {
 		t.Fatalf("expected tool result message to be persisted, got %#v", sess.Messages)
@@ -325,6 +331,9 @@ func TestRunPromptRecordsSystemSandboxMetadataInToolExecuteAudit(t *testing.T) {
 	if got := startEvent.Metadata["sandbox_required_capable"]; got != "true" && got != "false" {
 		t.Fatalf("expected start event sandbox_required_capable boolean text, got %q", got)
 	}
+	if got := startEvent.Metadata["sandbox_capability_level"]; got == "" {
+		t.Fatalf("expected start event sandbox_capability_level, got %q", got)
+	}
 	if resultEvent == nil {
 		t.Fatalf("expected tool_execute_result audit event, got %+v", events)
 	}
@@ -339,6 +348,9 @@ func TestRunPromptRecordsSystemSandboxMetadataInToolExecuteAudit(t *testing.T) {
 	}
 	if got := resultEvent.Metadata["sandbox_required_capable"]; got != "false" {
 		t.Fatalf("expected sandbox_required_capable=false, got %q", got)
+	}
+	if got := resultEvent.Metadata["sandbox_capability_level"]; got == "" {
+		t.Fatalf("expected sandbox_capability_level in result metadata, got %q", got)
 	}
 	if got := resultEvent.Metadata["sandbox_fallback"]; got != "true" {
 		t.Fatalf("expected sandbox_fallback=true, got %q", got)
@@ -431,6 +443,7 @@ func TestRunPromptRecordsSystemSandboxStartupAudit(t *testing.T) {
 		"sandbox_mode":             "best_effort",
 		"sandbox_backend":          "none",
 		"sandbox_required_capable": "false",
+		"sandbox_capability_level": "none",
 		"sandbox_status":           "fallback",
 		"sandbox_fallback":         "true",
 	} {
@@ -545,6 +558,9 @@ func TestRunPromptPropagatesSandboxFallbackContextToPermissionAndStartAudit(t *t
 		}
 		if got := metadata["sandbox_required_capable"]; got != "false" {
 			t.Fatalf("%s: expected sandbox_required_capable=false, got %q", label, got)
+		}
+		if got := metadata["sandbox_capability_level"]; got != "none" {
+			t.Fatalf("%s: expected sandbox_capability_level=none, got %q", label, got)
 		}
 		if got := metadata["sandbox_fallback"]; got != "true" {
 			t.Fatalf("%s: expected sandbox_fallback=true, got %q", label, got)

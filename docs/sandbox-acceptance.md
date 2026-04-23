@@ -37,7 +37,7 @@ This document defines the minimum acceptance checks for the current sandbox impl
 | `system_sandbox_mode=best_effort` + OS backend unavailable | Fallback to normal worker launch with explicit fallback reason in startup status/log. |
 | `system_sandbox_mode=required` + runtime backend unavailable at agent startup | Run fails closed before first model/tool turn is executed. |
 | Any run with `sandbox_enabled=true` and `system_sandbox_mode!=off` | Run output includes a startup status line with mode/backend/state. |
-| Any run with sandbox context | Audit stream includes `system_sandbox_startup` event plus sandbox metadata on permission/start/result/task_state audit events. |
+| Any run with sandbox context | Audit stream includes `system_sandbox_startup` event plus sandbox metadata on permission/start/result/task_state audit events (`sandbox_capability_level` included). |
 | Linux + `system_sandbox_mode=required` + shell command writes outside writable roots | Write fails from read-only filesystem enforcement. |
 | macOS + `system_sandbox_mode=best_effort` + `sandbox-exec` available | Uses `sandbox-exec` profile-based launch with writable roots; worker profile allows network for web tools, with explicit fallback reason when probe fails. |
 | macOS + `system_sandbox_mode=required` + `sandbox-exec` available | Uses `sandbox-exec` profile-based launch with writable roots and network denied in worker/shell profiles. |

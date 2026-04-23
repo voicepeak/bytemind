@@ -51,6 +51,7 @@ func (e *defaultEngine) prepareRunPrompt(sess *session.Session, input RunPromptI
 
 	systemSandboxBackend := "none"
 	systemSandboxRequiredCapable := false
+	systemSandboxCapabilityLevel := "none"
 	systemSandboxFallback := false
 	systemSandboxStatus := ""
 	if runtimeStatus, statusErr := resolveAgentSystemSandboxRuntimeStatus(runner.config.SandboxEnabled, runner.config.SystemSandboxMode); statusErr != nil {
@@ -63,6 +64,9 @@ func (e *defaultEngine) prepareRunPrompt(sess *session.Session, input RunPromptI
 			systemSandboxBackend = backend
 		}
 		systemSandboxRequiredCapable = runtimeStatus.RequiredCapable
+		if level := strings.TrimSpace(runtimeStatus.CapabilityLevel); level != "" {
+			systemSandboxCapabilityLevel = level
+		}
 		systemSandboxFallback = runtimeStatus.Fallback
 		systemSandboxStatus = strings.TrimSpace(runtimeStatus.Message)
 	}
@@ -74,6 +78,7 @@ func (e *defaultEngine) prepareRunPrompt(sess *session.Session, input RunPromptI
 		Mode:                         mode,
 		SystemSandboxBackend:         systemSandboxBackend,
 		SystemSandboxRequiredCapable: systemSandboxRequiredCapable,
+		SystemSandboxCapabilityLevel: systemSandboxCapabilityLevel,
 		SystemSandboxFallback:        systemSandboxFallback,
 		SystemSandboxStatus:          systemSandboxStatus,
 		ActiveSkill:                  activeSkill,
@@ -129,6 +134,7 @@ func (e *defaultEngine) buildTurnMessages(sess *session.Session, setup runPrompt
 			SystemSandbox:                runner.config.SystemSandboxMode,
 			SystemSandboxBackend:         setup.SystemSandboxBackend,
 			SystemSandboxRequiredCapable: setup.SystemSandboxRequiredCapable,
+			SystemSandboxCapabilityLevel: setup.SystemSandboxCapabilityLevel,
 			SystemSandboxFallback:        setup.SystemSandboxFallback,
 			SystemSandboxStatus:          setup.SystemSandboxStatus,
 			Model:                        runner.config.Provider.Model,
