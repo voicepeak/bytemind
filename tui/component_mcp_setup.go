@@ -87,6 +87,12 @@ func (m *model) startMCPSetup(input string, fields []string) error {
 	}
 
 	m.mcpSetup = &session
+	m.commandOpen = false
+	m.helpOpen = false
+	m.skillsOpen = false
+	m.sessionsOpen = false
+	m.closeMentionPalette()
+	m.input.Focus()
 	m.appendCommandExchange(input, strings.Join(intro, "\n"))
 	m.statusNote = "MCP setup started."
 	return nil
@@ -104,6 +110,7 @@ func (m *model) handleMCPSetupSubmission(rawValue string) (handled bool, cmd tea
 
 	if isMCPSetupCancelInput(value) {
 		m.mcpSetup = nil
+		m.input.Focus()
 		m.appendMCPSetupAssistant("MCP setup canceled.")
 		m.statusNote = "MCP setup canceled."
 		return true, nil, nil
@@ -118,6 +125,7 @@ func (m *model) handleMCPSetupSubmission(rawValue string) (handled bool, cmd tea
 		}
 		setup.req.Command = command
 		setup.step = mcpSetupStepArgs
+		m.input.Focus()
 		m.appendMCPSetupAssistant(strings.Join([]string{
 			fmt.Sprintf("Command set to `%s`.", setup.req.Command),
 			"Step 2/4: Enter args as comma-separated values (example: -y,@modelcontextprotocol/server-github).",
@@ -133,6 +141,7 @@ func (m *model) handleMCPSetupSubmission(rawValue string) (handled bool, cmd tea
 			setup.req.Args = splitMCPSetupCSV(value)
 		}
 		setup.step = mcpSetupStepEnv
+		m.input.Focus()
 		m.appendMCPSetupAssistant(strings.Join([]string{
 			"Step 3/4: Enter env entries as `KEY=VALUE` separated by commas.",
 			"Input `skip` for no env.",
@@ -151,6 +160,7 @@ func (m *model) handleMCPSetupSubmission(rawValue string) (handled bool, cmd tea
 			setup.req.Env = env
 		}
 		setup.step = mcpSetupStepConfirm
+		m.input.Focus()
 		m.appendMCPSetupAssistant(buildMCPSetupConfirmText(setup, "Step 4/4"))
 		m.statusNote = "MCP setup confirmation"
 		return true, nil, nil
@@ -165,6 +175,7 @@ func (m *model) handleMCPSetupSubmission(rawValue string) (handled bool, cmd tea
 		}
 		setup.req.Env[mcpSetupGithubTokenEnv] = token
 		setup.step = mcpSetupStepConfirm
+		m.input.Focus()
 		m.appendMCPSetupAssistant(buildMCPSetupConfirmText(setup, "Step 2/2"))
 		m.statusNote = "MCP setup confirmation"
 		return true, nil, nil
@@ -177,6 +188,7 @@ func (m *model) handleMCPSetupSubmission(rawValue string) (handled bool, cmd tea
 		}
 		if isMCPSetupRejectInput(value) {
 			m.mcpSetup = nil
+			m.input.Focus()
 			m.appendMCPSetupAssistant("MCP setup canceled.")
 			m.statusNote = "MCP setup canceled."
 			return true, nil, nil

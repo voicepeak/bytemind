@@ -257,6 +257,20 @@ func TestHandleSlashCommandMCPSetupGithubStartsWizard(t *testing.T) {
 	}
 }
 
+func TestMCPSetupAllowsTypingAfterWizardStarts(t *testing.T) {
+	service := &stubMCPService{}
+	m := newMCPSetupTestModel(service)
+	if err := m.handleSlashCommand("/mcp setup github"); err != nil {
+		t.Fatalf("expected /mcp setup github to start wizard, got %v", err)
+	}
+
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	updated := next.(model)
+	if strings.TrimSpace(updated.input.Value()) != "g" {
+		t.Fatalf("expected input to accept typing during setup, got %q", updated.input.Value())
+	}
+}
+
 func TestMCPSetupGithubFlowAppliesConfigSynchronously(t *testing.T) {
 	service := &stubMCPService{}
 	m := newMCPSetupTestModel(service)
