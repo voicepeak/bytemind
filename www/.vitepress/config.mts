@@ -1,10 +1,10 @@
 import { defineConfig } from 'vitepress'
 
 const enNav = [
-  { text: 'Start', link: '/en/quick-start' },
-  { text: 'Guide', link: '/en/usage/chat-mode' },
-  { text: 'Examples', link: '/en/examples/fix-bug' },
-  { text: 'Reference', link: '/en/reference/cli-commands' }
+  { text: 'Start', link: '/quick-start' },
+  { text: 'Guide', link: '/usage/chat-mode' },
+  { text: 'Examples', link: '/examples/fix-bug' },
+  { text: 'Reference', link: '/reference/cli-commands' }
 ]
 
 const enSidebar = [
