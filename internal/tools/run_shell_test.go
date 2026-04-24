@@ -570,6 +570,36 @@ func TestValidateRequiredWindowsShellCommandRejectsNonReadOnly(t *testing.T) {
 	}
 }
 
+func TestValidateRequiredWindowsShellCommandRejectsGoEnvWriteFlag(t *testing.T) {
+	err := validateRequiredWindowsShellCommand("go env -w GOPATH=C:\\tmp\\go")
+	if err == nil {
+		t.Fatal("expected go env -w to be rejected in strict mode")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "strict read-only") {
+		t.Fatalf("expected strict read-only guard message, got %v", err)
+	}
+}
+
+func TestValidateRequiredWindowsShellCommandRejectsGitOutputFlag(t *testing.T) {
+	err := validateRequiredWindowsShellCommand("git diff --output out.patch")
+	if err == nil {
+		t.Fatal("expected git diff --output to be rejected in strict mode")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "strict read-only") {
+		t.Fatalf("expected strict read-only guard message, got %v", err)
+	}
+}
+
+func TestValidateRequiredWindowsShellCommandRejectsFindDelete(t *testing.T) {
+	err := validateRequiredWindowsShellCommand("find . -delete")
+	if err == nil {
+		t.Fatal("expected find -delete to be rejected in strict mode")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "strict read-only") {
+		t.Fatalf("expected strict read-only guard message, got %v", err)
+	}
+}
+
 func TestRunShellToolRequiredModeBackendUnavailableReturnsPermissionDenied(t *testing.T) {
 	originalLookPath := runShellLookPath
 	runShellLookPath = func(string) (string, error) {
