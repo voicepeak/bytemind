@@ -298,6 +298,9 @@ func (m *Manager) Test(ctx context.Context, extensionID string) (extensionspkg.H
 		}
 		health, err := entry.extension.Health(ctx)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return health, err
+			}
 			snapshot := extensionspkg.IsolationSnapshot{}
 			if m.health != nil {
 				snapshot = m.health.RecordFailure(normalizedID)
@@ -320,20 +323,42 @@ func (m *Manager) Test(ctx context.Context, extensionID string) (extensionspkg.H
 	}
 	ext, err := mcppkg.FromMCPServer(entry.clientCfg, mcppkg.WithRefreshTTL(time.Second))
 	if err != nil {
-		return extensionspkg.HealthSnapshot{
+		health := extensionspkg.HealthSnapshot{
 			Status:       extensionspkg.ExtensionStatusFailed,
 			Message:      err.Error(),
 			LastError:    extensionspkg.ErrCodeLoadFailed,
 			CheckedAtUTC: time.Now().UTC().Format(time.RFC3339),
-		}, err
+		}
+		snapshot := extensionspkg.IsolationSnapshot{}
+		if m.health != nil {
+			snapshot = m.health.RecordFailure(normalizedID)
+		}
+		now := time.Now().UTC()
+		info := applyIsolationSnapshot(extensionspkg.ExtensionInfo{Health: health, Status: health.Status}, snapshot, err, now)
+		return info.Health, err
 	}
 	health, err := ext.Health(ctx)
 	if err != nil {
-		return health, err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return health, err
+		}
+		snapshot := extensionspkg.IsolationSnapshot{}
+		if m.health != nil {
+			snapshot = m.health.RecordFailure(normalizedID)
+		}
+		now := time.Now().UTC()
+		info := applyIsolationSnapshot(extensionspkg.ExtensionInfo{Health: health, Status: health.Status}, snapshot, err, now)
+		return info.Health, err
 	}
+	snapshot := extensionspkg.IsolationSnapshot{}
+	if m.health != nil {
+		snapshot = m.health.RecordSuccess(normalizedID)
+	}
+	now := time.Now().UTC()
+	info := applyIsolationSnapshot(extensionspkg.ExtensionInfo{Health: health, Status: health.Status}, snapshot, nil, now)
 
 	_ = serverID
-	return health, nil
+	return info.Health, nil
 }
 
 func (m *Manager) Invalidate(extensionID string) {
