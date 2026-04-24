@@ -14,26 +14,31 @@ import (
 	"runtime"
 	"strings"
 	"time"
-	"unicode"
 
 	"bytemind/internal/llm"
 	planpkg "bytemind/internal/plan"
+	policypkg "bytemind/internal/policy"
 )
 
 type RunShellTool struct{}
 
-type shellRisk int
+type shellRisk = policypkg.ShellRisk
 
 const (
-	shellRiskSafe shellRisk = iota
-	shellRiskApproval
-	shellRiskBlocked
+	shellRiskSafe     shellRisk = policypkg.ShellRiskSafe
+	shellRiskApproval shellRisk = policypkg.ShellRiskApproval
+	shellRiskBlocked  shellRisk = policypkg.ShellRiskBlocked
 )
 
-type shellAssessment struct {
-	Risk   shellRisk
-	Reason string
-}
+type shellAssessment = policypkg.ShellAssessment
+
+const (
+	systemSandboxModeOff        = "off"
+	systemSandboxModeBestEffort = "best_effort"
+	systemSandboxModeRequired   = "required"
+)
+
+var runShellLookPath = exec.LookPath
 
 func (RunShellTool) Definition() llm.ToolDefinition {
 	return llm.ToolDefinition{
@@ -85,7 +90,13 @@ func (RunShellTool) Run(ctx context.Context, raw json.RawMessage, execCtx *Execu
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := shellCommand(runCtx, args.Command)
+	cmd, sandboxBackend, sandboxMode, err := shellCommand(runCtx, args.Command, execCtx)
+	if err != nil {
+		if sandboxMode == systemSandboxModeRequired {
+			return "", NewToolExecError(ToolErrorPermissionDenied, strings.TrimSpace(err.Error()), false, err)
+		}
+		return "", err
+	}
 	cmd.Dir = execCtx.Workspace
 
 	var stdout bytes.Buffer
@@ -93,7 +104,7 @@ func (RunShellTool) Run(ctx context.Context, raw json.RawMessage, execCtx *Execu
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = runCommandWithSystemSandbox(cmd, sandboxBackend.Name, sandboxMode)
 	exitCode := 0
 	if err != nil {
 		if runCtx.Err() == context.DeadlineExceeded {
@@ -108,17 +119,72 @@ func (RunShellTool) Run(ctx context.Context, raw json.RawMessage, execCtx *Execu
 	}
 
 	return toJSON(map[string]any{
-		"ok":        exitCode == 0,
-		"exit_code": exitCode,
-		"stdout":    stdout.String(),
-		"stderr":    stderr.String(),
+		"ok":             exitCode == 0,
+		"exit_code":      exitCode,
+		"stdout":         stdout.String(),
+		"stderr":         stderr.String(),
+		"system_sandbox": buildSystemSandboxExecutionMetadata(sandboxMode, sandboxBackend),
 	})
 }
 
+func buildSystemSandboxExecutionMetadata(mode string, backend systemSandboxRuntimeBackend) map[string]any {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = systemSandboxModeOff
+	}
+	backendName := strings.TrimSpace(backend.Name)
+	active := backend.Enabled
+	if !active {
+		backendName = "none"
+	}
+	reason := strings.TrimSpace(backend.UnavailableReason)
+	fallback := mode != systemSandboxModeOff && !active && reason != ""
+	status := "inactive"
+	if active {
+		status = "active"
+	} else if fallback {
+		status = "fallback"
+	}
+	requiredCapable := systemSandboxRequiredCapable(mode, backend)
+	capabilityLevel := strings.TrimSpace(backend.CapabilityLevel)
+	if capabilityLevel == "" {
+		capabilityLevel = systemSandboxCapabilityLevel(mode, backend)
+	}
+	payload := map[string]any{
+		"mode":             mode,
+		"backend":          backendName,
+		"active":           active,
+		"required_capable": requiredCapable,
+		"capability_level": capabilityLevel,
+		"fallback":         fallback,
+		"status":           status,
+	}
+	if reason != "" {
+		payload["fallback_reason"] = reason
+	}
+	return payload
+}
+
+func systemSandboxRequiredCapable(mode string, backend systemSandboxRuntimeBackend) bool {
+	if backend.RequiredCapable {
+		return true
+	}
+	if requiredSystemSandboxCapabilitiesSatisfied(backend) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(mode), systemSandboxModeRequired) &&
+		requiredWindowsRequiredCapabilitiesSatisfied(backend)
+}
+
 func requireApproval(command string, execCtx *ExecutionContext) error {
+	if execCtx != nil && execCtx.SkipShellApproval {
+		return nil
+	}
 	mode := planpkg.ModeBuild
+	approvalPolicy := ""
 	if execCtx != nil {
 		mode = planpkg.NormalizeMode(string(execCtx.Mode))
+		approvalPolicy = strings.TrimSpace(execCtx.ApprovalPolicy)
 	}
 	if mode == planpkg.ModePlan {
 		if !isPlanSafeCommand(command) {
@@ -132,7 +198,7 @@ func requireApproval(command string, execCtx *ExecutionContext) error {
 		return errors.New(assessment.Reason)
 	}
 
-	switch execCtx.ApprovalPolicy {
+	switch approvalPolicy {
 	case "never":
 		return nil
 	case "always":
@@ -146,73 +212,16 @@ func requireApproval(command string, execCtx *ExecutionContext) error {
 }
 
 func isPlanSafeCommand(command string) bool {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return false
-	}
-	if hasWriteRedirection(command) {
-		return false
-	}
-	segments := splitCommandSegments(command)
-	if len(segments) != 1 {
-		return false
-	}
-	fields := splitCommandFields(segments[0])
-	if len(fields) == 0 {
-		return false
-	}
-	first := strings.ToLower(strings.TrimSpace(fields[0]))
-	if first == "" {
-		return false
-	}
-	if looksLikeScript(first) {
-		return false
-	}
-	for _, field := range fields {
-		trimmed := strings.TrimSpace(field)
-		switch trimmed {
-		case "|", ">", ">>", "<", ";", "&&", "||":
-			return false
-		}
-	}
-
-	switch first {
-	case "ls", "dir", "pwd", "cat", "type", "rg", "grep", "find", "tree":
-		return true
-	case "git":
-		if len(fields) < 2 {
-			return false
-		}
-		sub := strings.ToLower(fields[1])
-		return sub == "status" || sub == "diff" || sub == "log"
-	case "go":
-		if len(fields) < 2 {
-			return false
-		}
-		sub := strings.ToLower(fields[1])
-		return sub == "env" || sub == "list"
-	case "bash", "sh", "pwsh", "powershell", "python", "python3", "node":
-		return false
-	default:
-		return false
-	}
-}
-
-func looksLikeScript(command string) bool {
-	command = strings.ToLower(strings.TrimSpace(command))
-	if strings.HasPrefix(command, "./") || strings.HasPrefix(command, ".\\") {
-		return true
-	}
-	ext := strings.ToLower(filepath.Ext(command))
-	switch ext {
-	case ".sh", ".ps1", ".bat", ".cmd":
-		return true
-	default:
-		return false
-	}
+	return policypkg.IsPlanSafeShellCommand(command)
 }
 
 func promptForApproval(command, reason string, execCtx *ExecutionContext) error {
+	if execCtx != nil && execCtx.isAwayMode() {
+		return awayModeApprovalDeniedError("shell command", command, execCtx)
+	}
+	if execCtx == nil {
+		return approvalChannelUnavailableError("shell command", command)
+	}
 	if execCtx.Approval != nil {
 		approved, err := execCtx.Approval(ApprovalRequest{
 			Command: command,
@@ -227,7 +236,7 @@ func promptForApproval(command, reason string, execCtx *ExecutionContext) error 
 		return nil
 	}
 	if execCtx.Stdin == nil {
-		return errors.New("shell command requires approval but no stdin is available")
+		return approvalChannelUnavailableError("shell command", command)
 	}
 	if execCtx.Stdout != nil {
 		if strings.TrimSpace(reason) != "" {
@@ -249,258 +258,166 @@ func promptForApproval(command, reason string, execCtx *ExecutionContext) error 
 }
 
 func assessShellCommand(command string) shellAssessment {
-	segments := splitCommandSegments(command)
-	result := shellAssessment{Risk: shellRiskSafe}
-	for _, segment := range segments {
-		assessment := assessCommandSegment(segment)
-		if assessment.Risk > result.Risk {
-			result = assessment
-		}
-		if result.Risk == shellRiskBlocked {
-			return result
-		}
-	}
-	return result
+	return policypkg.AssessShellCommand(command)
 }
 
-func assessCommandSegment(segment string) shellAssessment {
-	segment = strings.TrimSpace(segment)
-	if segment == "" {
-		return shellAssessment{Risk: shellRiskSafe}
+func validateRequiredWindowsShellCommand(command string) error {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return errors.New("system sandbox mode required on windows only permits strict read-only commands")
 	}
-	if hasWriteRedirection(segment) {
-		return shellAssessment{Risk: shellRiskApproval, Reason: "uses shell redirection"}
-	}
-
-	fields := splitCommandFields(segment)
-	if len(fields) == 0 {
-		return shellAssessment{Risk: shellRiskSafe}
+	if isPlanSafeCommand(command) {
+		return nil
 	}
 
-	command := strings.ToLower(fields[0])
-	if isBlockedCommand(command, fields) {
-		return shellAssessment{Risk: shellRiskBlocked, Reason: fmt.Sprintf("blocked dangerous shell command: %s", strings.TrimSpace(segment))}
+	assessment := assessShellCommand(command)
+	switch assessment.Risk {
+	case shellRiskBlocked:
+		return errors.New("system sandbox mode required on windows blocked command: " + assessment.Reason)
+	default:
+		reason := strings.TrimSpace(assessment.Reason)
+		if reason == "" {
+			reason = "command is not in strict read-only allowlist"
+		}
+		return errors.New("system sandbox mode required on windows only permits strict read-only shell commands: " + reason)
 	}
-	if isReadOnlyCommand(command, fields) {
-		return shellAssessment{Risk: shellRiskSafe}
-	}
-	if isApprovalCommand(command, fields) {
-		return shellAssessment{Risk: shellRiskApproval, Reason: fmt.Sprintf("may modify files or environment: %s", fields[0])}
-	}
-	return shellAssessment{Risk: shellRiskApproval, Reason: fmt.Sprintf("requires approval for non-read-only command: %s", fields[0])}
 }
 
-func splitCommandSegments(command string) []string {
-	normalized := strings.ReplaceAll(command, "\r\n", "\n")
-	segments := make([]string, 0, 4)
-	var builder strings.Builder
-	inSingle := false
-	inDouble := false
-
-	flush := func() {
-		segment := strings.TrimSpace(builder.String())
-		if segment != "" {
-			segments = append(segments, segment)
-		}
-		builder.Reset()
+func shellCommand(ctx context.Context, command string, execCtx *ExecutionContext) (*exec.Cmd, systemSandboxRuntimeBackend, string, error) {
+	mode := normalizeSystemSandboxMode(execCtx)
+	backend, err := resolveSystemSandboxRuntimeBackend(mode, runtime.GOOS, runShellLookPath)
+	if err != nil {
+		return nil, systemSandboxRuntimeBackend{}, mode, err
 	}
-
-	for i := 0; i < len(normalized); i++ {
-		ch := normalized[i]
-		switch ch {
-		case '\'':
-			if !inDouble {
-				inSingle = !inSingle
+	var cmd *exec.Cmd
+	if backend.Enabled {
+		execCommand := strings.TrimSpace(command)
+		switch strings.TrimSpace(backend.Name) {
+		case "darwin_sandbox_exec":
+			allowNetwork := mode != systemSandboxModeRequired
+			profile, err := buildDarwinSandboxProfile(execCtx, allowNetwork)
+			if err != nil {
+				return nil, backend, mode, err
 			}
-			builder.WriteByte(ch)
-		case '"':
-			if !inSingle {
-				inDouble = !inDouble
+			cmd = exec.CommandContext(ctx, backend.Runner, buildDarwinSandboxShellArgs(profile, execCommand)...)
+		case "windows_job_object":
+			if mode == systemSandboxModeRequired {
+				if err := validateRequiredWindowsShellCommand(execCommand); err != nil {
+					return nil, backend, mode, err
+				}
 			}
-			builder.WriteByte(ch)
-		case '\n', ';':
-			if inSingle || inDouble {
-				builder.WriteByte(ch)
-				continue
-			}
-			flush()
-		case '|', '&':
-			if inSingle || inDouble {
-				builder.WriteByte(ch)
-				continue
-			}
-			flush()
-			if i+1 < len(normalized) && normalized[i+1] == ch {
-				i++
-			}
+			executable := resolveWindowsShellExecutable(exec.LookPath, os.Stat, os.Getenv)
+			cmd = exec.CommandContext(ctx, executable, "-NoProfile", "-Command", command)
 		default:
-			builder.WriteByte(ch)
-		}
-	}
-	flush()
-	return segments
-}
-
-func splitCommandFields(segment string) []string {
-	fields := make([]string, 0, 8)
-	var builder strings.Builder
-	inSingle := false
-	inDouble := false
-
-	flush := func() {
-		if builder.Len() == 0 {
-			return
-		}
-		fields = append(fields, builder.String())
-		builder.Reset()
-	}
-
-	for i := 0; i < len(segment); i++ {
-		ch := segment[i]
-		switch ch {
-		case '\'':
-			if !inDouble {
-				inSingle = !inSingle
-				continue
+			if mode == systemSandboxModeRequired && runtime.GOOS == "linux" {
+				wrapped, err := buildRequiredLinuxShellCommand(execCommand, execCtx)
+				if err != nil {
+					return nil, backend, mode, err
+				}
+				execCommand = wrapped
 			}
-		case '"':
-			if !inSingle {
-				inDouble = !inDouble
-				continue
-			}
+			args := append(append([]string(nil), backend.Shell.ArgPrefix...), execCommand)
+			cmd = exec.CommandContext(ctx, backend.Runner, args...)
 		}
-		if !inSingle && !inDouble && unicode.IsSpace(rune(ch)) {
-			flush()
-			continue
-		}
-		builder.WriteByte(ch)
-	}
-	flush()
-	return fields
-}
-
-func hasWriteRedirection(segment string) bool {
-	inSingle := false
-	inDouble := false
-	for i := 0; i < len(segment); i++ {
-		ch := segment[i]
-		switch ch {
-		case '\'':
-			if !inDouble {
-				inSingle = !inSingle
-			}
-		case '"':
-			if !inSingle {
-				inDouble = !inDouble
-			}
-		case '>':
-			if !inSingle && !inDouble {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isBlockedCommand(command string, fields []string) bool {
-	switch command {
-	case "rm", "rmdir", "del", "erase", "remove-item", "ri", "rd", "format", "diskpart", "mkfs", "dd", "shutdown", "reboot", "halt", "poweroff":
-		return true
-	case "git":
-		return isBlockedGit(fields)
-	default:
-		return false
-	}
-}
-
-func isBlockedGit(fields []string) bool {
-	if len(fields) < 2 {
-		return false
-	}
-	sub := strings.ToLower(fields[1])
-	switch sub {
-	case "reset":
-		return hasAnyArg(fields[2:], "--hard")
-	case "clean":
-		for _, arg := range fields[2:] {
-			if strings.HasPrefix(arg, "-f") || strings.Contains(arg, "f") && strings.HasPrefix(arg, "-") {
-				return true
-			}
-		}
-	case "checkout":
-		return hasAnyArg(fields[2:], "--")
-	case "restore":
-		return len(fields) > 2
-	}
-	return false
-}
-
-func isReadOnlyCommand(command string, fields []string) bool {
-	switch command {
-	case "cat", "type", "ls", "dir", "pwd", "echo", "rg", "grep", "find", "where", "which", "env", "printenv", "uname", "whoami", "head", "tail", "sort", "uniq", "wc", "tree", "get-childitem", "get-content", "select-string", "get-location", "resolve-path":
-		return true
-	case "git":
-		return isReadOnlyGit(fields)
-	case "go":
-		return len(fields) > 1 && isOneOf(strings.ToLower(fields[1]), "env", "list", "version")
-	case "npm", "pnpm", "yarn":
-		return len(fields) > 1 && isOneOf(strings.ToLower(fields[1]), "list", "info", "view", "why")
-	default:
-		return false
-	}
-}
-
-func isApprovalCommand(command string, fields []string) bool {
-	switch command {
-	case "cp", "copy", "copy-item", "mv", "move", "move-item", "rename", "rename-item", "new-item", "mkdir", "md", "touch", "tee", "set-content", "add-content", "out-file":
-		return true
-	case "git":
-		return len(fields) > 1
-	case "go":
-		return len(fields) > 1 && isOneOf(strings.ToLower(fields[1]), "test", "build", "run", "mod", "get")
-	case "npm", "pnpm", "yarn":
-		return len(fields) > 1 && isOneOf(strings.ToLower(fields[1]), "install", "add", "remove", "update", "run")
-	case "pip", "pip3", "uv", "cargo", "make", "cmake", "python", "python3", "node", "pwsh", "powershell", "sh", "bash":
-		return true
-	default:
-		return false
-	}
-}
-
-func isReadOnlyGit(fields []string) bool {
-	if len(fields) < 2 {
-		return false
-	}
-	sub := strings.ToLower(fields[1])
-	return isOneOf(sub, "status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "branch") && len(fields) == 2
-}
-
-func hasAnyArg(args []string, targets ...string) bool {
-	for _, arg := range args {
-		for _, target := range targets {
-			if strings.EqualFold(arg, target) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isOneOf(value string, options ...string) bool {
-	for _, option := range options {
-		if value == option {
-			return true
-		}
-	}
-	return false
-}
-
-func shellCommand(ctx context.Context, command string) *exec.Cmd {
-	if runtime.GOOS == "windows" {
+	} else if runtime.GOOS == "windows" {
 		executable := resolveWindowsShellExecutable(exec.LookPath, os.Stat, os.Getenv)
-		return exec.CommandContext(ctx, executable, "-NoProfile", "-Command", command)
+		cmd = exec.CommandContext(ctx, executable, "-NoProfile", "-Command", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-lc", command)
 	}
-	return exec.CommandContext(ctx, "sh", "-lc", command)
+
+	if backend.Enabled && mode == systemSandboxModeRequired {
+		forced := map[string]string{}
+		if execCtx != nil {
+			workspace := strings.TrimSpace(execCtx.Workspace)
+			if workspace != "" {
+				forced["HOME"] = workspace
+			}
+		}
+		forced["TMPDIR"] = "/tmp"
+		cmd.Env = buildSandboxEnv(os.Environ(), sandboxEnvOptions{
+			GOOS:          runtime.GOOS,
+			RequiredMode:  true,
+			DropSensitive: true,
+			ForceSet:      forced,
+		})
+	}
+	return cmd, backend, mode, nil
+}
+
+func withRequiredLinuxShellLimits(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return command
+	}
+	guards := []string{
+		"ulimit -t 120 >/dev/null 2>&1 || true",
+		"ulimit -f 1048576 >/dev/null 2>&1 || true",
+		"ulimit -v 2097152 >/dev/null 2>&1 || true",
+	}
+	return strings.Join(append(guards, command), "; ")
+}
+
+type systemSandboxBackend struct {
+	Enabled   bool
+	Runner    string
+	ArgPrefix []string
+}
+
+func normalizeSystemSandboxMode(execCtx *ExecutionContext) string {
+	if execCtx == nil {
+		return systemSandboxModeOff
+	}
+	switch strings.ToLower(strings.TrimSpace(execCtx.SystemSandboxMode)) {
+	case "", systemSandboxModeOff:
+		return systemSandboxModeOff
+	case systemSandboxModeBestEffort:
+		return systemSandboxModeBestEffort
+	case systemSandboxModeRequired:
+		return systemSandboxModeRequired
+	default:
+		return systemSandboxModeOff
+	}
+}
+
+func resolveSystemSandboxBackend(mode, goos string, lookPath func(string) (string, error)) (systemSandboxBackend, error) {
+	resolved, err := resolveSystemSandboxRuntimeBackend(mode, goos, lookPath)
+	if err != nil {
+		return systemSandboxBackend{}, err
+	}
+	if !resolved.Enabled {
+		return systemSandboxBackend{}, nil
+	}
+	return systemSandboxBackend{
+		Enabled:   true,
+		Runner:    resolved.Runner,
+		ArgPrefix: append([]string(nil), resolved.Shell.ArgPrefix...),
+	}, nil
+}
+
+func linuxSystemSandboxNamespaceArgs() []string {
+	return []string{
+		"--user",
+		"--map-root-user",
+		"--mount",
+		"--pid",
+		"--fork",
+		"--ipc",
+		"--uts",
+		"--net",
+	}
+}
+
+func linuxSystemSandboxWorkerArgs() []string {
+	return []string{
+		"--user",
+		"--map-root-user",
+		"--mount",
+		"--pid",
+		"--fork",
+		"--ipc",
+		"--uts",
+	}
 }
 
 func resolveWindowsShellExecutable(

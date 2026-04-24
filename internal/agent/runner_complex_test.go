@@ -53,11 +53,17 @@ type fakeTool struct {
 	run  func(raw json.RawMessage, execCtx *tools.ExecutionContext) (string, error)
 }
 
+const generousTokenQuota = 1_000_000
+
 func (t *fakeTool) Definition() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Type: "function",
 		Function: llm.FunctionDefinition{
 			Name: t.name,
+			Parameters: map[string]any{
+				"type":                 "object",
+				"additionalProperties": true,
+			},
 		},
 	}
 }
@@ -153,8 +159,12 @@ func TestRunPromptExecutesMultipleToolCallsInOrder(t *testing.T) {
 	}
 
 	registry := tools.DefaultRegistry()
-	registry.Add(firstTool)
-	registry.Add(secondTool)
+	if err := registry.Register(firstTool, tools.RegisterOptions{Source: tools.RegistrationSourceBuiltin}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(secondTool, tools.RegisterOptions{Source: tools.RegistrationSourceBuiltin}); err != nil {
+		t.Fatal(err)
+	}
 
 	client := &recordingClient{replies: []llm.Message{
 		{

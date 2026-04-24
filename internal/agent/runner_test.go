@@ -1,11 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +16,7 @@ import (
 	"unicode"
 
 	"bytemind/internal/config"
+	contextpkg "bytemind/internal/context"
 	"bytemind/internal/llm"
 	planpkg "bytemind/internal/plan"
 	"bytemind/internal/session"
@@ -29,7 +30,30 @@ type fakeClient struct {
 	index    int
 }
 
-const generousTokenQuota = 50000
+type managerProbeTool struct {
+	sawTaskManager bool
+	sawExtensions  bool
+}
+
+func (t *managerProbeTool) Definition() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Type: "function",
+		Function: llm.FunctionDefinition{
+			Name:        "manager_probe",
+			Description: "Test-only tool that captures execution context manager injection.",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+	}
+}
+
+func (t *managerProbeTool) Run(_ context.Context, _ json.RawMessage, execCtx *tools.ExecutionContext) (string, error) {
+	t.sawTaskManager = execCtx != nil && execCtx.TaskManager != nil
+	t.sawExtensions = execCtx != nil && execCtx.Extensions != nil
+	return `{"ok":true}`, nil
+}
 
 func (f *fakeClient) CreateMessage(ctx context.Context, req llm.ChatRequest) (llm.Message, error) {
 	f.requests = append(f.requests, req)
@@ -55,99 +79,61 @@ func (f *fakeClient) StreamMessage(ctx context.Context, req llm.ChatRequest, onD
 	return message, nil
 }
 
-type scriptedReply struct {
-	reply llm.Message
-	err   error
-}
-
-type scriptedClient struct {
-	sequence []scriptedReply
-	requests []llm.ChatRequest
-	index    int
-}
-
-func (c *scriptedClient) CreateMessage(_ context.Context, req llm.ChatRequest) (llm.Message, error) {
-	c.requests = append(c.requests, req)
-	if len(c.sequence) == 0 {
-		return llm.Message{}, nil
-	}
-	if c.index >= len(c.sequence) {
-		last := c.sequence[len(c.sequence)-1]
-		return last.reply, last.err
-	}
-	item := c.sequence[c.index]
-	c.index++
-	if item.err != nil {
-		return llm.Message{}, item.err
-	}
-	return item.reply, nil
-}
-
-func (c *scriptedClient) StreamMessage(ctx context.Context, req llm.ChatRequest, onDelta func(string)) (llm.Message, error) {
-	message, err := c.CreateMessage(ctx, req)
+func TestRunPromptInjectsRuntimeAndExtensionsIntoExecutionContext(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
 	if err != nil {
-		return llm.Message{}, err
+		t.Fatal(err)
 	}
-	if onDelta != nil && message.Content != "" {
-		onDelta(message.Content)
+	sess := session.New(workspace)
+	probe := &managerProbeTool{}
+	registry := tools.DefaultRegistry()
+	if err := registry.Register(probe, tools.RegisterOptions{Source: tools.RegistrationSourceBuiltin}); err != nil {
+		t.Fatal(err)
 	}
-	return message, nil
-}
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name:      "manager_probe",
+					Arguments: `{}`,
+				},
+			}},
+		},
+		{
+			Role:    llm.RoleAssistant,
+			Content: "done",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 4,
+			Stream:        false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: registry,
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
 
-func isCompactionRequest(req llm.ChatRequest) bool {
-	if len(req.Messages) == 0 {
-		return false
+	answer, err := runner.RunPrompt(context.Background(), sess, "probe managers", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
 	}
-	first := req.Messages[0]
-	first.Normalize()
-	if first.Role != llm.RoleSystem {
-		return false
+	if answer != "done" {
+		t.Fatalf("unexpected answer: %q", answer)
 	}
-	return strings.Contains(strings.ToLower(first.Text()), "conversation compaction assistant")
-}
-
-func countCompactionRequests(requests []llm.ChatRequest) int {
-	count := 0
-	for _, req := range requests {
-		if isCompactionRequest(req) {
-			count++
-		}
+	if !probe.sawTaskManager {
+		t.Fatal("expected execution context to include task manager")
 	}
-	return count
-}
-
-func countTurnRequests(requests []llm.ChatRequest) int {
-	count := 0
-	for _, req := range requests {
-		if isCompactionRequest(req) {
-			continue
-		}
-		count++
-	}
-	return count
-}
-
-func compactionReason(message llm.Message) string {
-	if message.Meta == nil {
-		return ""
-	}
-	raw, ok := message.Meta["compaction"]
-	if !ok {
-		return ""
-	}
-	meta, ok := raw.(map[string]any)
-	if !ok {
-		return ""
-	}
-	reason, _ := meta["reason"].(string)
-	return strings.TrimSpace(reason)
-}
-
-func testContextBudget(maxReactiveRetry int) config.ContextBudgetConfig {
-	return config.ContextBudgetConfig{
-		WarningRatio:     config.DefaultContextBudgetWarningRatio,
-		CriticalRatio:    config.DefaultContextBudgetCriticalRatio,
-		MaxReactiveRetry: maxReactiveRetry,
+	if !probe.sawExtensions {
+		t.Fatal("expected execution context to include extensions manager")
 	}
 }
 
@@ -164,7 +150,6 @@ func TestRunPromptReturnsBudgetSummaryInsteadOfError(t *testing.T) {
 			Provider:      config.ProviderConfig{Model: "test-model"},
 			MaxIterations: 1,
 			Stream:        false,
-			TokenQuota:    generousTokenQuota,
 		},
 		Client: &fakeClient{replies: []llm.Message{{
 			Role: "assistant",
@@ -219,7 +204,6 @@ func TestRunPromptStopsOnRepeatedToolPlan(t *testing.T) {
 			Provider:      config.ProviderConfig{Model: "test-model"},
 			MaxIterations: 5,
 			Stream:        false,
-			TokenQuota:    generousTokenQuota,
 		},
 		Client:   &fakeClient{replies: []llm.Message{repeatedReply, repeatedReply, repeatedReply, repeatedReply}},
 		Store:    store,
@@ -232,7 +216,7 @@ func TestRunPromptStopsOnRepeatedToolPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(answer, "repeated the same tool sequence") {
+	if !strings.Contains(answer, "repeated the") {
 		t.Fatalf("expected repeat-detection summary, got %q", answer)
 	}
 }
@@ -267,7 +251,6 @@ func TestRunPromptCompletesMinimalToolLoop(t *testing.T) {
 			Provider:      config.ProviderConfig{Model: "test-model"},
 			MaxIterations: 4,
 			Stream:        false,
-			TokenQuota:    generousTokenQuota,
 		},
 		Client:   client,
 		Store:    store,
@@ -300,6 +283,548 @@ func TestRunPromptCompletesMinimalToolLoop(t *testing.T) {
 	}
 	if sess.Messages[3].Role != "assistant" || sess.Messages[3].Content != "Workspace inspected." {
 		t.Fatalf("expected final assistant message, got %#v", sess.Messages[3])
+	}
+}
+
+func TestRunPromptRepairsContinueWorkWithoutToolCalls(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role:    "assistant",
+			Content: "<turn_intent>continue_work</turn_intent>I will inspect files first.",
+		},
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name:      "list_files",
+					Arguments: `{}`,
+				},
+			}},
+		},
+		{
+			Role:    "assistant",
+			Content: "<turn_intent>finalize</turn_intent>Workspace inspected.",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 6,
+			Stream:        false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "inspect workspace", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "Workspace inspected." {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("expected three requests (repair + tool + finalize), got %d", len(client.requests))
+	}
+	secondTurnMessages := client.requests[1].Messages
+	if len(secondTurnMessages) == 0 || secondTurnMessages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected second request to keep system prompt first, got %#v", secondTurnMessages)
+	}
+	lastMsg := secondTurnMessages[len(secondTurnMessages)-1]
+	if lastMsg.Role != llm.RoleUser ||
+		!strings.Contains(strings.ToLower(lastMsg.Text()), "ongoing work but returned no structured tool calls") {
+		t.Fatalf("expected repair control note to be appended as user message, got %#v", secondTurnMessages)
+	}
+	if len(sess.Messages) != 4 {
+		t.Fatalf("expected user + tool call + tool result + final assistant, got %#v", sess.Messages)
+	}
+}
+
+func TestRunPromptRepairsPlanDecisionAcknowledgementWithoutUpdatePlan(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	sess.Mode = planpkg.ModePlan
+	sess.Plan = planpkg.State{
+		Goal:         "Implement the first RAG demo",
+		Summary:      "Need to lock the frontend choice before convergence.",
+		Phase:        planpkg.PhaseClarify,
+		DecisionGaps: []string{"Choose the first frontend stack."},
+		Steps: []planpkg.Step{
+			{Title: "Freeze the frontend stack", Status: planpkg.StepPending},
+			{Title: "Implement the minimal flow", Status: planpkg.StepPending},
+		},
+	}
+
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role:    "assistant",
+			Content: "<turn_intent>finalize</turn_intent>已收到，采用 B: Streamlit + LangChain。\n你回复 start execution 我就切到 Build 模式。",
+		},
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name: "update_plan",
+					Arguments: `{
+						"summary":"Frontend choice is locked and the plan is ready for execution review.",
+						"implementation_brief":"Objective: deliver the first local RAG demo in demos/ with Streamlit + LangChain.\nTechnical direction: keep the existing local Python stack, use Streamlit for UI, LangChain for orchestration, and a local vector store path.\nDeliverables: a runnable demo app, document ingestion flow, retrieval + answer generation flow, and basic local verification.\nAcceptance: another coding model should be able to implement directly from this brief.",
+						"phase":"converge_ready",
+						"decision_log":[{"decision":"Adopt Streamlit + LangChain for the first frontend stack","reason":"User selected option B for faster UI delivery."}],
+						"decision_gaps":[],
+						"scope_defined":true,
+						"risk_and_rollback_defined":true,
+						"verification_defined":true,
+						"risks":["Frontend stack change may require adapter refactors."],
+						"verification":["Run the local Streamlit app and validate one ingest + one query flow."],
+						"next_action":"Present the full handoff-ready plan and ask whether to start execution.",
+						"plan":[
+							{"step":"Freeze the frontend stack", "status":"pending"},
+							{"step":"Implement the minimal flow", "status":"pending"}
+						]
+					}`,
+				},
+			}},
+		},
+		{
+			Role:    "assistant",
+			Content: "<turn_intent>finalize</turn_intent>已记录，采用 B: Streamlit + LangChain。\n可选下一步：\n- Start execution\n- Adjust plan",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 6,
+			Stream:        false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "b", "plan", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("expected three requests (repair + update_plan + finalize), got %d", len(client.requests))
+	}
+	secondTurnMessages := client.requests[1].Messages
+	lastMsg := secondTurnMessages[len(secondTurnMessages)-1]
+	if lastMsg.Role != llm.RoleUser || !strings.Contains(strings.ToLower(lastMsg.Text()), "without calling update_plan first") {
+		t.Fatalf("expected plan-state repair note to be appended as user message, got %#v", secondTurnMessages)
+	}
+	if sess.Plan.Phase != planpkg.PhaseConvergeReady {
+		t.Fatalf("expected session plan to converge after repair, got %#v", sess.Plan)
+	}
+	for _, want := range []string{"<proposed_plan>", "Implementation Brief", "Start execution"} {
+		if !strings.Contains(answer, want) {
+			t.Fatalf("expected repaired answer to include %q, got %q", want, answer)
+		}
+	}
+}
+
+func TestRunPromptRepairsClarifyQuestionWithoutActiveChoice(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	sess.Mode = planpkg.ModePlan
+	sess.Plan = planpkg.State{
+		Goal:         "Implement the first paper RAG demo",
+		Summary:      "Need to choose the target demo directory before the rest of the plan converges.",
+		Phase:        planpkg.PhaseClarify,
+		DecisionGaps: []string{"Choose the target demo directory."},
+		Steps: []planpkg.Step{
+			{Title: "Choose the target demo directory", Status: planpkg.StepPending},
+			{Title: "Lock the technical path", Status: planpkg.StepPending},
+			{Title: "Define the runnable acceptance path", Status: planpkg.StepPending},
+		},
+	}
+
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role:    "assistant",
+			Content: "请先选目录： A 复用 demos/paper_rag_minimal（推荐） / B 复用 demos/paper_rag / C 新建 demos/paper_rag_mvp。",
+		},
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name: "update_plan",
+					Arguments: `{
+						"summary":"The first directory choice is waiting on the user before plan convergence.",
+						"phase":"clarify",
+						"decision_gaps":["Choose the target demo directory."],
+						"active_choice":{
+							"id":"target_demo_directory",
+							"kind":"clarify",
+							"question":"请先选目录：",
+							"gap_key":"Choose the target demo directory.",
+							"options":[
+								{"id":"reuse_paper_rag_minimal","shortcut":"A","title":"复用 demos/paper_rag_minimal","description":"推荐，最接近最小闭环。","recommended":true},
+								{"id":"reuse_paper_rag","shortcut":"B","title":"复用 demos/paper_rag","description":"复用现有目录，但改动面更大。"},
+								{"id":"new_paper_rag_mvp","shortcut":"C","title":"新建 demos/paper_rag_mvp","description":"隔离更强，但会多一些样板搭建。"}
+							]
+						},
+						"plan":[
+							{"step":"Choose the target demo directory", "status":"pending"},
+							{"step":"Lock the technical path", "status":"pending"},
+							{"step":"Define the runnable acceptance path", "status":"pending"}
+						]
+					}`,
+				},
+			}},
+		},
+		{
+			Role:    "assistant",
+			Content: "<turn_intent>ask_user</turn_intent>先从下面的选项里确认目录方案。",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 6,
+			Stream:        false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "继续规划", "plan", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("expected three requests (repair + update_plan + ask_user), got %d", len(client.requests))
+	}
+	secondTurnMessages := client.requests[1].Messages
+	lastMsg := secondTurnMessages[len(secondTurnMessages)-1]
+	if lastMsg.Role != llm.RoleUser || !strings.Contains(strings.ToLower(lastMsg.Text()), "without storing active_choice first") {
+		t.Fatalf("expected clarify repair note to be appended as user message, got %#v", secondTurnMessages)
+	}
+	if sess.Plan.ActiveChoice == nil {
+		t.Fatalf("expected session plan to store active_choice after repair, got %#v", sess.Plan)
+	}
+	if sess.Plan.ActiveChoice.ID != "target_demo_directory" {
+		t.Fatalf("expected active_choice to preserve the directory decision key, got %#v", sess.Plan.ActiveChoice)
+	}
+	if !strings.Contains(answer, "确认目录方案") {
+		t.Fatalf("expected repaired answer to keep a short lead sentence, got %q", answer)
+	}
+	if strings.Contains(answer, "demos/paper_rag_minimal") {
+		t.Fatalf("expected repaired answer to avoid inlining option text once the picker can render it, got %q", answer)
+	}
+}
+
+func TestRunPromptRepairsPlanRevisionAndReturnsRevisedPlanDocument(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	sess.Mode = planpkg.ModePlan
+	sess.Plan = planpkg.State{
+		Goal:                "Implement the first paper RAG demo",
+		Summary:             "The plan is converged and ready to execute.",
+		ImplementationBrief: "Objective: deliver the first local paper RAG demo.\nDeliverables: upload, retrieval, answer generation, and a minimal HTML page.",
+		Phase:               planpkg.PhaseConvergeReady,
+		DecisionLog: []planpkg.Decision{
+			{Decision: "Use FastAPI + Jinja2 HTML for the first UI path", Reason: "Keeps the HTML GUI simple and local."},
+		},
+		Steps: []planpkg.Step{
+			{Title: "Freeze the MVP scope", Status: planpkg.StepPending},
+			{Title: "Implement the minimal UI flow", Status: planpkg.StepPending},
+		},
+		Verification:        []string{"Start the local app and validate one upload + one answer flow."},
+		ScopeDefined:        true,
+		RiskRollbackDefined: true,
+		VerificationDefined: true,
+		NextAction:          "Ask whether to start execution or keep adjusting the plan.",
+	}
+
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role:    "assistant",
+			Content: "非常好，这一步很关键。建议先把 HTML GUI 收敛成页面功能、页面布局和交互细节三块，这样后面实现会更稳。",
+		},
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name: "update_plan",
+					Arguments: `{
+						"summary":"The plan stays converged and now includes a more detailed HTML GUI specification.",
+						"implementation_brief":"Objective: deliver the first local paper RAG demo in demos/.\nUI Specification: refine the HTML GUI into explicit page regions and interactions.\nLayout: top bar with title and current model tag; left column for paper management and system status; right upper panel for QA; right lower panel for synthesis and retrieval results.\nInteraction Flow: upload triggers indexing with progress states; answer and synthesis are split into separate tabs; each answer lists its cited source papers.\nDeliverables: runnable FastAPI app, HTML templates, upload/index/qa/synthesis flows, and verification notes.",
+						"phase":"converge_ready",
+						"decision_log":[
+							{"decision":"Use FastAPI + Jinja2 HTML for the first UI path","reason":"Keeps the HTML GUI simple and local."},
+							{"decision":"Expand the HTML GUI spec into concrete layout and interaction sections","reason":"User asked for a more detailed UI design before execution."}
+						],
+						"decision_gaps":[],
+						"scope_defined":true,
+						"risk_and_rollback_defined":true,
+						"verification_defined":true,
+						"verification":[
+							"Start the local app and validate one upload + one answer flow.",
+							"Confirm the HTML page shows the top bar, paper panel, QA tab, and synthesis tab."
+						],
+						"next_action":"Ask whether to start execution or keep adjusting the plan.",
+						"plan":[
+							{"step":"Freeze the MVP scope", "status":"pending", "description":"Lock the minimal local paper-RAG scope and the refined HTML GUI boundaries."},
+							{"step":"Implement the HTML GUI flow", "status":"pending", "description":"Build the top bar, paper management area, QA tab, and synthesis tab with clear state feedback."}
+						]
+					}`,
+				},
+			}},
+		},
+		{
+			Role:    "assistant",
+			Content: "<turn_intent>finalize</turn_intent>非常好，这一步很关键。现在我已经把 UI 细化进计划里了，下面是页面功能、页面布局和交互细节的整理版本。",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 6,
+			Stream:        false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "我觉得 html 的界面设计还可以再细化一下，比如明确页面分区和交互。", "plan", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("expected three requests (repair + update_plan + finalize), got %d", len(client.requests))
+	}
+	secondTurnMessages := client.requests[1].Messages
+	lastMsg := secondTurnMessages[len(secondTurnMessages)-1]
+	if lastMsg.Role != llm.RoleUser || !strings.Contains(strings.ToLower(lastMsg.Text()), "plan-refinement feedback without updating the structured plan first") {
+		t.Fatalf("expected plan-revision repair note to be appended as user message, got %#v", secondTurnMessages)
+	}
+	if !strings.Contains(sess.Plan.ImplementationBrief, "UI Specification") {
+		t.Fatalf("expected revised plan to absorb the UI detail, got %#v", sess.Plan)
+	}
+	if !strings.Contains(answer, "已按你的反馈更新计划") {
+		t.Fatalf("expected final answer to be condensed into a short revision acknowledgement, got %q", answer)
+	}
+	if strings.Contains(answer, "非常好，这一步很关键") {
+		t.Fatalf("expected standalone revision prose to be removed from the final answer, got %q", answer)
+	}
+	for _, want := range []string{"<proposed_plan>", "UI Specification", "top bar with title", "right upper panel for QA"} {
+		if !strings.Contains(answer, want) {
+			t.Fatalf("expected revised plan answer to include %q, got %q", want, answer)
+		}
+	}
+}
+
+func TestRunPromptRepairsBuildHandoffWithoutRestartingPlanConfirmation(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	sess.Mode = planpkg.ModeBuild
+	sess.Plan = planpkg.State{
+		Goal:                "Implement the first RAG demo",
+		Summary:             "Plan is converged and execution should begin from the repo baseline.",
+		Phase:               planpkg.PhaseExecuting,
+		NextAction:          "Inspect the workspace entrypoints before editing.",
+		Steps:               []planpkg.Step{{Title: "Inspect the workspace entrypoints", Status: planpkg.StepInProgress}},
+		ScopeDefined:        true,
+		RiskRollbackDefined: true,
+		VerificationDefined: true,
+	}
+
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role:    "assistant",
+			Content: "<turn_intent>finalize</turn_intent>收到，准备开工。\n当前仍停在计划确认流里，请再发 continue execution 或在 UI 切到 Build。",
+		},
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name:      "list_files",
+					Arguments: `{}`,
+				},
+			}},
+		},
+		{
+			Role:    "assistant",
+			Content: "<turn_intent>finalize</turn_intent>我先检查了工作区入口，接下来继续实现。",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 6,
+			Stream:        false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "start execution", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("expected three requests (repair + tool + finalize), got %d", len(client.requests))
+	}
+	secondTurnMessages := client.requests[1].Messages
+	lastMsg := secondTurnMessages[len(secondTurnMessages)-1]
+	if lastMsg.Role != llm.RoleUser || !strings.Contains(strings.ToLower(lastMsg.Text()), "already switched to build mode") {
+		t.Fatalf("expected build-handoff repair note to be appended as user message, got %#v", secondTurnMessages)
+	}
+	if !strings.Contains(answer, "我先检查了工作区入口") {
+		t.Fatalf("expected repaired build answer, got %q", answer)
+	}
+}
+
+func TestRunPromptDoesNotRepairBuildHandoffWhenAssistantRequestsRealBlockerInfo(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	sess.Mode = planpkg.ModeBuild
+	sess.Plan = planpkg.State{
+		Goal:                "Implement the first RAG demo",
+		Summary:             "Plan is converged and execution should continue from the repo baseline.",
+		Phase:               planpkg.PhaseExecuting,
+		NextAction:          "Run the first execution step.",
+		Steps:               []planpkg.Step{{Title: "Run the first execution step", Status: planpkg.StepInProgress}},
+		ScopeDefined:        true,
+		RiskRollbackDefined: true,
+		VerificationDefined: true,
+	}
+
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role:    "assistant",
+			Content: "<turn_intent>ask_user</turn_intent>Before I proceed, I need the missing API token for the target service.",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 4,
+			Stream:        false,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "start execution", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("expected direct ask_user response without build-handoff repair retry, got %d requests", len(client.requests))
+	}
+	if !strings.Contains(strings.ToLower(answer), "missing api token") {
+		t.Fatalf("expected answer to preserve the genuine blocker clarification, got %q", answer)
+	}
+	if len(sess.Messages) != 2 {
+		t.Fatalf("expected user + assistant messages only, got %#v", sess.Messages)
+	}
+}
+
+func TestRunPromptStopsWhenContinueWorkWithoutToolCallsKeepsRepeating(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role:    "assistant",
+			Content: "<turn_intent>continue_work</turn_intent>I will continue now.",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 8,
+			Stream:        false,
+			ContextBudget: config.ContextBudgetConfig{
+				WarningRatio:     config.DefaultContextBudgetWarningRatio,
+				CriticalRatio:    config.DefaultContextBudgetCriticalRatio,
+				MaxReactiveRetry: 1,
+			},
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "keep going", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(answer, "ongoing work without structured tool calls") {
+		t.Fatalf("expected stop summary for repeated no-tool continue turns, got %q", answer)
+	}
+	if len(sess.Messages) != 2 {
+		t.Fatalf("expected user + summary assistant messages, got %#v", sess.Messages)
 	}
 }
 
@@ -369,6 +894,179 @@ func TestRunPromptAutoCompactsLongHistory(t *testing.T) {
 	}
 	if sess.Messages[1].Role != llm.RoleUser || strings.TrimSpace(sess.Messages[1].Text()) != "continue implementation" {
 		t.Fatalf("expected latest user message to be preserved, got %#v", sess.Messages[1])
+	}
+}
+
+func TestRunPromptAutoCompactionPreservesMostRecentCompleteToolPair(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	for i := 0; i < 6; i++ {
+		sess.Messages = append(sess.Messages,
+			llm.NewUserTextMessage(strings.Repeat("history user segment ", 24)),
+			llm.NewAssistantTextMessage(strings.Repeat("history assistant segment ", 24)),
+		)
+	}
+	sess.Messages = append(sess.Messages,
+		llm.NewUserTextMessage("older tool task"),
+		llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-old",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name:      "list_files",
+					Arguments: `{}`,
+				},
+			}},
+		},
+		llm.NewToolResultMessage("call-old", `{"ok":true,"items":["a.txt"]}`),
+		llm.NewAssistantTextMessage("old tool done"),
+		llm.NewUserTextMessage("recent tool task"),
+		llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-recent",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name:      "read_file",
+					Arguments: `{"path":"README.md"}`,
+				},
+			}},
+		},
+		llm.NewToolResultMessage("call-recent", `{"ok":true,"content":"hello"}`),
+		llm.NewAssistantTextMessage("recent tool done"),
+	)
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &fakeClient{
+		replies: []llm.Message{
+			{Role: llm.RoleAssistant, Content: "Goal: continue\nRecent: keep latest tool context"},
+			{Role: llm.RoleAssistant, Content: "done"},
+		},
+	}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 2,
+			Stream:        false,
+			TokenQuota:    260,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "continue implementation", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "done" {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("expected one compaction request + one turn request, got %d", len(client.requests))
+	}
+	if !containsToolUseID(sess.Messages, "call-recent") {
+		t.Fatalf("expected compacted session to keep recent tool_use, got %#v", sess.Messages)
+	}
+	if !containsToolResultID(sess.Messages, "call-recent") {
+		t.Fatalf("expected compacted session to keep recent tool_result, got %#v", sess.Messages)
+	}
+	if containsToolUseID(sess.Messages, "call-old") {
+		t.Fatalf("expected older pair to be compacted into summary, got %#v", sess.Messages)
+	}
+}
+
+func TestRunPromptAutoCompactionDropsIncompleteToolTail(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	for i := 0; i < 6; i++ {
+		sess.Messages = append(sess.Messages,
+			llm.NewUserTextMessage(strings.Repeat("history user segment ", 24)),
+			llm.NewAssistantTextMessage(strings.Repeat("history assistant segment ", 24)),
+		)
+	}
+	sess.Messages = append(sess.Messages,
+		llm.NewUserTextMessage("tool task"),
+		llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name:      "list_files",
+					Arguments: `{}`,
+				},
+			}},
+		},
+		llm.NewToolResultMessage("call-1", `{"ok":true}`),
+		llm.NewAssistantTextMessage("done"),
+		llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-open",
+				Type: "function",
+				Function: llm.ToolFunctionCall{
+					Name:      "read_file",
+					Arguments: `{"path":"missing.txt"}`,
+				},
+			}},
+		},
+	)
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &fakeClient{
+		replies: []llm.Message{
+			{Role: llm.RoleAssistant, Content: "Goal: continue\nSummary: first pass"},
+			{Role: llm.RoleAssistant, Content: "Goal: continue\nSummary: fallback pass"},
+			{Role: llm.RoleAssistant, Content: "done"},
+		},
+	}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:      config.ProviderConfig{Model: "test-model"},
+			MaxIterations: 2,
+			Stream:        false,
+			TokenQuota:    260,
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "continue implementation", "build", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "done" {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("expected two compaction requests + one turn request after fallback, got %d", len(client.requests))
+	}
+	if containsToolUseID(sess.Messages, "call-open") {
+		t.Fatalf("expected orphan tail tool_use to be dropped, got %#v", sess.Messages)
+	}
+	if err := contextpkg.ValidateToolPairInvariant(sess.Messages); err != nil {
+		t.Fatalf("expected compacted session to satisfy pair invariant, got %v", err)
 	}
 }
 
@@ -544,406 +1242,6 @@ func TestCompactSessionManualFallsBackWhenSummaryIsEmpty(t *testing.T) {
 	}
 }
 
-func TestMaybeAutoCompactSessionUsesWarningReason(t *testing.T) {
-	workspace := t.TempDir()
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess := session.New(workspace)
-	sess.Messages = append(sess.Messages,
-		llm.NewUserTextMessage("first ask"),
-		llm.NewAssistantTextMessage("first answer"),
-		llm.NewUserTextMessage("second ask"),
-		llm.NewAssistantTextMessage("second answer"),
-	)
-	if err := store.Save(sess); err != nil {
-		t.Fatal(err)
-	}
-
-	client := &fakeClient{
-		replies: []llm.Message{
-			llm.NewAssistantTextMessage("summary"),
-		},
-	}
-	runner := NewRunner(Options{
-		Workspace: workspace,
-		Config: config.Config{
-			Provider:      config.ProviderConfig{Model: "test-model"},
-			MaxIterations: 2,
-			Stream:        false,
-			TokenQuota:    100,
-			ContextBudget: testContextBudget(1),
-		},
-		Client:   client,
-		Store:    store,
-		Registry: tools.DefaultRegistry(),
-		Stdin:    strings.NewReader(""),
-		Stdout:   io.Discard,
-	})
-
-	changed, err := runner.maybeAutoCompactSession(context.Background(), sess, 20, 85)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !changed {
-		t.Fatal("expected warning compaction to change session")
-	}
-	if got := compactionReason(sess.Messages[0]); got != "warning" {
-		t.Fatalf("expected warning reason, got %q", got)
-	}
-}
-
-func TestMaybeAutoCompactSessionUsesCriticalReason(t *testing.T) {
-	workspace := t.TempDir()
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess := session.New(workspace)
-	sess.Messages = append(sess.Messages,
-		llm.NewUserTextMessage("first ask"),
-		llm.NewAssistantTextMessage("first answer"),
-		llm.NewUserTextMessage("second ask"),
-		llm.NewAssistantTextMessage("second answer"),
-	)
-	if err := store.Save(sess); err != nil {
-		t.Fatal(err)
-	}
-
-	client := &fakeClient{
-		replies: []llm.Message{
-			llm.NewAssistantTextMessage("summary"),
-		},
-	}
-	runner := NewRunner(Options{
-		Workspace: workspace,
-		Config: config.Config{
-			Provider:      config.ProviderConfig{Model: "test-model"},
-			MaxIterations: 2,
-			Stream:        false,
-			TokenQuota:    100,
-			ContextBudget: testContextBudget(1),
-		},
-		Client:   client,
-		Store:    store,
-		Registry: tools.DefaultRegistry(),
-		Stdin:    strings.NewReader(""),
-		Stdout:   io.Discard,
-	})
-
-	changed, err := runner.maybeAutoCompactSession(context.Background(), sess, 20, 95)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !changed {
-		t.Fatal("expected critical compaction to change session")
-	}
-	if got := compactionReason(sess.Messages[0]); got != "critical" {
-		t.Fatalf("expected critical reason, got %q", got)
-	}
-}
-
-func TestRunPromptDoesNotAutoCompactMidToolLoop(t *testing.T) {
-	workspace := t.TempDir()
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess := session.New(workspace)
-
-	bigResult := marshalToolResult(map[string]any{
-		"ok":      true,
-		"payload": strings.Repeat("large tool output ", 600),
-	})
-	registry := tools.DefaultRegistry()
-	registry.Add(&fakeTool{
-		name: "big_tool",
-		run: func(_ json.RawMessage, _ *tools.ExecutionContext) (string, error) {
-			return bigResult, nil
-		},
-	})
-
-	firstReply := llm.Message{
-		Role: llm.RoleAssistant,
-		ToolCalls: []llm.ToolCall{{
-			ID:   "call-1",
-			Type: "function",
-			Function: llm.ToolFunctionCall{
-				Name:      "big_tool",
-				Arguments: `{}`,
-			},
-		}},
-	}
-	firstReply.Normalize()
-	userMessage := llm.NewUserTextMessage("run big tool")
-	toolResultMessage := llm.NewToolResultMessage("call-1", bigResult)
-
-	runMode := planpkg.ModeBuild
-	systemMessage := llm.NewTextMessage(llm.RoleSystem, systemPrompt(PromptInput{
-		Workspace:      workspace,
-		ApprovalPolicy: "on-request",
-		Model:          "test-model",
-		Mode:           string(runMode),
-		Skills:         nil,
-		Tools:          toolNames(registry.DefinitionsForMode(runMode)),
-		ActiveSkill:    nil,
-		Instruction:    loadAGENTSInstruction(workspace),
-	}))
-
-	step0Tokens := int(tokenusage.ApproximateRequestTokens([]llm.Message{systemMessage, userMessage}))
-	step1Tokens := int(tokenusage.ApproximateRequestTokens([]llm.Message{systemMessage, userMessage, firstReply, toolResultMessage}))
-	quota := int(math.Ceil(float64(step0Tokens)/config.DefaultContextBudgetWarningRatio)) + 1
-	if float64(step1Tokens)/float64(quota) < config.DefaultContextBudgetWarningRatio {
-		t.Skipf("unable to construct mid-loop warning case: step0=%d step1=%d quota=%d", step0Tokens, step1Tokens, quota)
-	}
-
-	client := &fakeClient{replies: []llm.Message{
-		firstReply,
-		llm.NewAssistantTextMessage("done"),
-	}}
-	runner := NewRunner(Options{
-		Workspace: workspace,
-		Config: config.Config{
-			Provider:      config.ProviderConfig{Model: "test-model"},
-			MaxIterations: 4,
-			Stream:        false,
-			TokenQuota:    quota,
-			ContextBudget: testContextBudget(1),
-		},
-		Client:   client,
-		Store:    store,
-		Registry: registry,
-		Stdin:    strings.NewReader(""),
-		Stdout:   io.Discard,
-	})
-
-	answer, runErr := runner.RunPrompt(context.Background(), sess, "run big tool", "build", io.Discard)
-	if runErr != nil {
-		t.Fatal(runErr)
-	}
-	if answer != "done" {
-		t.Fatalf("unexpected answer: %q", answer)
-	}
-	if countCompactionRequests(client.requests) != 0 {
-		t.Fatalf("expected no compaction request during tool loop, got %d", countCompactionRequests(client.requests))
-	}
-	if countTurnRequests(client.requests) != 2 {
-		t.Fatalf("expected two turn requests, got %d", countTurnRequests(client.requests))
-	}
-	if len(sess.Messages) != 4 {
-		t.Fatalf("expected user/tool/tool_result/assistant without compaction, got %#v", sess.Messages)
-	}
-}
-
-func TestRunPromptShortCircuitsLocalPreflightPromptTooLong(t *testing.T) {
-	workspace := t.TempDir()
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess := session.New(workspace)
-	sess.Messages = append(sess.Messages,
-		llm.NewUserTextMessage("history question"),
-		llm.NewAssistantTextMessage("history answer"),
-	)
-	if err := store.Save(sess); err != nil {
-		t.Fatal(err)
-	}
-
-	client := &scriptedClient{
-		sequence: []scriptedReply{
-			{reply: llm.NewAssistantTextMessage("should not be called")},
-		},
-	}
-	runner := NewRunner(Options{
-		Workspace: workspace,
-		Config: config.Config{
-			Provider:      config.ProviderConfig{Model: "test-model"},
-			MaxIterations: 3,
-			Stream:        false,
-			TokenQuota:    100,
-			ContextBudget: testContextBudget(1),
-		},
-		Client:   client,
-		Store:    store,
-		Registry: tools.DefaultRegistry(),
-		Stdin:    strings.NewReader(""),
-		Stdout:   io.Discard,
-	})
-
-	_, runErr := runner.RunPrompt(context.Background(), sess, strings.Repeat("very long prompt ", 320), "build", io.Discard)
-	if runErr == nil {
-		t.Fatal("expected local preflight prompt_too_long error")
-	}
-	if !isLocalPromptTooLongError(runErr) {
-		t.Fatalf("expected local prompt too long error, got %v", runErr)
-	}
-	if len(client.requests) != 0 {
-		t.Fatalf("expected no llm requests after local preflight failure, got %d", len(client.requests))
-	}
-}
-
-func TestRunPromptRetriesOnceAfterReactiveCompaction(t *testing.T) {
-	workspace := t.TempDir()
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess := session.New(workspace)
-	sess.Messages = append(sess.Messages,
-		llm.NewUserTextMessage("previous question"),
-		llm.NewAssistantTextMessage("previous answer"),
-	)
-	if err := store.Save(sess); err != nil {
-		t.Fatal(err)
-	}
-
-	client := &scriptedClient{
-		sequence: []scriptedReply{
-			{err: &llm.ProviderError{Code: llm.ErrorCodeContextTooLong, Message: "maximum context length exceeded"}},
-			{reply: llm.NewAssistantTextMessage("reactive summary")},
-			{reply: llm.NewAssistantTextMessage("final answer")},
-		},
-	}
-	runner := NewRunner(Options{
-		Workspace: workspace,
-		Config: config.Config{
-			Provider:      config.ProviderConfig{Model: "test-model"},
-			MaxIterations: 3,
-			Stream:        false,
-			TokenQuota:    generousTokenQuota,
-			ContextBudget: testContextBudget(1),
-		},
-		Client:   client,
-		Store:    store,
-		Registry: tools.DefaultRegistry(),
-		Stdin:    strings.NewReader(""),
-		Stdout:   io.Discard,
-	})
-
-	answer, runErr := runner.RunPrompt(context.Background(), sess, "new question", "build", io.Discard)
-	if runErr != nil {
-		t.Fatal(runErr)
-	}
-	if answer != "final answer" {
-		t.Fatalf("unexpected answer: %q", answer)
-	}
-	if countTurnRequests(client.requests) != 2 {
-		t.Fatalf("expected exactly 2 turn requests, got %d", countTurnRequests(client.requests))
-	}
-	if countCompactionRequests(client.requests) != 1 {
-		t.Fatalf("expected exactly 1 compaction request, got %d", countCompactionRequests(client.requests))
-	}
-	if got := compactionReason(sess.Messages[0]); got != "reactive" {
-		t.Fatalf("expected reactive reason, got %q", got)
-	}
-}
-
-func TestRunPromptStopsAfterMaxReactiveRetry(t *testing.T) {
-	workspace := t.TempDir()
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess := session.New(workspace)
-	sess.Messages = append(sess.Messages,
-		llm.NewUserTextMessage("previous question"),
-		llm.NewAssistantTextMessage("previous answer"),
-	)
-	if err := store.Save(sess); err != nil {
-		t.Fatal(err)
-	}
-
-	client := &scriptedClient{
-		sequence: []scriptedReply{
-			{err: &llm.ProviderError{Code: llm.ErrorCodeContextTooLong, Message: "too many tokens"}},
-			{reply: llm.NewAssistantTextMessage("reactive summary")},
-			{err: &llm.ProviderError{Code: llm.ErrorCodeContextTooLong, Message: "context length exceeded again"}},
-		},
-	}
-	runner := NewRunner(Options{
-		Workspace: workspace,
-		Config: config.Config{
-			Provider:      config.ProviderConfig{Model: "test-model"},
-			MaxIterations: 3,
-			Stream:        false,
-			TokenQuota:    generousTokenQuota,
-			ContextBudget: testContextBudget(1),
-		},
-		Client:   client,
-		Store:    store,
-		Registry: tools.DefaultRegistry(),
-		Stdin:    strings.NewReader(""),
-		Stdout:   io.Discard,
-	})
-
-	_, runErr := runner.RunPrompt(context.Background(), sess, "new question", "build", io.Discard)
-	if runErr == nil {
-		t.Fatal("expected run to fail after max reactive retry")
-	}
-	if !isPromptTooLongError(runErr) {
-		t.Fatalf("expected prompt_too_long style error, got %v", runErr)
-	}
-	if countTurnRequests(client.requests) != 2 {
-		t.Fatalf("expected exactly 2 turn requests, got %d", countTurnRequests(client.requests))
-	}
-	if countCompactionRequests(client.requests) != 1 {
-		t.Fatalf("expected exactly 1 compaction request, got %d", countCompactionRequests(client.requests))
-	}
-}
-
-func TestRunPromptDoesNotRetryForNonPromptTooLongError(t *testing.T) {
-	workspace := t.TempDir()
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess := session.New(workspace)
-	sess.Messages = append(sess.Messages,
-		llm.NewUserTextMessage("previous question"),
-		llm.NewAssistantTextMessage("previous answer"),
-	)
-	if err := store.Save(sess); err != nil {
-		t.Fatal(err)
-	}
-
-	client := &scriptedClient{
-		sequence: []scriptedReply{
-			{err: errors.New("upstream transport error")},
-		},
-	}
-	runner := NewRunner(Options{
-		Workspace: workspace,
-		Config: config.Config{
-			Provider:      config.ProviderConfig{Model: "test-model"},
-			MaxIterations: 3,
-			Stream:        false,
-			TokenQuota:    generousTokenQuota,
-			ContextBudget: testContextBudget(1),
-		},
-		Client:   client,
-		Store:    store,
-		Registry: tools.DefaultRegistry(),
-		Stdin:    strings.NewReader(""),
-		Stdout:   io.Discard,
-	})
-
-	_, runErr := runner.RunPrompt(context.Background(), sess, "new question", "build", io.Discard)
-	if runErr == nil {
-		t.Fatal("expected run to fail")
-	}
-	if isPromptTooLongError(runErr) {
-		t.Fatalf("expected non prompt_too_long error, got %v", runErr)
-	}
-	if countTurnRequests(client.requests) != 1 {
-		t.Fatalf("expected a single turn request, got %d", countTurnRequests(client.requests))
-	}
-	if countCompactionRequests(client.requests) != 0 {
-		t.Fatalf("expected no compaction request, got %d", countCompactionRequests(client.requests))
-	}
-}
-
 func TestRunPromptEncodesToolExecutionErrorsAndContinues(t *testing.T) {
 	workspace := t.TempDir()
 	store, err := session.NewStore(t.TempDir())
@@ -974,7 +1272,6 @@ func TestRunPromptEncodesToolExecutionErrorsAndContinues(t *testing.T) {
 			Provider:      config.ProviderConfig{Model: "test-model"},
 			MaxIterations: 4,
 			Stream:        false,
-			TokenQuota:    generousTokenQuota,
 		},
 		Client:   client,
 		Store:    store,
@@ -1002,6 +1299,374 @@ func TestRunPromptEncodesToolExecutionErrorsAndContinues(t *testing.T) {
 	if !strings.Contains(sess.Messages[2].Content, `"ok":false`) || !strings.Contains(sess.Messages[2].Content, `unknown tool`) {
 		t.Fatalf("expected encoded tool error payload, got %q", sess.Messages[2].Content)
 	}
+	if !strings.Contains(sess.Messages[2].Content, `"status":"error"`) || !strings.Contains(sess.Messages[2].Content, `"reason_code":"invalid_args"`) {
+		t.Fatalf("expected tool error status and reason_code, got %q", sess.Messages[2].Content)
+	}
+}
+
+func TestRunPromptAwayAutoDenyContinueKeepsRunningAfterPermissionDenied(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{
+				{
+					ID:   "call-1",
+					Type: "function",
+					Function: llm.ToolFunctionCall{
+						Name:      "write_file",
+						Arguments: `{"path":"x.txt","content":"x"}`,
+					},
+				},
+				{
+					ID:   "call-2",
+					Type: "function",
+					Function: llm.ToolFunctionCall{
+						Name:      "read_file",
+						Arguments: `{"path":"x.txt"}`,
+					},
+				},
+			},
+		},
+		{
+			Role:    "assistant",
+			Content: "continued after denied approval",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:       config.ProviderConfig{Model: "test-model"},
+			MaxIterations:  4,
+			Stream:         false,
+			ApprovalPolicy: "on-request",
+			ApprovalMode:   "away",
+			AwayPolicy:     "auto_deny_continue",
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	var out bytes.Buffer
+	answer, err := runner.RunPrompt(context.Background(), sess, "trigger permission path", "build", &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "continued after denied approval" {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+	if len(sess.Messages) < 4 {
+		t.Fatalf("expected tool result message, got %#v", sess.Messages)
+	}
+	toolMsg := sess.Messages[2]
+	if !strings.Contains(toolMsg.Content, `"ok":false`) || !strings.Contains(toolMsg.Content, "away mode") {
+		t.Fatalf("expected away-mode denial payload, got %q", toolMsg.Content)
+	}
+	if !strings.Contains(toolMsg.Content, `"status":"denied"`) || !strings.Contains(toolMsg.Content, `"reason_code":"permission_denied"`) {
+		t.Fatalf("expected denied status and permission reason_code, got %q", toolMsg.Content)
+	}
+	skippedMsg := sess.Messages[3]
+	if !strings.Contains(skippedMsg.Content, `"status":"skipped"`) || !strings.Contains(skippedMsg.Content, `"reason_code":"denied_dependency"`) {
+		t.Fatalf("expected skipped due dependency payload, got %q", skippedMsg.Content)
+	}
+	if !strings.Contains(skippedMsg.Content, "skipped because a prior approval-required action was denied") {
+		t.Fatalf("expected skipped message to describe denied dependency, got %q", skippedMsg.Content)
+	}
+	for _, want := range []string{
+		"Task report summary:",
+		"- Skipped due to denied dependency: read_file",
+		"Task report (json):",
+		`"denied":["write_file"]`,
+		`"skipped_due_to_denied_dependency":["read_file"]`,
+		`"skipped_due_to_dependency":["read_file"]`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("expected successful auto_deny_continue output to contain %q, got %q", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), `"pending_approval"`) {
+		t.Fatalf("expected away-mode task report to avoid pending_approval, got %q", out.String())
+	}
+}
+
+func TestRunPromptAwayFailFastStopsAfterPermissionDenied(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	client := &fakeClient{replies: []llm.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{
+				{
+					ID:   "call-1",
+					Type: "function",
+					Function: llm.ToolFunctionCall{
+						Name:      "write_file",
+						Arguments: `{"path":"x.txt","content":"x"}`,
+					},
+				},
+				{
+					ID:   "call-2",
+					Type: "function",
+					Function: llm.ToolFunctionCall{
+						Name:      "read_file",
+						Arguments: `{"path":"x.txt"}`,
+					},
+				},
+			},
+		},
+		{
+			Role:    "assistant",
+			Content: "this reply should not be consumed",
+		},
+	}}
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:       config.ProviderConfig{Model: "test-model"},
+			MaxIterations:  4,
+			Stream:         false,
+			ApprovalPolicy: "on-request",
+			ApprovalMode:   "away",
+			AwayPolicy:     "fail_fast",
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "trigger permission path", "build", io.Discard)
+	if err == nil {
+		t.Fatal("expected fail_fast mode to stop run after permission denial")
+	}
+	if strings.TrimSpace(answer) != "" {
+		t.Fatalf("expected empty answer when fail_fast stops run, got %q", answer)
+	}
+	if !strings.Contains(err.Error(), "fail_fast stopped run") {
+		t.Fatalf("expected fail_fast stop reason, got %v", err)
+	}
+	for _, want := range []string{
+		"Task report summary:",
+		"- Skipped due to denied dependency: read_file",
+		"Task report (json):",
+		`"denied":["write_file"]`,
+		`"skipped_due_to_denied_dependency":["read_file"]`,
+		`"skipped_due_to_dependency":["read_file"]`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected fail_fast error to include task report item %q, got %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), `"pending_approval"`) {
+		t.Fatalf("expected away-mode fail_fast report to avoid pending_approval, got %v", err)
+	}
+	if len(sess.Messages) != 3 {
+		t.Fatalf("expected session to stop after first denied tool call, got %#v", sess.Messages)
+	}
+	if !strings.Contains(sess.Messages[2].Content, "away_policy=fail_fast") {
+		t.Fatalf("expected denied tool payload to include fail_fast policy, got %q", sess.Messages[2].Content)
+	}
+	if !strings.Contains(sess.Messages[2].Content, `"status":"denied"`) || !strings.Contains(sess.Messages[2].Content, `"reason_code":"permission_denied"`) {
+		t.Fatalf("expected denied status and reason code in fail_fast payload, got %q", sess.Messages[2].Content)
+	}
+}
+
+func TestRunPromptRequiredSystemSandboxFailsClosedWhenBackendUnavailable(t *testing.T) {
+	original := resolveAgentSystemSandboxRuntimeStatus
+	resolveAgentSystemSandboxRuntimeStatus = func(enabled bool, mode string) (tools.SystemSandboxRuntimeStatus, error) {
+		if !enabled {
+			return tools.SystemSandboxRuntimeStatus{}, nil
+		}
+		return tools.SystemSandboxRuntimeStatus{}, errors.New("required backend unavailable in test")
+	}
+	t.Cleanup(func() {
+		resolveAgentSystemSandboxRuntimeStatus = original
+	})
+
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	client := &fakeClient{replies: []llm.Message{{
+		Role:    "assistant",
+		Content: "should not run",
+	}}}
+
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:          config.ProviderConfig{Model: "test-model"},
+			MaxIterations:     2,
+			Stream:            false,
+			SandboxEnabled:    true,
+			SystemSandboxMode: "required",
+		},
+		Client:   client,
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	answer, err := runner.RunPrompt(context.Background(), sess, "hello", "build", io.Discard)
+	if err == nil {
+		t.Fatal("expected required system sandbox to fail closed when backend is unavailable")
+	}
+	if strings.TrimSpace(answer) != "" {
+		t.Fatalf("expected empty answer on required sandbox startup failure, got %q", answer)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "required") || !strings.Contains(strings.ToLower(err.Error()), "unavailable") {
+		t.Fatalf("expected required unavailable error, got %v", err)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no llm request when required sandbox fails closed at startup, got %d", len(client.requests))
+	}
+}
+
+func TestRunPromptReportsSystemSandboxStartupFallbackOnSuccess(t *testing.T) {
+	original := resolveAgentSystemSandboxRuntimeStatus
+	resolveAgentSystemSandboxRuntimeStatus = func(enabled bool, mode string) (tools.SystemSandboxRuntimeStatus, error) {
+		if !enabled {
+			return tools.SystemSandboxRuntimeStatus{}, nil
+		}
+		return tools.SystemSandboxRuntimeStatus{
+			Mode:            mode,
+			BackendEnabled:  false,
+			CapabilityLevel: "none",
+			Fallback:        true,
+			Message:         "system sandbox best_effort fallback: test backend unavailable",
+			BackendName:     "",
+		}, nil
+	}
+	t.Cleanup(func() {
+		resolveAgentSystemSandboxRuntimeStatus = original
+	})
+
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:          config.ProviderConfig{Model: "test-model"},
+			MaxIterations:     2,
+			Stream:            false,
+			SandboxEnabled:    true,
+			SystemSandboxMode: "best_effort",
+		},
+		Client: &fakeClient{replies: []llm.Message{{
+			Role:    "assistant",
+			Content: "done",
+		}}},
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	var out bytes.Buffer
+	answer, err := runner.RunPrompt(context.Background(), sess, "hello", "build", &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "done" {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+	for _, want := range []string{
+		"mode=best_effort backend=none state=fallback required_capable=false capability_level=none",
+		"Task report summary:",
+		"- System sandbox fallback: startup (mode=best_effort, backend=none, required_capable=false, capability_level=none, reason=system sandbox best_effort fallback: test backend unavailable)",
+		"Task report (json):",
+		`"system_sandbox_fallback":["startup (mode=best_effort, backend=none, required_capable=false, capability_level=none, reason=system sandbox best_effort fallback: test backend unavailable)"]`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("expected output to contain %q, got %q", want, out.String())
+		}
+	}
+}
+
+func TestRunPromptReportsSystemSandboxStartupActiveRequiredCapable(t *testing.T) {
+	original := resolveAgentSystemSandboxRuntimeStatus
+	resolveAgentSystemSandboxRuntimeStatus = func(enabled bool, mode string) (tools.SystemSandboxRuntimeStatus, error) {
+		if !enabled {
+			return tools.SystemSandboxRuntimeStatus{}, nil
+		}
+		return tools.SystemSandboxRuntimeStatus{
+			Mode:            mode,
+			BackendEnabled:  true,
+			BackendName:     "linux_unshare",
+			RequiredCapable: true,
+			CapabilityLevel: "full",
+			Fallback:        false,
+			Message:         `system sandbox backend "linux_unshare" is active`,
+		}, nil
+	}
+	t.Cleanup(func() {
+		resolveAgentSystemSandboxRuntimeStatus = original
+	})
+
+	workspace := t.TempDir()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New(workspace)
+	runner := NewRunner(Options{
+		Workspace: workspace,
+		Config: config.Config{
+			Provider:          config.ProviderConfig{Model: "test-model"},
+			MaxIterations:     2,
+			Stream:            false,
+			SandboxEnabled:    true,
+			SystemSandboxMode: "required",
+		},
+		Client: &fakeClient{replies: []llm.Message{{
+			Role:    "assistant",
+			Content: "done",
+		}}},
+		Store:    store,
+		Registry: tools.DefaultRegistry(),
+		Stdin:    strings.NewReader(""),
+		Stdout:   io.Discard,
+	})
+
+	var out bytes.Buffer
+	answer, err := runner.RunPrompt(context.Background(), sess, "hello", "build", &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "done" {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+	for _, want := range []string{
+		"mode=required backend=linux_unshare state=active required_capable=true capability_level=full",
+		`(system sandbox backend "linux_unshare" is active)`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("expected output to contain %q, got %q", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "Task report summary:") {
+		t.Fatalf("did not expect fallback task report summary on active required-capable startup, got %q", out.String())
+	}
 }
 
 func TestRunPromptFallsBackWhenAssistantReplyIsEmpty(t *testing.T) {
@@ -1017,7 +1682,6 @@ func TestRunPromptFallsBackWhenAssistantReplyIsEmpty(t *testing.T) {
 			Provider:      config.ProviderConfig{Model: "test-model"},
 			MaxIterations: 2,
 			Stream:        false,
-			TokenQuota:    generousTokenQuota,
 		},
 		Client: &fakeClient{replies: []llm.Message{{
 			Role: "assistant",
@@ -1058,7 +1722,6 @@ func TestRunPromptEmitsUsageUpdatedEventWhenUsageAvailable(t *testing.T) {
 			Provider:      config.ProviderConfig{Model: "test-model"},
 			MaxIterations: 2,
 			Stream:        false,
-			TokenQuota:    generousTokenQuota,
 		},
 		Client: &fakeClient{replies: []llm.Message{{
 			Role:    llm.RoleAssistant,
@@ -1113,7 +1776,6 @@ func TestRunPromptEmitsEstimatedUsageWhenProviderUsageMissing(t *testing.T) {
 			Provider:      config.ProviderConfig{Model: "test-model"},
 			MaxIterations: 2,
 			Stream:        false,
-			TokenQuota:    generousTokenQuota,
 		},
 		Client: &fakeClient{replies: []llm.Message{{
 			Role:    llm.RoleAssistant,
@@ -1235,7 +1897,6 @@ func TestRunPromptAppliesActiveSkillToolAllowlist(t *testing.T) {
 			Provider:      config.ProviderConfig{Model: "test-model"},
 			MaxIterations: 2,
 			Stream:        false,
-			TokenQuota:    generousTokenQuota,
 		},
 		Client:   client,
 		Store:    store,
@@ -1316,7 +1977,6 @@ func TestRunPromptBlocksToolCallOutsideActiveSkillPolicy(t *testing.T) {
 			Provider:      config.ProviderConfig{Model: "test-model"},
 			MaxIterations: 4,
 			Stream:        false,
-			TokenQuota:    generousTokenQuota,
 		},
 		Client:   client,
 		Store:    store,
@@ -1413,7 +2073,6 @@ func TestActivateAndClearSkillPersistsSessionState(t *testing.T) {
 			Provider:      config.ProviderConfig{Model: "test-model"},
 			MaxIterations: 2,
 			Stream:        false,
-			TokenQuota:    generousTokenQuota,
 		},
 		Client:   &fakeClient{},
 		Store:    store,

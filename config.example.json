@@ -9,10 +9,25 @@
   "approval_policy": "on-request",
   "max_iterations": 32,
   "stream": true,
+  "update_check": {
+    "enabled": true
+  },
   "context_budget": {
     "warning_ratio": 0.85,
     "critical_ratio": 0.95,
     "max_reactive_retry": 1
+  },
+  "extensions": {
+    "sources": [
+      "skills",
+      "mcp"
+    ],
+    "auto_load": true,
+    "health_check_interval_sec": 30,
+    "failure_threshold": 3,
+    "recovery_cooldown_sec": 30,
+    "max_concurrency_per_extension": 4,
+    "conflict_policy": "reject"
   },
   "token_usage": {
     "storage_type": "file",
@@ -24,5 +39,29 @@
     "retention_days": 30,
     "monitor_interval": "30s",
     "database_driver": "sqlite3"
+  },
+  "mcp": {
+    "enabled": false,
+    "sync_ttl_s": 30,
+    "servers": [
+      {
+        "id": "local-mcp",
+        "name": "Local MCP",
+        "enabled": true,
+        "transport": {
+          "type": "stdio",
+          "command": "node",
+          "args": [
+            "./mcp-server.js"
+          ],
+          "env": {},
+          "cwd": ""
+        },
+        "auto_start": true,
+        "startup_timeout_s": 20,
+        "call_timeout_s": 60,
+        "max_concurrency": 4
+      }
+    ]
   }
 }

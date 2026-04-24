@@ -48,7 +48,7 @@ func (SearchTextTool) Definition() llm.ToolDefinition {
 		Type: "function",
 		Function: llm.FunctionDefinition{
 			Name:        "search_text",
-			Description: "Search text across workspace files",
+			Description: "Search text across files under workspace or configured writable roots",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -58,7 +58,7 @@ func (SearchTextTool) Definition() llm.ToolDefinition {
 					},
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Optional directory or file to limit the search. Use this on large workspaces.",
+						"description": "Optional directory or file path (workspace/writable_roots) to limit the search.",
 					},
 					"limit": map[string]any{
 						"type":        "integer",
@@ -89,7 +89,7 @@ func (SearchTextTool) Run(ctx context.Context, raw json.RawMessage, execCtx *Exe
 	if args.Limit > 200 {
 		args.Limit = 200
 	}
-	root, err := resolvePath(execCtx.Workspace, args.Path)
+	root, err := resolvePath(execCtx.Workspace, args.Path, writableRootsFromExecContext(execCtx)...)
 	if err != nil {
 		return "", err
 	}
@@ -200,7 +200,7 @@ func searchTextWithRipgrep(ctx context.Context, args searchTextArgs, workspace, 
 	truncated := false
 	reason := ""
 	scanner := bufio.NewScanner(stdoutPipe)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		var event struct {
 			Type string `json:"type"`
@@ -326,6 +326,7 @@ func searchTextByWalking(ctx context.Context, args searchTextArgs, workspace, ro
 		stats.FilesScanned++
 
 		scanner := bufio.NewScanner(bytes.NewReader(data))
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 		lineNumber := 0
 		for scanner.Scan() {
 			lineNumber++
