@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -351,18 +352,21 @@ func TestRunPromptPolicyGatewaySandboxGuardDeniesWebFetchBeforeExecution(t *test
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			caps := tools.SystemSandboxBackendCapabilitiesForName(tc.backend)
 			original := resolveAgentSystemSandboxRuntimeStatus
 			resolveAgentSystemSandboxRuntimeStatus = func(enabled bool, mode string) (tools.SystemSandboxRuntimeStatus, error) {
 				if !enabled {
 					return tools.SystemSandboxRuntimeStatus{}, nil
 				}
 				return tools.SystemSandboxRuntimeStatus{
-					Mode:            "required",
-					BackendEnabled:  true,
-					BackendName:     tc.backend,
-					RequiredCapable: true,
-					CapabilityLevel: tc.capabilityLevel,
-					Message:         `system sandbox backend "` + tc.backend + `" is active`,
+					Mode:                   "required",
+					BackendEnabled:         true,
+					BackendName:            tc.backend,
+					RequiredCapable:        true,
+					CapabilityLevel:        tc.capabilityLevel,
+					ShellNetworkIsolation:  caps.ShellNetworkIsolation,
+					WorkerNetworkIsolation: caps.WorkerNetworkIsolation,
+					Message:                `system sandbox backend "` + tc.backend + `" is active`,
 				}, nil
 			}
 			t.Cleanup(func() {
@@ -430,6 +434,12 @@ func TestRunPromptPolicyGatewaySandboxGuardDeniesWebFetchBeforeExecution(t *test
 			if deniedPayload.SystemSandbox.Backend != tc.backend {
 				t.Fatalf("expected denied tool_result sandbox backend %s, got %#v", tc.backend, deniedPayload.SystemSandbox)
 			}
+			if deniedPayload.SystemSandbox.ShellNetworkIsolation != caps.ShellNetworkIsolation {
+				t.Fatalf("expected denied tool_result shell_network_isolation=%t, got %#v", caps.ShellNetworkIsolation, deniedPayload.SystemSandbox)
+			}
+			if deniedPayload.SystemSandbox.WorkerNetworkIsolation != caps.WorkerNetworkIsolation {
+				t.Fatalf("expected denied tool_result worker_network_isolation=%t, got %#v", caps.WorkerNetworkIsolation, deniedPayload.SystemSandbox)
+			}
 
 			foundPermissionDecision := false
 			foundExecuteStart := false
@@ -439,12 +449,14 @@ func TestRunPromptPolicyGatewaySandboxGuardDeniesWebFetchBeforeExecution(t *test
 					if event.ReasonCode != policyReasonSandboxGuard || event.Decision != corepkg.DecisionDeny {
 						t.Fatalf("expected sandbox_guard deny decision, got %+v", event)
 					}
+					assertSandboxNetworkIsolationMetadataEqual(t, event.Metadata, caps.ShellNetworkIsolation, caps.WorkerNetworkIsolation)
 					foundPermissionDecision = true
 				}
 				if event.Action == "tool_execute_start" && event.Metadata["tool_name"] == "web_fetch" {
 					foundExecuteStart = true
 				}
 				if event.Action == "tool_execute_result" && event.Metadata["tool_name"] == "web_fetch" && event.Result == "denied" {
+					assertSandboxNetworkIsolationMetadataEqual(t, event.Metadata, caps.ShellNetworkIsolation, caps.WorkerNetworkIsolation)
 					foundDeniedResult = true
 				}
 			}
@@ -473,18 +485,21 @@ func TestRunPromptPolicyGatewaySandboxGuardDeniesNetworkTargetRunShellBeforeExec
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			caps := tools.SystemSandboxBackendCapabilitiesForName(tc.backend)
 			original := resolveAgentSystemSandboxRuntimeStatus
 			resolveAgentSystemSandboxRuntimeStatus = func(enabled bool, mode string) (tools.SystemSandboxRuntimeStatus, error) {
 				if !enabled {
 					return tools.SystemSandboxRuntimeStatus{}, nil
 				}
 				return tools.SystemSandboxRuntimeStatus{
-					Mode:            "required",
-					BackendEnabled:  true,
-					BackendName:     tc.backend,
-					RequiredCapable: true,
-					CapabilityLevel: tc.capabilityLevel,
-					Message:         `system sandbox backend "` + tc.backend + `" is active`,
+					Mode:                   "required",
+					BackendEnabled:         true,
+					BackendName:            tc.backend,
+					RequiredCapable:        true,
+					CapabilityLevel:        tc.capabilityLevel,
+					ShellNetworkIsolation:  caps.ShellNetworkIsolation,
+					WorkerNetworkIsolation: caps.WorkerNetworkIsolation,
+					Message:                `system sandbox backend "` + tc.backend + `" is active`,
 				}, nil
 			}
 			t.Cleanup(func() {
@@ -552,6 +567,12 @@ func TestRunPromptPolicyGatewaySandboxGuardDeniesNetworkTargetRunShellBeforeExec
 			if deniedPayload.SystemSandbox.Backend != tc.backend {
 				t.Fatalf("expected denied tool_result sandbox backend %s, got %#v", tc.backend, deniedPayload.SystemSandbox)
 			}
+			if deniedPayload.SystemSandbox.ShellNetworkIsolation != caps.ShellNetworkIsolation {
+				t.Fatalf("expected denied tool_result shell_network_isolation=%t, got %#v", caps.ShellNetworkIsolation, deniedPayload.SystemSandbox)
+			}
+			if deniedPayload.SystemSandbox.WorkerNetworkIsolation != caps.WorkerNetworkIsolation {
+				t.Fatalf("expected denied tool_result worker_network_isolation=%t, got %#v", caps.WorkerNetworkIsolation, deniedPayload.SystemSandbox)
+			}
 
 			foundPermissionDecision := false
 			foundExecuteStart := false
@@ -561,12 +582,14 @@ func TestRunPromptPolicyGatewaySandboxGuardDeniesNetworkTargetRunShellBeforeExec
 					if event.ReasonCode != policyReasonSandboxGuard || event.Decision != corepkg.DecisionDeny {
 						t.Fatalf("expected sandbox_guard deny decision, got %+v", event)
 					}
+					assertSandboxNetworkIsolationMetadataEqual(t, event.Metadata, caps.ShellNetworkIsolation, caps.WorkerNetworkIsolation)
 					foundPermissionDecision = true
 				}
 				if event.Action == "tool_execute_start" && event.Metadata["tool_name"] == "run_shell" {
 					foundExecuteStart = true
 				}
 				if event.Action == "tool_execute_result" && event.Metadata["tool_name"] == "run_shell" && event.Result == "denied" {
+					assertSandboxNetworkIsolationMetadataEqual(t, event.Metadata, caps.ShellNetworkIsolation, caps.WorkerNetworkIsolation)
 					foundDeniedResult = true
 				}
 			}
@@ -593,16 +616,29 @@ func assertSandboxNetworkIsolationMetadata(t *testing.T, metadata map[string]str
 	}
 }
 
+func assertSandboxNetworkIsolationMetadataEqual(t *testing.T, metadata map[string]string, shell, worker bool) {
+	t.Helper()
+	assertSandboxNetworkIsolationMetadata(t, metadata)
+	if got := strings.TrimSpace(metadata["sandbox_shell_network_isolation"]); got != strconv.FormatBool(shell) {
+		t.Fatalf("expected sandbox_shell_network_isolation=%t, got %q", shell, got)
+	}
+	if got := strings.TrimSpace(metadata["sandbox_worker_network_isolation"]); got != strconv.FormatBool(worker) {
+		t.Fatalf("expected sandbox_worker_network_isolation=%t, got %q", worker, got)
+	}
+}
+
 type policyToolResultPayload struct {
 	ReasonCode    string `json:"reason_code"`
 	SystemSandbox struct {
-		Mode            string `json:"mode"`
-		Backend         string `json:"backend"`
-		RequiredCapable bool   `json:"required_capable"`
-		CapabilityLevel string `json:"capability_level"`
-		Fallback        bool   `json:"fallback"`
-		Status          string `json:"status"`
-		FallbackReason  string `json:"fallback_reason"`
+		Mode                   string `json:"mode"`
+		Backend                string `json:"backend"`
+		RequiredCapable        bool   `json:"required_capable"`
+		CapabilityLevel        string `json:"capability_level"`
+		ShellNetworkIsolation  bool   `json:"shell_network_isolation"`
+		WorkerNetworkIsolation bool   `json:"worker_network_isolation"`
+		Fallback               bool   `json:"fallback"`
+		Status                 string `json:"status"`
+		FallbackReason         string `json:"fallback_reason"`
 	} `json:"system_sandbox"`
 }
 
