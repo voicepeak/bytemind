@@ -3992,10 +3992,11 @@ func TestApprovalBannerRendersAboveInput(t *testing.T) {
 
 	footer := m.renderFooter()
 	for _, want := range []string{
+		"Approval required",
 		"go test ./tui",
 		"run tests",
-		"Y / Enter",
-		"N / Esc",
+		"Approve [Y/Enter]",
+		"Reject [N/Esc]",
 	} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("expected approval banner to contain %q", want)
@@ -4003,6 +4004,38 @@ func TestApprovalBannerRendersAboveInput(t *testing.T) {
 	}
 	if strings.Contains(footer, "Approval Request") {
 		t.Fatalf("did not expect old centered approval modal title in footer")
+	}
+}
+
+func TestApprovalBannerUsesCompactSingleNormalBorder(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		width: 64,
+		input: input,
+		approval: &approvalPrompt{
+			Command: "write_file_with_a_very_long_tool_name_to_force_truncation",
+			Reason:  "destructive tool may modify workspace files: write_file_with_a_very_long_tool_name_to_force_truncation",
+		},
+	}
+
+	banner := m.renderApprovalBanner()
+	if strings.ContainsAny(banner, "╭╮╰╯") {
+		t.Fatalf("expected normal single border without rounded corners, got %q", banner)
+	}
+	lines := strings.Split(banner, "\n")
+	if len(lines) != 6 {
+		t.Fatalf("expected medium-height boxed approval banner with top/bottom padding, got %d lines: %q", len(lines), banner)
+	}
+	expectedWidth := max(24, m.chatPanelInnerWidth())
+	for i, line := range lines {
+		if got := lipgloss.Width(line); got != expectedWidth {
+			t.Fatalf("expected banner line %d width %d, got %d (%q)", i, expectedWidth, got, line)
+		}
+	}
+	for _, want := range []string{"Tool:", "Approve [Y/Enter]", "Reject [N/Esc]"} {
+		if !strings.Contains(banner, want) {
+			t.Fatalf("expected compact approval banner to contain %q", want)
+		}
 	}
 }
 
