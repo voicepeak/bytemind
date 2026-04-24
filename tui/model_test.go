@@ -2528,6 +2528,40 @@ func TestCommandPaletteListsQuitCommand(t *testing.T) {
 	}
 }
 
+func TestCommandPaletteDoesNotListMCPAddAlias(t *testing.T) {
+	for _, item := range commandItems {
+		if item.Name == "/mcp-add" {
+			t.Fatalf("did not expect command palette to include /mcp-add")
+		}
+	}
+}
+
+func TestCommandPaletteListsMCPHelpCommand(t *testing.T) {
+	found := false
+	for _, item := range commandItems {
+		if item.Name == "/mcp help" && item.Kind == "command" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected command palette to include /mcp help")
+	}
+}
+
+func TestCommandPaletteListsMCPShowCommand(t *testing.T) {
+	found := false
+	for _, item := range commandItems {
+		if item.Name == "/mcp show" && item.Kind == "command" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected command palette to include /mcp show")
+	}
+}
+
 func TestCommandPaletteDoesNotListExitAlias(t *testing.T) {
 	for _, item := range commandItems {
 		if item.Name == "/exit" {

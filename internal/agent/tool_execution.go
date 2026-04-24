@@ -65,10 +65,7 @@ func (e *defaultEngine) executeToolCall(
 		Decision:   decision.Decision,
 		ReasonCode: decision.ReasonCode,
 		RiskLevel:  decision.RiskLevel,
-		Metadata: map[string]string{
-			"tool_name": call.Function.Name,
-			"reason":    decision.Reason,
-		},
+		Metadata:   toolAuditMetadata(call.Function.Name, map[string]string{"reason": decision.Reason}),
 	})
 
 	if decision.Decision == corepkg.DecisionDeny {
@@ -86,9 +83,7 @@ func (e *defaultEngine) executeToolCall(
 		TraceID:   traceID,
 		Actor:     "agent",
 		Action:    "tool_execute_start",
-		Metadata: map[string]string{
-			"tool_name": call.Function.Name,
-		},
+		Metadata:  toolAuditMetadata(call.Function.Name, nil),
 	})
 	if out != nil {
 		_, _ = io.WriteString(out, ansiBold+ansiCyan+"tool>"+ansiReset+" "+call.Function.Name+"\n")
@@ -188,10 +183,9 @@ func (e *defaultEngine) executeToolCall(
 	if execErr != nil {
 		auditResult = "error"
 	}
-	metadata := map[string]string{
-		"tool_name": call.Function.Name,
-		"error":     errText,
-	}
+	metadata := toolAuditMetadata(call.Function.Name, map[string]string{
+		"error": errText,
+	})
 	if execution.Result.ErrorCode != "" {
 		metadata["error_code"] = execution.Result.ErrorCode
 	}
@@ -296,11 +290,7 @@ func (e *defaultEngine) handleRejectedToolCall(
 		Actor:     "agent",
 		Action:    "tool_execute_result",
 		Result:    "denied",
-		Metadata: map[string]string{
-			"tool_name": call.Function.Name,
-			"error":     errorText,
-			"decision":  string(decision.Decision),
-		},
+		Metadata:  toolAuditMetadata(call.Function.Name, map[string]string{"error": errorText, "decision": string(decision.Decision)}),
 	})
 
 	toolMessage := llm.NewToolResultMessage(call.ID, result)

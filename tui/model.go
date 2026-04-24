@@ -243,6 +243,13 @@ type pasteBurstSettleMsg struct {
 	Generation int
 }
 
+type mcpCommandResultMsg struct {
+	Input    string
+	Response string
+	Status   string
+	Err      error
+}
+
 type pasteSessionState struct {
 	active       bool
 	startedAt    time.Time
@@ -273,6 +280,10 @@ var commandItems = []commandItem{
 	{Name: "/help", Usage: "/help", Description: "Show usage and supported commands.", Kind: "command"},
 	{Name: "/session", Usage: "/session", Description: "Open the recent session list.", Kind: "command"},
 	{Name: "/skills-select", Usage: "/skills-select", Description: "Open the loaded skills picker.", Kind: "command"},
+	{Name: "/mcp list", Usage: "/mcp list", Description: "List configured MCP servers and current status.", Kind: "command"},
+	{Name: "/mcp help", Usage: "/mcp help", Description: "Show MCP command help.", Kind: "command"},
+	{Name: "/mcp show", Usage: "/mcp show <id>", Description: "Show one MCP server config and runtime state.", Kind: "command"},
+	{Name: "/mcp setup github", Usage: "/mcp setup <id>", Description: "Run MCP setup in one command (`github` uses preset).", Kind: "command"},
 	{Name: "/new", Usage: "/new", Description: "Start a fresh session in this workspace.", Kind: "command"},
 	{Name: "/compact", Usage: "/compact", Description: "Compress long session history into a continuation summary.", Kind: "command"},
 	{Name: "/btw", Usage: "/btw <message>", Description: "Interject while a run is in progress.", Kind: "command"},
@@ -284,6 +295,7 @@ var commandItems = []commandItem{
 type model struct {
 	runner     Runner
 	store      SessionStore
+	mcpService MCPService
 	sess       *session.Session
 	imageStore assets.ImageStore
 	cfg        config.Config
@@ -317,6 +329,8 @@ type model struct {
 	commandOpen                bool
 	mentionOpen                bool
 	promptSearchOpen           bool
+	mcpCommandPending          bool
+	mcpSetup                   *mcpSetupSession
 	busy                       bool
 	runStartedAt               time.Time
 	streamingIndex             int
@@ -447,6 +461,7 @@ func newModel(opts Options) model {
 	m := model{
 		runner:               opts.Runner,
 		store:                opts.Store,
+		mcpService:           opts.MCPService,
 		sess:                 opts.Session,
 		imageStore:           opts.ImageStore,
 		cfg:                  opts.Config,
@@ -684,6 +699,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case mcpCommandResultMsg:
+		m.mcpCommandPending = false
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.Input)), "/mcp setup") {
+			m.finishMCPSetupApplying(msg.Err == nil)
+		}
+		if msg.Err != nil {
+			m.statusNote = msg.Err.Error()
+			return m, waitForAsync(m.async)
+		}
+		m.appendCommandExchange(msg.Input, msg.Response)
+		if strings.TrimSpace(msg.Status) != "" {
+			m.statusNote = msg.Status
+		}
+		m.refreshViewport()
+		return m, waitForAsync(m.async)
 	case tokenUsagePulledMsg:
 		// Account-level usage is not session-accurate; ignore in session-only mode.
 		return m, nil
@@ -1299,6 +1329,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.screen = screenLanding
 			return m, nil
 		}
+		if handled, cmd, err := m.handleMCPSetupSubmission(rawValue); handled {
+			m.input.Reset()
+			m.clearPasteConfirmPending()
+			m.clearPasteBurstCapture()
+			m.syncInputOverlays()
+			if err != nil {
+				m.statusNote = err.Error()
+				return m, nil
+			}
+			return m, cmd
+		}
 		if value == "" {
 			return m, nil
 		}
@@ -1352,6 +1393,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return next, cmd
+		}
+		if handled, cmd, err := m.tryHandleNaturalMCPSetupIntent(rawValue); handled {
+			m.input.Reset()
+			m.clearPasteConfirmPending()
+			m.clearPasteBurstCapture()
+			m.syncInputOverlays()
+			if err != nil {
+				m.statusNote = err.Error()
+				return m, nil
+			}
+			return m, cmd
 		}
 		return m.submitPrompt(value)
 	}
@@ -2126,7 +2178,7 @@ func shouldExecuteFromPalette(item commandItem) bool {
 		return true
 	}
 	switch item.Name {
-	case "/help", "/session", "/skills", "/skill clear", "/new", "/compact", "/quit":
+	case "/help", "/session", "/skills", "/skill clear", "/mcp list", "/mcp help", "/mcp setup github", "/new", "/compact", "/quit":
 		return true
 	default:
 		return false
