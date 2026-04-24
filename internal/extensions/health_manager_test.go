@@ -121,3 +121,72 @@ func TestHealthManagerUpdatePolicyAppliesToThresholdAndCooldown(t *testing.T) {
 		t.Fatalf("expected updated cooldown retry at %s, got %s", expected.Format(time.RFC3339), nextRetryAt.Format(time.RFC3339))
 	}
 }
+
+func TestHealthManagerForgetAndSetClockForTesting(t *testing.T) {
+	now := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
+	manager := NewHealthManager(IsolationPolicy{
+		FailureThreshold: 2,
+		RecoveryCooldown: 10 * time.Second,
+	})
+
+	manager.RecordFailure("mcp.docs")
+	manager.Forget("mcp.docs")
+	snapshot := manager.Snapshot("mcp.docs")
+	if snapshot.CircuitState != CircuitClosed || snapshot.FailureCount != 0 {
+		t.Fatalf("expected forgotten state to reset to closed, got %#v", snapshot)
+	}
+
+	manager.SetClockForTesting(func() time.Time { return now })
+	manager.RecordFailure("mcp.docs")
+	snapshot = manager.Snapshot("mcp.docs")
+	if snapshot.LastFailureUTC != now.Format(time.RFC3339) {
+		t.Fatalf("expected testing clock timestamp %s, got %#v", now.Format(time.RFC3339), snapshot)
+	}
+}
+
+func TestHealthManagerUpdatePolicyHandlesOpenStateWithoutLastFailure(t *testing.T) {
+	now := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
+	manager := NewHealthManager(IsolationPolicy{
+		FailureThreshold: 1,
+		RecoveryCooldown: 10 * time.Second,
+	}, WithHealthManagerClock(func() time.Time { return now }))
+
+	manager.mu.Lock()
+	manager.states["mcp.docs"] = healthState{
+		Circuit:  CircuitOpen,
+		Cooldown: 10 * time.Second,
+	}
+	manager.mu.Unlock()
+
+	manager.UpdatePolicy(IsolationPolicy{
+		FailureThreshold: 2,
+		RecoveryCooldown: 5 * time.Second,
+	})
+	snapshot := manager.Snapshot("mcp.docs")
+	if snapshot.CircuitState != CircuitOpen {
+		t.Fatalf("expected state to remain open, got %#v", snapshot)
+	}
+	if snapshot.NextRetryAtUTC == "" {
+		t.Fatalf("expected policy update to assign next retry for open state, got %#v", snapshot)
+	}
+}
+
+func TestIsolationPolicyAndRecoveryHelpers(t *testing.T) {
+	normalized := normalizeIsolationPolicy(IsolationPolicy{})
+	if normalized.FailureThreshold != 3 {
+		t.Fatalf("expected default failure threshold 3, got %d", normalized.FailureThreshold)
+	}
+	if normalized.RecoveryCooldown != 30*time.Second {
+		t.Fatalf("expected default cooldown 30s, got %s", normalized.RecoveryCooldown)
+	}
+
+	if got := nextRecoveryCooldown(0, 0); got != 30*time.Second {
+		t.Fatalf("expected zero values to default to 30s, got %s", got)
+	}
+	if got := nextRecoveryCooldown(2*time.Second, 1*time.Second); got != 4*time.Second {
+		t.Fatalf("expected doubled cooldown within cap, got %s", got)
+	}
+	if got := nextRecoveryCooldown(16*time.Second, 2*time.Second); got != 16*time.Second {
+		t.Fatalf("expected cap at base*8, got %s", got)
+	}
+}

@@ -2,10 +2,13 @@ package app
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	extensionspkg "bytemind/internal/extensions"
 )
 
 func TestRunExtHelpRendersUsage(t *testing.T) {
@@ -71,6 +74,95 @@ func TestRunExtLoadExternalSource(t *testing.T) {
 	output := stdout.String()
 	if !strings.Contains(output, "id: skill.docs") || !strings.Contains(output, "status: active") {
 		t.Fatalf("expected load output to include skill.docs active, got %q", output)
+	}
+}
+
+func TestRunExtHandlesUnknownAndNoArgs(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	if err := RunExt(nil, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("RunExt with no args should render usage, got %v", err)
+	}
+	if !strings.Contains(stdout.String(), "bytemind ext list") {
+		t.Fatalf("expected usage output for no args, got %q", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	err := RunExt([]string{"unknown-subcommand"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "unknown ext subcommand") {
+		t.Fatalf("expected unknown subcommand error, got %v", err)
+	}
+}
+
+func TestParseExtActionTargetAndCommonFlags(t *testing.T) {
+	workspace := t.TempDir()
+
+	gotWorkspace, gotConfig, gotTarget, err := parseExtActionTarget("ext status", []string{"skill.demo", "--workspace", workspace, "--config", "cfg.json"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseExtActionTarget with positional target failed: %v", err)
+	}
+	if gotTarget != "skill.demo" {
+		t.Fatalf("expected positional target skill.demo, got %q", gotTarget)
+	}
+	if gotConfig != "cfg.json" {
+		t.Fatalf("expected config cfg.json, got %q", gotConfig)
+	}
+	if gotWorkspace == "" {
+		t.Fatal("expected resolved workspace path")
+	}
+
+	gotWorkspace, gotConfig, gotTarget, err = parseExtActionTarget("ext status", []string{"--workspace", workspace, "--config", "cfg2.json", "skill.demo2"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseExtActionTarget with trailing arg failed: %v", err)
+	}
+	if gotTarget != "skill.demo2" {
+		t.Fatalf("expected parsed trailing target skill.demo2, got %q", gotTarget)
+	}
+	if gotConfig != "cfg2.json" {
+		t.Fatalf("expected config cfg2.json, got %q", gotConfig)
+	}
+	if gotWorkspace == "" {
+		t.Fatal("expected resolved workspace path")
+	}
+
+	_, _, _, err = parseExtActionTarget("ext status", []string{"--workspace", workspace}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "usage: bytemind ext status <source-or-extension-id>") {
+		t.Fatalf("expected missing target usage error, got %v", err)
+	}
+
+	gotWorkspace, gotConfig, err = parseExtCommonFlags("ext list", []string{"--workspace", workspace, "--config", "list.json"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseExtCommonFlags failed: %v", err)
+	}
+	if gotWorkspace == "" {
+		t.Fatal("expected workspace from parseExtCommonFlags")
+	}
+	if gotConfig != "list.json" {
+		t.Fatalf("expected config list.json, got %q", gotConfig)
+	}
+}
+
+func TestRenderExtStatusesEmptyAndFallbackMessage(t *testing.T) {
+	var out bytes.Buffer
+	renderExtStatuses(&out, nil)
+	if !strings.Contains(out.String(), "no extensions discovered") {
+		t.Fatalf("expected empty-state message, got %q", out.String())
+	}
+
+	out.Reset()
+	renderExtStatuses(&out, []extensionspkg.ExtensionInfo{
+		{
+			ID:     "skill.alpha",
+			Kind:   extensionspkg.ExtensionSkill,
+			Status: extensionspkg.ExtensionStatusActive,
+			Health: extensionspkg.HealthSnapshot{},
+		},
+	})
+	output := out.String()
+	if !strings.Contains(output, "skill.alpha") || !strings.Contains(output, " -") {
+		t.Fatalf("expected fallback '-' health message in output, got %q", output)
 	}
 }
 

@@ -981,6 +981,203 @@ func TestManagerHelperFunctionsAndTransformers(t *testing.T) {
 	}
 }
 
+func TestManagerTestFallbackPathsWithoutResidentExtension(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	writeRuntimeConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": []map[string]any{
+				{
+					"id":         "local",
+					"auto_start": false,
+					"transport": map[string]any{
+						"type":    "stdio",
+						"command": "cmd",
+						"args":    []string{"/c", "echo", "ok"},
+					},
+				},
+			},
+		},
+	})
+	manager := NewManager(workspace, "", extensionspkg.NopManager{}, loadRuntimeConfig(t, workspace))
+	entry := manager.entries["mcp.local"]
+	if entry == nil {
+		t.Fatal("expected local entry")
+	}
+	manager.configPath = workspace
+
+	storedErr := errors.New("stored bootstrap error")
+	entry.clientCfg.ID = ""
+	entry.lastErr = storedErr
+	entry.info.Health = extensionspkg.HealthSnapshot{
+		Status:  extensionspkg.ExtensionStatusFailed,
+		Message: "stored failure",
+	}
+	manager.entries["mcp.local"] = entry
+
+	health, err := manager.Test(context.Background(), "mcp.local")
+	if !errors.Is(err, storedErr) {
+		t.Fatalf("expected stored error when client config id is empty, got %v", err)
+	}
+	if health.Message != "stored failure" {
+		t.Fatalf("expected stored health message, got %#v", health)
+	}
+
+	entry.clientCfg.ID = "local"
+	entry.clientCfg.Command = ""
+	manager.entries["mcp.local"] = entry
+	health, err = manager.Test(context.Background(), "mcp.local")
+	if err == nil {
+		t.Fatal("expected mcp initialization failure for invalid config")
+	}
+	if health.LastError != extensionspkg.ErrCodeLoadFailed {
+		t.Fatalf("expected load_failed on initialization error, got %#v", health)
+	}
+
+	entry.clientCfg.Command = "definitely-not-a-real-command-bytemind"
+	manager.entries["mcp.local"] = entry
+	health, err = manager.Test(context.Background(), "mcp.local")
+	if err != nil {
+		t.Fatalf("expected fallback health probe path to execute, got %v", err)
+	}
+	if health.CheckedAtUTC == "" {
+		t.Fatalf("expected checked_at to be populated, got %#v", health)
+	}
+}
+
+func TestManagerRefreshAndHealthPolicyHelpers(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	writeRuntimeConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": []map[string]any{
+				{
+					"id": "alpha",
+					"transport": map[string]any{
+						"type":    "stdio",
+						"command": "cmd",
+						"args":    []string{"/c", "echo", "ok"},
+					},
+				},
+			},
+		},
+	})
+	manager := NewManager(workspace, "", extensionspkg.NopManager{}, loadRuntimeConfig(t, workspace))
+	entry := manager.entries["mcp.alpha"]
+	if entry == nil {
+		t.Fatal("expected alpha entry")
+	}
+	entry.extension = &fakeMCPRuntimeExtension{
+		info:      entry.info,
+		reloadErr: context.DeadlineExceeded,
+	}
+	manager.entries["mcp.alpha"] = entry
+
+	err := manager.refresh(context.Background(), true)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected force refresh to return context deadline error, got %v", err)
+	}
+
+	manager.health = nil
+	manager.updateHealthPolicy(configpkg.ExtensionsConfig{
+		FailureThreshold:     4,
+		RecoveryCooldownSec: 9,
+	})
+	if manager.health == nil {
+		t.Fatal("expected health manager to be reinitialized")
+	}
+}
+
+func TestManagerIsolationHelpersAndApplyConfigForget(t *testing.T) {
+	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	server := configpkg.MCPServerConfig{ID: "demo", Name: "Demo"}
+
+	if got := infoForEntry(nil, now); got.ID != "" {
+		t.Fatalf("expected empty info for nil entry, got %#v", got)
+	}
+	if got := infoForEntry(&mcpEntry{server: server}, now); got.ID != "mcp.demo" {
+		t.Fatalf("expected ready info fallback for empty entry, got %#v", got)
+	}
+
+	withHalfOpen := applyIsolationSnapshot(
+		extensionspkg.ExtensionInfo{Status: extensionspkg.ExtensionStatusReady},
+		extensionspkg.IsolationSnapshot{CircuitState: extensionspkg.CircuitHalfOpen},
+		nil,
+		now,
+	)
+	if withHalfOpen.Health.Message != "mcp circuit half-open" {
+		t.Fatalf("expected half-open message, got %#v", withHalfOpen)
+	}
+
+	withDegradedHealth := applyIsolationSnapshot(
+		extensionspkg.ExtensionInfo{
+			Status: extensionspkg.ExtensionStatusReady,
+			Health: extensionspkg.HealthSnapshot{Status: extensionspkg.ExtensionStatusDegraded},
+		},
+		extensionspkg.IsolationSnapshot{CircuitState: extensionspkg.CircuitClosed},
+		nil,
+		now,
+	)
+	if withDegradedHealth.Status != extensionspkg.ExtensionStatusDegraded {
+		t.Fatalf("expected degraded status to be preserved, got %#v", withDegradedHealth)
+	}
+
+	if got := circuitOpenError("mcp.demo", extensionspkg.IsolationSnapshot{}); !strings.Contains(got.Error(), "circuit open") {
+		t.Fatalf("expected generic circuit open error, got %v", got)
+	}
+
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	writeRuntimeConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": []map[string]any{
+				{
+					"id": "alpha",
+					"transport": map[string]any{
+						"type":    "stdio",
+						"command": "cmd",
+						"args":    []string{"/c", "echo", "ok"},
+					},
+				},
+			},
+		},
+	})
+	manager := NewManager(workspace, "", extensionspkg.NopManager{}, loadRuntimeConfig(t, workspace))
+	if manager.health == nil {
+		t.Fatal("expected health manager")
+	}
+	manager.health.RecordFailure("mcp.alpha")
+	manager.applyConfig(configpkg.MCPConfig{Enabled: false})
+	if len(manager.entries) != 0 {
+		t.Fatalf("expected entries cleared when mcp disabled, got %d", len(manager.entries))
+	}
+	snapshot := manager.health.Snapshot("mcp.alpha")
+	if snapshot.FailureCount != 0 || snapshot.CircuitState != extensionspkg.CircuitClosed {
+		t.Fatalf("expected health state forgotten for removed entry, got %#v", snapshot)
+	}
+}
+
 func loadRuntimeConfig(t *testing.T, workspace string) configpkg.Config {
 	t.Helper()
 	cfg, err := configpkg.Load(workspace, "")
