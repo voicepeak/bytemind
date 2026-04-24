@@ -26,6 +26,10 @@ func TestManagerListIncludesConfiguredMCPServer(t *testing.T) {
 			"model":    "gpt-5.4-mini",
 			"api_key":  "test-key",
 		},
+		"extensions": map[string]any{
+			"failure_threshold":     1,
+			"recovery_cooldown_sec": 30,
+		},
 		"mcp": map[string]any{
 			"enabled": true,
 			"servers": []map[string]any{
@@ -75,6 +79,10 @@ func TestManagerAutoStartDoesNotEagerDiscoverOnInit(t *testing.T) {
 			"base_url": "https://api.openai.com/v1",
 			"model":    "gpt-5.4-mini",
 			"api_key":  "test-key",
+		},
+		"extensions": map[string]any{
+			"failure_threshold":     1,
+			"recovery_cooldown_sec": 30,
 		},
 		"mcp": map[string]any{
 			"enabled": true,
@@ -571,6 +579,56 @@ func TestManagerTestReturnsContextErrorFromHealth(t *testing.T) {
 	_, err := manager.Test(context.Background(), "mcp.local")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected deadline exceeded from extension health, got %v", err)
+	}
+	if manager.health != nil && !manager.health.AllowProbe("mcp.local") {
+		t.Fatal("expected context deadline from health to skip failure accounting")
+	}
+}
+
+func TestManagerTestRecordsFailureForProbePath(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	writeRuntimeConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"extensions": map[string]any{
+			"failure_threshold":     1,
+			"recovery_cooldown_sec": 30,
+		},
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": []map[string]any{
+				{
+					"id": "probe",
+					"transport": map[string]any{
+						"type":    "stdio",
+						"command": "__missing_mcp_command__",
+					},
+				},
+			},
+		},
+	})
+
+	manager := NewManager(workspace, "", extensionspkg.NopManager{}, loadRuntimeConfig(t, workspace))
+	entry := manager.entries["mcp.probe"]
+	if entry == nil {
+		t.Fatal("expected probe entry")
+	}
+	entry.extension = nil
+
+	_, err := manager.Test(context.Background(), "mcp.probe")
+	if err == nil {
+		t.Fatal("expected probe test to fail")
+	}
+	if manager.health == nil {
+		t.Fatal("expected health manager")
+	}
+	if manager.health.AllowProbe("mcp.probe") {
+		t.Fatal("expected probe-path failure to be recorded and open circuit")
 	}
 }
 
