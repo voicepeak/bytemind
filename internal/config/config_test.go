@@ -1167,6 +1167,89 @@ func TestLoadProjectMCPFileOverridesUserMCPFile(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidUserMCPFile(t *testing.T) {
+	workspace := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", home)
+	t.Setenv("BYTEMIND_API_KEY", "env-key")
+
+	userMCPPath := filepath.Join(home, "mcp.json")
+	if err := os.WriteFile(userMCPPath, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(workspace, "")
+	if err == nil {
+		t.Fatal("expected invalid user mcp file to fail")
+	}
+}
+
+func TestLoadRejectsInvalidProjectMCPFile(t *testing.T) {
+	workspace := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", home)
+	t.Setenv("BYTEMIND_API_KEY", "env-key")
+
+	projectMCPPath := filepath.Join(workspace, ".bytemind", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(projectMCPPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectMCPPath, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(workspace, "")
+	if err == nil {
+		t.Fatal("expected invalid project mcp file to fail")
+	}
+}
+
+func TestResolveUserMCPConfigPathNoFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", home)
+
+	got, err := resolveUserMCPConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("expected empty user mcp path when file is missing, got %q", got)
+	}
+}
+
+func TestMergeMCPConfigFromFileHandlesEdgeCases(t *testing.T) {
+	tmp := t.TempDir()
+
+	missingPath := filepath.Join(tmp, "missing.json")
+	if err := mergeMCPConfigFromFile(missingPath, nil); err != nil {
+		t.Fatalf("expected nil cfg to short-circuit, got %v", err)
+	}
+
+	cfg := MCPConfig{Enabled: true}
+	if err := mergeMCPConfigFromFile(missingPath, &cfg); err == nil {
+		t.Fatal("expected missing file to return error")
+	}
+
+	emptyPath := filepath.Join(tmp, "empty.json")
+	if err := os.WriteFile(emptyPath, []byte("   \n\t"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeMCPConfigFromFile(emptyPath, &cfg); err != nil {
+		t.Fatalf("expected empty mcp file to be ignored, got %v", err)
+	}
+	if !cfg.Enabled {
+		t.Fatal("expected cfg to remain unchanged after empty mcp file")
+	}
+
+	invalidPath := filepath.Join(tmp, "invalid.json")
+	if err := os.WriteFile(invalidPath, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeMCPConfigFromFile(invalidPath, &cfg); err == nil {
+		t.Fatal("expected invalid mcp file json to return error")
+	}
+}
+
 func TestLoadRejectsDuplicateNormalizedMCPServerID(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("BYTEMIND_HOME", t.TempDir())
