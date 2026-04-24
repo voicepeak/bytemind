@@ -25,9 +25,6 @@ func (m model) renderConversation() string {
 		}
 
 		if item.Kind == "assistant" && (item.Status == "thinking" || item.Status == "thinking_done") {
-			if rendered := m.renderThinkingRow(item, width); strings.TrimSpace(rendered) != "" {
-				blocks = append(blocks, rendered)
-			}
 			i++
 			continue
 		}
@@ -65,6 +62,11 @@ func (m model) renderConversationCopy() string {
 		item := m.chatItems[i]
 		if item.Kind == "user" {
 			blocks = append(blocks, renderChatCopySection(item, width))
+			i++
+			continue
+		}
+
+		if item.Kind == "assistant" && (item.Status == "thinking" || item.Status == "thinking_done") {
 			i++
 			continue
 		}
