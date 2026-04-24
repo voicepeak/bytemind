@@ -80,6 +80,10 @@ func TestManagerAutoStartDoesNotEagerDiscoverOnInit(t *testing.T) {
 			"model":    "gpt-5.4-mini",
 			"api_key":  "test-key",
 		},
+		"extensions": map[string]any{
+			"failure_threshold":     1,
+			"recovery_cooldown_sec": 30,
+		},
 		"mcp": map[string]any{
 			"enabled": true,
 			"servers": []map[string]any{
