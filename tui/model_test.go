@@ -2975,19 +2975,39 @@ func TestRenderFooterInfoLineCombinesModeAndHints(t *testing.T) {
 	}
 }
 
-func TestRenderFooterDoesNotShowBusyRunIndicator(t *testing.T) {
+func TestRenderFooterShowsBusyRunIndicator(t *testing.T) {
 	input := textarea.New()
 	m := model{
-		width:        120,
-		input:        input,
-		busy:         true,
-		phase:        "thinking",
-		runStartedAt: time.Time{},
+		width:             120,
+		input:             input,
+		busy:              true,
+		phase:             "thinking",
+		runStartedAt:      time.Date(2026, 4, 24, 10, 0, 0, 0, time.UTC),
+		runIndicatorState: runIndicatorRunning,
 	}
 
 	footer := m.renderFooter()
-	if strings.Contains(footer, "thinking...") || strings.Contains(footer, "(00:00)") {
-		t.Fatalf("expected busy footer not to include run indicator, got %q", footer)
+	for _, want := range []string{"Thinking", "thinking..."} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("expected busy footer to include %q, got %q", want, footer)
+		}
+	}
+}
+
+func TestRenderFooterShowsCompletedRunIndicator(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		width:             120,
+		input:             input,
+		runIndicatorState: runIndicatorComplete,
+		lastRunDuration:   28 * time.Second,
+	}
+
+	footer := m.renderFooter()
+	for _, want := range []string{"Complete", "(00:28)"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("expected completed footer to include %q, got %q", want, footer)
+		}
 	}
 }
 
@@ -4637,6 +4657,29 @@ func TestFinishAssistantMessageAppendsFinalCardAfterThinking(t *testing.T) {
 	}
 	if m.chatItems[2].Title != assistantLabel || m.chatItems[2].Status != "final" || m.chatItems[2].Body != "This is a Go TUI project." {
 		t.Fatalf("expected final assistant card after thinking, got %+v", m.chatItems[2])
+	}
+}
+
+func TestRenderConversationOmitsThinkingRowsFromViewport(t *testing.T) {
+	m := model{
+		width: 120,
+		viewport: func() viewport.Model {
+			vp := viewport.New(60, 10)
+			return vp
+		}(),
+		chatItems: []chatEntry{
+			{Kind: "user", Title: "You", Body: "inspect repo", Status: "final"},
+			{Kind: "assistant", Title: thinkingLabel, Body: "thinking...", Status: "thinking_done"},
+			{Kind: "assistant", Title: assistantLabel, Body: "Done.", Status: "final"},
+		},
+	}
+
+	rendered := m.renderConversation()
+	if strings.Contains(rendered, "thinking...") {
+		t.Fatalf("expected conversation viewport to omit inline thinking rows, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Done.") {
+		t.Fatalf("expected final answer to remain visible, got %q", rendered)
 	}
 }
 

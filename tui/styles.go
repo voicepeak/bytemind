@@ -416,8 +416,10 @@ var (
 				Padding(0, 1)
 
 	runIndicatorStyle = lipgloss.NewStyle().
-				Foreground(colorMuted).
-				Faint(true)
+				Background(semanticColors.PanelMuted).
+				BorderLeft(true).
+				BorderForeground(semanticColors.Border).
+				Padding(0, 1)
 
 	thinkingIndicatorStyle = lipgloss.NewStyle().
 				Foreground(semanticColors.Thinking).

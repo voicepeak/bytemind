@@ -36,6 +36,8 @@ func (m *model) beginRunWithInput(promptInput RunPromptInput, mode, note string)
 	m.llmConnected = true
 	m.busy = true
 	m.runStartedAt = time.Now()
+	m.lastRunDuration = 0
+	m.runIndicatorState = runIndicatorRunning
 	m.chatAutoFollow = true
 	spinnerTick := m.resetThinkingSpinner()
 	m.ensureThinkingCard()

@@ -194,6 +194,16 @@ const (
 	runFinishReasonBTWRestart runFinishReason = "btw_restart"
 )
 
+type runIndicatorState string
+
+const (
+	runIndicatorReady    runIndicatorState = "ready"
+	runIndicatorRunning  runIndicatorState = "running"
+	runIndicatorComplete runIndicatorState = "complete"
+	runIndicatorCanceled runIndicatorState = "canceled"
+	runIndicatorFailed   runIndicatorState = "failed"
+)
+
 type approvalRequestMsg struct {
 	Request ApprovalRequest
 	Reply   chan approvalDecision
@@ -335,6 +345,8 @@ type model struct {
 	mcpSetup                   *mcpSetupSession
 	busy                       bool
 	runStartedAt               time.Time
+	lastRunDuration            time.Duration
+	runIndicatorState          runIndicatorState
 	streamingIndex             int
 	statusNote                 string
 	phase                      string
@@ -482,6 +494,7 @@ func newModel(opts Options) model {
 		screen:               initialScreen(opts.Session),
 		mode:                 toAgentMode(opts.Session.Mode),
 		streamingIndex:       -1,
+		runIndicatorState:    runIndicatorReady,
 		statusNote:           "Ready.",
 		phase:                "idle",
 		llmConnected:         true,
@@ -598,6 +611,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.RunID > 0 && msg.RunID != m.activeRunID {
 			return m, waitForAsync(m.async)
 		}
+		elapsed := time.Duration(0)
+		if !m.runStartedAt.IsZero() {
+			elapsed = time.Since(m.runStartedAt)
+			if elapsed < 0 {
+				elapsed = 0
+			}
+		}
 		m.busy = false
 		m.runCancel = nil
 		m.activeRunID = 0
@@ -633,6 +653,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingBTW = nil
 		switch finishReason {
 		case runFinishReasonCompleted:
+			m.lastRunDuration = elapsed
+			m.runIndicatorState = runIndicatorComplete
 			if !m.shouldKeepStreamingIndexOnRunFinished() {
 				m.streamingIndex = -1
 			}
@@ -645,12 +667,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusNote = "Ready."
 			}
 		case runFinishReasonCanceled:
+			m.lastRunDuration = elapsed
+			m.runIndicatorState = runIndicatorCanceled
 			m.streamingIndex = -1
 			m.closePlanActionPicker()
 			m.statusNote = "Run canceled."
 			m.phase = "idle"
 			m.llmConnected = true
 		case runFinishReasonFailed:
+			m.lastRunDuration = elapsed
+			m.runIndicatorState = runIndicatorFailed
 			m.streamingIndex = -1
 			m.closePlanActionPicker()
 			m.statusNote = "Run failed: " + msg.Err.Error()
@@ -658,6 +684,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.llmConnected = false
 			m.failLatestAssistant(msg.Err.Error())
 		default:
+			m.lastRunDuration = 0
+			m.runIndicatorState = runIndicatorReady
 			m.streamingIndex = -1
 			m.closePlanActionPicker()
 			m.statusNote = "Ready."

@@ -436,6 +436,9 @@ func renderConversationViewportDefault(m model) string {
 	if content == "" {
 		content = m.viewport.View()
 	}
+	if m.viewport.Width > 0 && m.viewport.Height > 0 {
+		content = lipgloss.Place(m.viewport.Width, m.viewport.Height, lipgloss.Left, lipgloss.Top, content)
+	}
 	return zone.Mark(conversationViewportZoneID, content)
 }
 
