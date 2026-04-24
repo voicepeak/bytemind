@@ -37,8 +37,8 @@ This document defines the minimum acceptance checks for the current sandbox impl
 | `system_sandbox_mode=best_effort` + OS backend unavailable | Fallback to normal worker launch with explicit fallback reason in startup status/log. |
 | `system_sandbox_mode=required` + runtime backend unavailable at agent startup | Run fails closed before first model/tool turn is executed. |
 | `system_sandbox_mode=required` + network-targeted operation + backend lacks required network isolation for that tool path | Operation is denied fail-closed with permission_denied (no silent fallback). |
-| Any run with `sandbox_enabled=true` and `system_sandbox_mode!=off` | Run output includes a startup status line with mode/backend/state. |
-| Any run with sandbox context | Audit stream includes `system_sandbox_startup` event plus sandbox metadata on permission/start/result/task_state audit events (`sandbox_capability_level` included). |
+| Any run with `sandbox_enabled=true` and `system_sandbox_mode!=off` | Run output includes a startup status line with mode/backend/state/required_capable/capability_level/shell_network_isolation/worker_network_isolation. |
+| Any run with sandbox context | Audit stream includes `system_sandbox_startup` event plus sandbox metadata on permission/start/result/task_state audit events (`sandbox_capability_level`, `sandbox_shell_network_isolation`, `sandbox_worker_network_isolation` included). |
 | Any denied/error tool result while sandbox is enabled | Tool result payload includes `system_sandbox` context so CLI feedback can surface sandbox state/reason on failure paths. |
 | Linux + `system_sandbox_mode=required` + shell command writes outside writable roots | Write fails from read-only filesystem enforcement. |
 | macOS + `system_sandbox_mode=best_effort` + `sandbox-exec` available | Uses `sandbox-exec` profile-based launch with writable roots; worker profile allows network for web tools, with explicit fallback reason when probe fails. |
@@ -115,7 +115,7 @@ CI runs the same focused acceptance suites in a cross-platform matrix:
 7. `sandbox_enabled=true` + `system_sandbox_mode=required` + network-targeted command/tool on backend without required network isolation:
    - Expect immediate permission denial (fail-closed).
    - Expect no silent downgrade to non-isolated execution.
-   - Expect tool feedback to include sandbox summary/reason (mode/backend/required_capable/capability_level + fallback reason when present).
+  - Expect tool feedback to include sandbox summary/reason (mode/backend/required_capable/capability_level/shell_network_isolation/worker_network_isolation + fallback reason when present).
 8. `sandbox_enabled=true` + `system_sandbox_mode=required` + backend worker network isolation unavailable + `web_fetch`/`web_search`:
    - Expect policy-stage denial with `reason_code=sandbox_guard`.
    - Expect no `tool_execute_start` audit event for that denied tool call.
