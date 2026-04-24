@@ -524,6 +524,142 @@ func TestManagerTestReloadContextErrorReturnsImmediately(t *testing.T) {
 	}
 }
 
+func TestManagerLoadCircuitOpenWithNilExtensionDoesNotPanic(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	writeRuntimeConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"extensions": map[string]any{
+			"failure_threshold":     1,
+			"recovery_cooldown_sec": 30,
+		},
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": []map[string]any{
+				{
+					"id":         "local",
+					"auto_start": false,
+					"transport": map[string]any{
+						"type":    "stdio",
+						"command": "cmd",
+						"args":    []string{"/c", "echo", "ok"},
+					},
+				},
+			},
+		},
+	})
+
+	manager := NewManager(workspace, "", extensionspkg.NopManager{}, loadRuntimeConfig(t, workspace))
+	entry := manager.entries["mcp.local"]
+	if entry == nil {
+		t.Fatal("expected local entry")
+	}
+	entry.lastErr = errors.New("bootstrap failed")
+	entry.info = failedMCPInfo(entry.server, entry.lastErr, time.Now().UTC())
+
+	manager.health.RecordFailure("mcp.local")
+
+	_, err := manager.Load(context.Background(), "mcp:local")
+	if err == nil {
+		t.Fatal("expected circuit-open error")
+	}
+	if !strings.Contains(err.Error(), "circuit open") {
+		t.Fatalf("expected circuit-open error, got %v", err)
+	}
+}
+
+func TestManagerRefreshUpdatesHealthPolicyFromConfig(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("BYTEMIND_HOME", t.TempDir())
+	writeRuntimeConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"extensions": map[string]any{
+			"failure_threshold":     3,
+			"recovery_cooldown_sec": 30,
+		},
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": []map[string]any{
+				{
+					"id":         "local",
+					"auto_start": false,
+					"transport": map[string]any{
+						"type":    "stdio",
+						"command": "cmd",
+						"args":    []string{"/c", "echo", "ok"},
+					},
+				},
+			},
+		},
+	})
+
+	manager := NewManager(workspace, "", extensionspkg.NopManager{}, loadRuntimeConfig(t, workspace))
+	if manager.health == nil {
+		t.Fatal("expected health manager")
+	}
+	now := time.Date(2026, 4, 24, 9, 0, 0, 0, time.UTC)
+	manager.health.SetClockForTesting(func() time.Time {
+		return now
+	})
+	first := manager.health.RecordFailure("mcp.local")
+	if first.CircuitState != extensionspkg.CircuitClosed {
+		t.Fatalf("expected first failure to stay closed under initial policy, got %#v", first)
+	}
+
+	writeRuntimeConfig(t, workspace, map[string]any{
+		"provider": map[string]any{
+			"type":     "openai-compatible",
+			"base_url": "https://api.openai.com/v1",
+			"model":    "gpt-5.4-mini",
+			"api_key":  "test-key",
+		},
+		"extensions": map[string]any{
+			"failure_threshold":     1,
+			"recovery_cooldown_sec": 5,
+		},
+		"mcp": map[string]any{
+			"enabled": true,
+			"servers": []map[string]any{
+				{
+					"id":         "local",
+					"auto_start": false,
+					"transport": map[string]any{
+						"type":    "stdio",
+						"command": "cmd",
+						"args":    []string{"/c", "echo", "ok"},
+					},
+				},
+			},
+		},
+	})
+	if err := manager.Reload(context.Background()); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+
+	second := manager.health.RecordFailure("mcp.local")
+	if second.CircuitState != extensionspkg.CircuitOpen {
+		t.Fatalf("expected updated threshold to open circuit, got %#v", second)
+	}
+	nextRetryAt, err := time.Parse(time.RFC3339, second.NextRetryAtUTC)
+	if err != nil {
+		t.Fatalf("expected valid retry timestamp, got %q (%v)", second.NextRetryAtUTC, err)
+	}
+	expected := now.Add(5 * time.Second)
+	if !nextRetryAt.Equal(expected) {
+		t.Fatalf("expected updated cooldown retry %s, got %s", expected.Format(time.RFC3339), nextRetryAt.Format(time.RFC3339))
+	}
+}
+
 func TestManagerLoadDoesNotFailFromOtherServerReloadError(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("BYTEMIND_HOME", t.TempDir())

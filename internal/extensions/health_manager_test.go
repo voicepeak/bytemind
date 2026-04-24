@@ -92,3 +92,32 @@ func TestHealthManagerRecoveryExtendsCooldownOnHalfOpenFailure(t *testing.T) {
 		t.Fatalf("expected half-open failure to reopen circuit, got %#v", reopened)
 	}
 }
+
+func TestHealthManagerUpdatePolicyAppliesToThresholdAndCooldown(t *testing.T) {
+	now := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
+	manager := NewHealthManager(IsolationPolicy{
+		FailureThreshold: 3,
+		RecoveryCooldown: 20 * time.Second,
+	}, WithHealthManagerClock(func() time.Time {
+		return now
+	}))
+
+	manager.RecordFailure("mcp.docs")
+	manager.UpdatePolicy(IsolationPolicy{
+		FailureThreshold: 1,
+		RecoveryCooldown: 5 * time.Second,
+	})
+
+	snapshot := manager.RecordFailure("mcp.docs")
+	if snapshot.CircuitState != CircuitOpen {
+		t.Fatalf("expected updated threshold to open circuit on next failure, got %#v", snapshot)
+	}
+	nextRetryAt, err := time.Parse(time.RFC3339, snapshot.NextRetryAtUTC)
+	if err != nil {
+		t.Fatalf("expected valid next retry timestamp, got %q (%v)", snapshot.NextRetryAtUTC, err)
+	}
+	expected := now.Add(5 * time.Second)
+	if !nextRetryAt.Equal(expected) {
+		t.Fatalf("expected updated cooldown retry at %s, got %s", expected.Format(time.RFC3339), nextRetryAt.Format(time.RFC3339))
+	}
+}

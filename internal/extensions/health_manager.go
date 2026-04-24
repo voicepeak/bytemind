@@ -164,6 +164,34 @@ func (m *HealthManager) SetClockForTesting(clock func() time.Time) {
 	m.mu.Unlock()
 }
 
+func (m *HealthManager) UpdatePolicy(policy IsolationPolicy) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	normalized := normalizeIsolationPolicy(policy)
+	m.policy = normalized
+	now := m.clock().UTC()
+	for id, state := range m.states {
+		state.Cooldown = normalized.RecoveryCooldown
+		if state.Circuit == CircuitOpen {
+			switch {
+			case !state.LastFailure.IsZero():
+				nextRetryAt := state.LastFailure.Add(state.Cooldown)
+				if nextRetryAt.Before(now) {
+					nextRetryAt = now
+				}
+				state.NextRetryAt = nextRetryAt
+			case state.NextRetryAt.IsZero():
+				state.NextRetryAt = now.Add(state.Cooldown)
+			}
+		}
+		m.states[id] = state
+	}
+}
+
 func snapshotFromState(state healthState) IsolationSnapshot {
 	snapshot := IsolationSnapshot{
 		FailureCount: state.FailureCount,

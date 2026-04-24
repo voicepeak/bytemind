@@ -79,37 +79,42 @@ func (m *Manager) Load(ctx context.Context, source string) (extensionspkg.Extens
 		now := time.Now().UTC()
 		snapshot := m.health.Snapshot(extensionID)
 		entry.lastErr = circuitOpenError(extensionID, snapshot)
-		entry.info = applyIsolationSnapshot(normalizeMCPInfo(entry.extension.Info(), entry.server, now), snapshot, entry.lastErr, now)
+		entry.info = applyIsolationSnapshot(infoForEntry(entry, now), snapshot, entry.lastErr, now)
 		entry.lastRefresh = now
 		m.entries[extensionID] = entry
 		return cloneInfo(entry.info), entry.lastErr
 	}
 
-	if reloader, ok := entry.extension.(interface{ Reload(context.Context) error }); ok {
-		if err := reloader.Reload(ctx); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return extensionspkg.ExtensionInfo{}, err
+	if entry.extension != nil {
+		if reloader, ok := entry.extension.(interface{ Reload(context.Context) error }); ok {
+			if err := reloader.Reload(ctx); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return extensionspkg.ExtensionInfo{}, err
+				}
+				snapshot := extensionspkg.IsolationSnapshot{}
+				if m.health != nil {
+					snapshot = m.health.RecordFailure(extensionID)
+				}
+				now := time.Now().UTC()
+				entry.info = applyIsolationSnapshot(normalizeMCPInfo(entry.extension.Info(), entry.server, now), snapshot, err, now)
+				entry.lastRefresh = now
+				entry.lastErr = err
+				m.entries[extensionID] = entry
+				return cloneInfo(entry.info), err
 			}
 			snapshot := extensionspkg.IsolationSnapshot{}
 			if m.health != nil {
-				snapshot = m.health.RecordFailure(extensionID)
+				snapshot = m.health.RecordSuccess(extensionID)
 			}
 			now := time.Now().UTC()
-			entry.info = applyIsolationSnapshot(normalizeMCPInfo(entry.extension.Info(), entry.server, now), snapshot, err, now)
+			entry.info = applyIsolationSnapshot(normalizeMCPInfo(entry.extension.Info(), entry.server, now), snapshot, nil, now)
 			entry.lastRefresh = now
-			entry.lastErr = err
+			entry.lastErr = nil
 			m.entries[extensionID] = entry
-			return cloneInfo(entry.info), err
 		}
-		snapshot := extensionspkg.IsolationSnapshot{}
-		if m.health != nil {
-			snapshot = m.health.RecordSuccess(extensionID)
-		}
-		now := time.Now().UTC()
-		entry.info = applyIsolationSnapshot(normalizeMCPInfo(entry.extension.Info(), entry.server, now), snapshot, nil, now)
-		entry.lastRefresh = now
-		entry.lastErr = nil
-		m.entries[extensionID] = entry
+	}
+	if entry.lastErr != nil {
+		return cloneInfo(entry.info), entry.lastErr
 	}
 	return cloneInfo(entry.info), nil
 }
@@ -363,6 +368,7 @@ func (m *Manager) refresh(ctx context.Context, force bool) error {
 	if err != nil {
 		return err
 	}
+	m.updateHealthPolicy(cfg.Extensions)
 	m.applyConfig(cfg.MCP)
 
 	m.mu.Lock()
@@ -418,6 +424,17 @@ func (m *Manager) refresh(ctx context.Context, force bool) error {
 		m.entries[extensionID] = entry
 	}
 	return firstErr
+}
+
+func (m *Manager) updateHealthPolicy(cfg configpkg.ExtensionsConfig) {
+	if m.health == nil {
+		m.health = newRuntimeHealthManager(cfg)
+		return
+	}
+	m.health.UpdatePolicy(extensionspkg.IsolationPolicy{
+		FailureThreshold: cfg.FailureThreshold,
+		RecoveryCooldown: time.Duration(cfg.RecoveryCooldownSec) * time.Second,
+	})
 }
 
 func (m *Manager) applyConfig(cfg configpkg.MCPConfig) {
@@ -681,6 +698,20 @@ func newRuntimeHealthManager(cfg configpkg.ExtensionsConfig) *extensionspkg.Heal
 		FailureThreshold: cfg.FailureThreshold,
 		RecoveryCooldown: time.Duration(cfg.RecoveryCooldownSec) * time.Second,
 	})
+}
+
+func infoForEntry(entry *mcpEntry, now time.Time) extensionspkg.ExtensionInfo {
+	if entry == nil {
+		return extensionspkg.ExtensionInfo{}
+	}
+	if entry.extension != nil {
+		return normalizeMCPInfo(entry.extension.Info(), entry.server, now)
+	}
+	info := cloneInfo(entry.info)
+	if strings.TrimSpace(info.ID) == "" {
+		return readyMCPInfo(entry.server, now)
+	}
+	return normalizeMCPInfo(info, entry.server, now)
 }
 
 func applyIsolationSnapshot(info extensionspkg.ExtensionInfo, snapshot extensionspkg.IsolationSnapshot, lastErr error, now time.Time) extensionspkg.ExtensionInfo {
