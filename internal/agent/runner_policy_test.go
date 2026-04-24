@@ -122,6 +122,16 @@ func TestRunPromptPolicyGatewayDeniesToolBeforeExecutor(t *testing.T) {
 	if executed {
 		t.Fatal("expected tool execution to be blocked by policy")
 	}
+	deniedPayload := findToolResultPayloadByReasonCode(t, sess, policyReasonExplicitDeny)
+	if deniedPayload.SystemSandbox.Mode != "best_effort" {
+		t.Fatalf("expected denied tool_result sandbox mode best_effort, got %#v", deniedPayload.SystemSandbox)
+	}
+	if deniedPayload.SystemSandbox.Backend == "" {
+		t.Fatalf("expected denied tool_result sandbox backend to be set, got %#v", deniedPayload.SystemSandbox)
+	}
+	if deniedPayload.SystemSandbox.CapabilityLevel == "" {
+		t.Fatalf("expected denied tool_result sandbox capability_level to be set, got %#v", deniedPayload.SystemSandbox)
+	}
 
 	foundPermissionDecision := false
 	foundExecuteStart := false
@@ -321,4 +331,293 @@ func TestRunPromptPolicyGatewayAskRequestsApprovalAndExecutesTool(t *testing.T) 
 	if !foundExecuteResult {
 		t.Fatal("expected successful tool_execute_result audit event for ask tool")
 	}
+}
+
+func TestRunPromptPolicyGatewaySandboxGuardDeniesWebFetchBeforeExecution(t *testing.T) {
+	testCases := []struct {
+		name            string
+		backend         string
+		capabilityLevel string
+	}{
+		{name: "windows_required", backend: "windows_job_object", capabilityLevel: "guarded"},
+		{name: "linux_required", backend: "linux_unshare", capabilityLevel: "full"},
+		{name: "darwin_required", backend: "darwin_sandbox_exec", capabilityLevel: "full"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			original := resolveAgentSystemSandboxRuntimeStatus
+			resolveAgentSystemSandboxRuntimeStatus = func(enabled bool, mode string) (tools.SystemSandboxRuntimeStatus, error) {
+				if !enabled {
+					return tools.SystemSandboxRuntimeStatus{}, nil
+				}
+				return tools.SystemSandboxRuntimeStatus{
+					Mode:            "required",
+					BackendEnabled:  true,
+					BackendName:     tc.backend,
+					RequiredCapable: true,
+					CapabilityLevel: tc.capabilityLevel,
+					Message:         `system sandbox backend "` + tc.backend + `" is active`,
+				}, nil
+			}
+			t.Cleanup(func() {
+				resolveAgentSystemSandboxRuntimeStatus = original
+			})
+
+			workspace := t.TempDir()
+			store, err := session.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			sess := session.New(workspace)
+
+			client := &recordingClient{replies: []llm.Message{
+				{
+					Role: "assistant",
+					ToolCalls: []llm.ToolCall{{
+						ID:   "call-web-fetch-" + tc.name,
+						Type: "function",
+						Function: llm.ToolFunctionCall{
+							Name:      "web_fetch",
+							Arguments: `{"url":"https://example.com"}`,
+						},
+					}},
+				},
+				{
+					Role:    "assistant",
+					Content: "Policy handled.",
+				},
+			}}
+
+			auditStore := &recordingAuditStore{}
+			runner := NewRunner(Options{
+				Workspace: workspace,
+				Config: config.Config{
+					Provider:          config.ProviderConfig{Type: "openai-compatible", Model: "test-model"},
+					MaxIterations:     3,
+					Stream:            false,
+					TokenQuota:        generousTokenQuota,
+					ApprovalPolicy:    "always",
+					SandboxEnabled:    true,
+					SystemSandboxMode: "required",
+				},
+				Client:        client,
+				Store:         store,
+				Registry:      tools.DefaultRegistry(),
+				PolicyGateway: NewDefaultPolicyGateway(),
+				AuditStore:    auditStore,
+				Stdin:         strings.NewReader(""),
+				Stdout:        io.Discard,
+			})
+
+			answer, err := runner.RunPrompt(context.Background(), sess, "fetch web source", "build", io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if answer != "Policy handled." {
+				t.Fatalf("unexpected answer: %q", answer)
+			}
+
+			deniedPayload := findToolResultPayloadByReasonCode(t, sess, policyReasonSandboxGuard)
+			if deniedPayload.SystemSandbox.Mode != "required" {
+				t.Fatalf("expected denied tool_result sandbox mode required, got %#v", deniedPayload.SystemSandbox)
+			}
+			if deniedPayload.SystemSandbox.Backend != tc.backend {
+				t.Fatalf("expected denied tool_result sandbox backend %s, got %#v", tc.backend, deniedPayload.SystemSandbox)
+			}
+
+			foundPermissionDecision := false
+			foundExecuteStart := false
+			foundDeniedResult := false
+			for _, event := range auditStore.snapshot() {
+				if event.Action == "permission_decision" && event.Metadata["tool_name"] == "web_fetch" {
+					if event.ReasonCode != policyReasonSandboxGuard || event.Decision != corepkg.DecisionDeny {
+						t.Fatalf("expected sandbox_guard deny decision, got %+v", event)
+					}
+					foundPermissionDecision = true
+				}
+				if event.Action == "tool_execute_start" && event.Metadata["tool_name"] == "web_fetch" {
+					foundExecuteStart = true
+				}
+				if event.Action == "tool_execute_result" && event.Metadata["tool_name"] == "web_fetch" && event.Result == "denied" {
+					foundDeniedResult = true
+				}
+			}
+			if !foundPermissionDecision {
+				t.Fatal("expected permission_decision audit event for web_fetch")
+			}
+			if foundExecuteStart {
+				t.Fatal("did not expect tool_execute_start audit event for policy-denied web_fetch")
+			}
+			if !foundDeniedResult {
+				t.Fatal("expected denied tool_execute_result audit event for web_fetch")
+			}
+		})
+	}
+}
+
+func TestRunPromptPolicyGatewaySandboxGuardDeniesNetworkTargetRunShellBeforeExecution(t *testing.T) {
+	testCases := []struct {
+		name            string
+		backend         string
+		capabilityLevel string
+	}{
+		{name: "windows_required", backend: "windows_job_object", capabilityLevel: "guarded"},
+		{name: "darwin_required", backend: "darwin_sandbox_exec", capabilityLevel: "full"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			original := resolveAgentSystemSandboxRuntimeStatus
+			resolveAgentSystemSandboxRuntimeStatus = func(enabled bool, mode string) (tools.SystemSandboxRuntimeStatus, error) {
+				if !enabled {
+					return tools.SystemSandboxRuntimeStatus{}, nil
+				}
+				return tools.SystemSandboxRuntimeStatus{
+					Mode:            "required",
+					BackendEnabled:  true,
+					BackendName:     tc.backend,
+					RequiredCapable: true,
+					CapabilityLevel: tc.capabilityLevel,
+					Message:         `system sandbox backend "` + tc.backend + `" is active`,
+				}, nil
+			}
+			t.Cleanup(func() {
+				resolveAgentSystemSandboxRuntimeStatus = original
+			})
+
+			workspace := t.TempDir()
+			store, err := session.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			sess := session.New(workspace)
+
+			client := &recordingClient{replies: []llm.Message{
+				{
+					Role: "assistant",
+					ToolCalls: []llm.ToolCall{{
+						ID:   "call-run-shell-" + tc.name,
+						Type: "function",
+						Function: llm.ToolFunctionCall{
+							Name:      "run_shell",
+							Arguments: `{"command":"curl https://example.com/data"}`,
+						},
+					}},
+				},
+				{
+					Role:    "assistant",
+					Content: "Policy handled.",
+				},
+			}}
+
+			auditStore := &recordingAuditStore{}
+			runner := NewRunner(Options{
+				Workspace: workspace,
+				Config: config.Config{
+					Provider:          config.ProviderConfig{Type: "openai-compatible", Model: "test-model"},
+					MaxIterations:     3,
+					Stream:            false,
+					TokenQuota:        generousTokenQuota,
+					ApprovalPolicy:    "always",
+					SandboxEnabled:    true,
+					SystemSandboxMode: "required",
+				},
+				Client:        client,
+				Store:         store,
+				Registry:      tools.DefaultRegistry(),
+				PolicyGateway: NewDefaultPolicyGateway(),
+				AuditStore:    auditStore,
+				Stdin:         strings.NewReader(""),
+				Stdout:        io.Discard,
+			})
+
+			answer, err := runner.RunPrompt(context.Background(), sess, "run curl command", "build", io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if answer != "Policy handled." {
+				t.Fatalf("unexpected answer: %q", answer)
+			}
+
+			deniedPayload := findToolResultPayloadByReasonCode(t, sess, policyReasonSandboxGuard)
+			if deniedPayload.SystemSandbox.Mode != "required" {
+				t.Fatalf("expected denied tool_result sandbox mode required, got %#v", deniedPayload.SystemSandbox)
+			}
+			if deniedPayload.SystemSandbox.Backend != tc.backend {
+				t.Fatalf("expected denied tool_result sandbox backend %s, got %#v", tc.backend, deniedPayload.SystemSandbox)
+			}
+
+			foundPermissionDecision := false
+			foundExecuteStart := false
+			foundDeniedResult := false
+			for _, event := range auditStore.snapshot() {
+				if event.Action == "permission_decision" && event.Metadata["tool_name"] == "run_shell" {
+					if event.ReasonCode != policyReasonSandboxGuard || event.Decision != corepkg.DecisionDeny {
+						t.Fatalf("expected sandbox_guard deny decision, got %+v", event)
+					}
+					foundPermissionDecision = true
+				}
+				if event.Action == "tool_execute_start" && event.Metadata["tool_name"] == "run_shell" {
+					foundExecuteStart = true
+				}
+				if event.Action == "tool_execute_result" && event.Metadata["tool_name"] == "run_shell" && event.Result == "denied" {
+					foundDeniedResult = true
+				}
+			}
+			if !foundPermissionDecision {
+				t.Fatal("expected permission_decision audit event for run_shell")
+			}
+			if foundExecuteStart {
+				t.Fatal("did not expect tool_execute_start audit event for policy-denied run_shell")
+			}
+			if !foundDeniedResult {
+				t.Fatal("expected denied tool_execute_result audit event for run_shell")
+			}
+		})
+	}
+}
+
+type policyToolResultPayload struct {
+	ReasonCode    string `json:"reason_code"`
+	SystemSandbox struct {
+		Mode            string `json:"mode"`
+		Backend         string `json:"backend"`
+		RequiredCapable bool   `json:"required_capable"`
+		CapabilityLevel string `json:"capability_level"`
+		Fallback        bool   `json:"fallback"`
+		Status          string `json:"status"`
+		FallbackReason  string `json:"fallback_reason"`
+	} `json:"system_sandbox"`
+}
+
+func findToolResultPayloadByReasonCode(t *testing.T, sess *session.Session, reasonCode string) policyToolResultPayload {
+	t.Helper()
+	if sess == nil {
+		t.Fatal("expected non-nil session")
+	}
+	wantReason := strings.TrimSpace(reasonCode)
+	for _, message := range sess.Messages {
+		if message.Role != llm.RoleUser {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" || !strings.HasPrefix(content, "{") {
+			continue
+		}
+		var payload policyToolResultPayload
+		if err := json.Unmarshal([]byte(content), &payload); err != nil {
+			continue
+		}
+		gotReason := strings.TrimSpace(payload.ReasonCode)
+		if wantReason == "" && gotReason != "" {
+			continue
+		}
+		if wantReason != "" && gotReason != wantReason {
+			continue
+		}
+		return payload
+	}
+	t.Fatalf("expected tool_result payload with reason_code=%q, got messages=%#v", wantReason, sess.Messages)
+	return policyToolResultPayload{}
 }

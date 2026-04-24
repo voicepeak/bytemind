@@ -3,6 +3,9 @@ set -euo pipefail
 
 skip_full="${1:-}"
 export GOCACHE="${PWD}/.gocache"
+export XDG_CONFIG_HOME="${PWD}/.xdg-config"
+export XDG_CACHE_HOME="${PWD}/.xdg-cache"
+mkdir -p "${GOCACHE}" "${XDG_CONFIG_HOME}" "${XDG_CACHE_HOME}"
 
 echo "==> Running focused sandbox suites..."
 go test ./internal/tools ./internal/app ./internal/agent ./internal/sandbox ./internal/config -count=1 -timeout 300s
@@ -13,4 +16,3 @@ if [[ "${skip_full}" != "--skip-full" ]]; then
 fi
 
 echo "Sandbox acceptance checks passed."
-

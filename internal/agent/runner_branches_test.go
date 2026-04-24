@@ -399,6 +399,60 @@ func TestRenderToolFeedbackPendingApprovalBranch(t *testing.T) {
 	}
 }
 
+func TestRenderToolFeedbackPendingApprovalBranchWithSandboxContext(t *testing.T) {
+	runner := NewRunner(Options{})
+	var out bytes.Buffer
+
+	runner.renderToolFeedback(&out, "run_shell", `{"ok":false,"error":"permission_denied: system sandbox required mode cannot run network-targeted \"web_fetch\" because backend \"windows_job_object\" lacks network isolation","status":"denied","reason_code":"permission_denied","system_sandbox":{"mode":"required","backend":"windows_job_object","active":true,"required_capable":true,"capability_level":"guarded","fallback":true,"fallback_reason":"required mode backend downgraded in test"}}`)
+
+	got := out.String()
+	for _, want := range []string{"pending approval", "lacks network isolation", "sandbox:", "mode=required", "backend=windows_job_object", "required_capable=true", "sandbox reason:"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, got)
+		}
+	}
+}
+
+func TestRenderToolFeedbackDeniedBranchForSandboxGuard(t *testing.T) {
+	runner := NewRunner(Options{})
+	var out bytes.Buffer
+
+	runner.renderToolFeedback(&out, "web_fetch", `{"ok":false,"error":"sandbox_guard: system sandbox required mode cannot run web_* tools because backend windows_job_object worker network isolation is unavailable","status":"denied","reason_code":"sandbox_guard","system_sandbox":{"mode":"required","backend":"windows_job_object","active":true,"required_capable":true,"capability_level":"guarded","fallback":false}}`)
+
+	got := out.String()
+	for _, want := range []string{"denied", "worker network isolation is unavailable", "sandbox:", "mode=required", "backend=windows_job_object"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, got)
+		}
+	}
+	if strings.Contains(got, "pending approval") {
+		t.Fatalf("expected sandbox_guard denial to avoid pending approval wording, got %q", got)
+	}
+	if strings.Contains(got, "sandbox_guard:") {
+		t.Fatalf("expected reason_code prefix to be trimmed, got %q", got)
+	}
+}
+
+func TestRenderToolFeedbackDeniedBranchForRunShellSandboxGuard(t *testing.T) {
+	runner := NewRunner(Options{})
+	var out bytes.Buffer
+
+	runner.renderToolFeedback(&out, "run_shell", `{"ok":false,"error":"sandbox_guard: system sandbox required mode cannot run network-targeted run_shell because backend windows_job_object shell network isolation is unavailable","status":"denied","reason_code":"sandbox_guard","system_sandbox":{"mode":"required","backend":"windows_job_object","active":true,"required_capable":true,"capability_level":"guarded","fallback":false}}`)
+
+	got := out.String()
+	for _, want := range []string{"denied", "network-targeted run_shell", "sandbox:", "mode=required", "backend=windows_job_object"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, got)
+		}
+	}
+	if strings.Contains(got, "pending approval") {
+		t.Fatalf("expected sandbox_guard denial to avoid pending approval wording, got %q", got)
+	}
+	if strings.Contains(got, "sandbox_guard:") {
+		t.Fatalf("expected reason_code prefix to be trimmed, got %q", got)
+	}
+}
+
 func TestRenderToolFeedbackSkippedDependencyBranch(t *testing.T) {
 	runner := NewRunner(Options{})
 	var out bytes.Buffer
