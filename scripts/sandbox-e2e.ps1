@@ -22,17 +22,32 @@ function Invoke-GoTestChecked {
     }
 }
 
+function Invoke-FocusedPackage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Package
+    )
+
+    & go test $Package -count=1 -timeout 300s
+    if ($LASTEXITCODE -eq 0) {
+        return
+    }
+
+    Write-Host "!! Focused sandbox suite failed for $Package. Re-running with -v for diagnostics..."
+    & go test $Package -count=1 -timeout 300s -v
+    throw "focused sandbox suite failed: $Package (exit code $LASTEXITCODE)"
+}
+
 Write-Host "==> Running focused sandbox suites..."
-Invoke-GoTestChecked -Args @(
+@(
     "./internal/tools",
     "./internal/app",
     "./internal/agent",
     "./internal/sandbox",
-    "./internal/config",
-    "-count=1",
-    "-timeout",
-    "300s"
-)
+    "./internal/config"
+) | ForEach-Object {
+    Invoke-FocusedPackage -Package $_
+}
 
 if (-not $SkipFull) {
     Write-Host "==> Running full test suite..."
