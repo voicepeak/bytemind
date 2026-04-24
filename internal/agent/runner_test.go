@@ -1047,8 +1047,8 @@ func TestRunPromptAwayAutoDenyContinueRecordsSandboxFallbackForSkippedDependency
 	for _, want := range []string{
 		"- System sandbox fallback:",
 		"startup (mode=best_effort, backend=none, required_capable=false, capability_level=none, shell_network_isolation=false, worker_network_isolation=false, reason=system sandbox best_effort fallback: test backend unavailable)",
-		"write_file (mode=best_effort, backend=none, required_capable=false, capability_level=none, reason=system sandbox best_effort fallback: test backend unavailable)",
-		"read_file (mode=best_effort, backend=none, required_capable=false, capability_level=none, reason=system sandbox best_effort fallback: test backend unavailable)",
+		"write_file (mode=best_effort, backend=none, required_capable=false, capability_level=none, shell_network_isolation=false, worker_network_isolation=false, reason=system sandbox best_effort fallback: test backend unavailable)",
+		"read_file (mode=best_effort, backend=none, required_capable=false, capability_level=none, shell_network_isolation=false, worker_network_isolation=false, reason=system sandbox best_effort fallback: test backend unavailable)",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("expected task report output to contain %q, got %q", want, out.String())

@@ -48,6 +48,8 @@ func TestSystemSandboxFallbackReportEntry(t *testing.T) {
 			Backend         string `json:"backend"`
 			RequiredCapable bool   `json:"required_capable"`
 			CapabilityLevel string `json:"capability_level"`
+			ShellNetwork    bool   `json:"shell_network_isolation"`
+			WorkerNetwork   bool   `json:"worker_network_isolation"`
 			Fallback        bool   `json:"fallback"`
 			FallbackReason  string `json:"fallback_reason"`
 		}{
@@ -55,6 +57,8 @@ func TestSystemSandboxFallbackReportEntry(t *testing.T) {
 			Backend:         "none",
 			RequiredCapable: false,
 			CapabilityLevel: "none",
+			ShellNetwork:    false,
+			WorkerNetwork:   false,
 			Fallback:        true,
 			FallbackReason:  "darwin backend unavailable",
 		},
@@ -66,6 +70,8 @@ func TestSystemSandboxFallbackReportEntry(t *testing.T) {
 		"backend=none",
 		"required_capable=false",
 		"capability_level=none",
+		"shell_network_isolation=false",
+		"worker_network_isolation=false",
 		"reason=darwin backend unavailable",
 	} {
 		if !strings.Contains(note, want) {
